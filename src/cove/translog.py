@@ -212,12 +212,16 @@ class TamperEvidentLog:
 
 # ---- client-side verification (also used by the client; mirror in client repo) ----
 def verify_inclusion(entry_id: str, seq: int, proof: InclusionProof, sth: STH) -> bool:
-    """Recompute root from leaf + audit_path; compare to sth.root_hash. §6.4.2."""
+    """Recompute root from leaf + audit_path; compare to sth.root_hash. §6.4.2.
+
+    `seq` is the per-thread seq the leaf commits to (hash_leaf input).
+    `proof.leaf_index` is the GLOBAL log position — they are not the same in
+    general (two entries on different threads can both have seq 0). The two
+    are bound together by being baked into the same Merkle leaf + position.
+    """
     if not (0 <= proof.leaf_index < proof.tree_size):
         return False
     if proof.tree_size != sth.tree_size:
-        return False
-    if proof.leaf_index != seq:
         return False
     leaf = hash_leaf(entry_id, seq)
     root = _recompute_root(leaf, proof.leaf_index, proof.tree_size, proof.audit_path)
