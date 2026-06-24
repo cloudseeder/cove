@@ -10,11 +10,12 @@ get their own isolated app and production wires real deps.
 """
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Optional
 
-from fastapi import Body, Depends, FastAPI, Header, Query
+from fastapi import Body, Depends, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from .auth import AuthError, AuthService
@@ -25,6 +26,50 @@ from .pipeline import AcceptanceError, Pipeline
 from .store import EventStore
 from .throttle import ThrottleError
 from .translog import TamperEvidentLog
+
+
+# ---- WebSocket fan-out (§7.1 step 10) -----------------------------------
+class FanOut:
+    """In-memory broadcast registry for the WS /stream push channel.
+
+    Snapshot-then-send: the lock is held only long enough to copy the
+    connection set, so a slow client cannot block register/unregister.
+    Dead connections (the client went away mid-broadcast) are pruned on
+    the next pass — a transient send failure doesn't bring down the whole
+    fan-out, and the registry stays bounded.
+
+    State is process-local, like throttle/session state (§9). Multi-process
+    fan-out would need an external bus; deferred.
+    """
+
+    def __init__(self) -> None:
+        self._connections: set[WebSocket] = set()
+        self._lock = asyncio.Lock()
+
+    async def register(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._connections.add(ws)
+
+    async def unregister(self, ws: WebSocket) -> None:
+        async with self._lock:
+            self._connections.discard(ws)
+
+    async def broadcast(self, payload: dict) -> None:
+        async with self._lock:
+            conns = list(self._connections)
+        dead: list[WebSocket] = []
+        for ws in conns:
+            try:
+                await ws.send_json(payload)
+            except Exception:
+                dead.append(ws)
+        if dead:
+            async with self._lock:
+                for ws in dead:
+                    self._connections.discard(ws)
+
+    def __len__(self) -> int:
+        return len(self._connections)
 
 
 # ---- minimal default app (so `uvicorn cove.api:app` doesn't fail) -------
@@ -43,7 +88,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                ledger: Ledger,
                directory: Optional[Directory] = None,
                directory_manifest: Optional[DirectoryManifest] = None,
-               auth: Optional[AuthService] = None) -> FastAPI:
+               auth: Optional[AuthService] = None,
+               fanout: Optional[FanOut] = None) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
     `directory_manifest` is the signed wire form served by GET /directory.
@@ -57,6 +103,9 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     would serve /sth + /proof/* against an empty tree even though the store
     is non-empty — wrong proofs, not absent ones.
     """
+    if fanout is None:
+        fanout = FanOut()
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         translog.rebuild(store.iter_global())
@@ -120,8 +169,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
     # ---- POST /entries (§7.1) -------------------------------------------
     @api.post("/entries")
-    def post_entries(body: dict = Body(...),
-                     _caller: str = Depends(require_session)):
+    async def post_entries(body: dict = Body(...),
+                           _caller: str = Depends(require_session)):
         try:
             ev = _entry_from_dict(body)
         except (TypeError, ValueError) as e:
@@ -132,6 +181,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             return _err(400, error="rejected", reason=str(e))
         except ThrottleError as e:
             return _throttle_response(e)
+        # §7.1 step 10: fan-out to live subscribers. Offline-queueing is the
+        # client-side responsibility (delta-sync via GET /sync on reconnect).
+        await fanout.broadcast({
+            "type": "entry",
+            "entry": _entry_to_dict(ev),
+            "seq": seq,
+        })
         return {"id": ev.id, "seq": seq}
 
     # ---- GET /sync (§7) -------------------------------------------------
@@ -194,9 +250,38 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         members = directory.attested_keys() if directory is not None else []
         return ledger.status(target.thread, required_seq=seq, members=members)
 
+    # ---- WS /stream (§7, §7.1 step 10) ---------------------------------
+    @api.websocket("/stream")
+    async def stream(ws: WebSocket):
+        # Always accept first so we can send a close frame with a reason.
+        # Browsers can't set the Authorization header on a WS handshake, so
+        # we also accept `?token=` as a fallback for browser clients.
+        await ws.accept()
+        if auth is None:
+            await ws.close(code=1011, reason="auth not configured")
+            return
+        token: Optional[str] = None
+        hdr = ws.headers.get("authorization", "")
+        if hdr.lower().startswith("bearer "):
+            token = hdr.split(" ", 1)[1].strip()
+        if not token:
+            token = ws.query_params.get("token")
+        if not token or auth.resolve_session(token) is None:
+            await ws.close(code=1008, reason="auth required")
+            return
+        await fanout.register(ws)
+        try:
+            # We don't act on client-sent messages in v1; we just hold the
+            # connection open until the client disconnects. receive_text()
+            # raises WebSocketDisconnect when that happens.
+            while True:
+                await ws.receive_text()
+        except WebSocketDisconnect:
+            pass
+        finally:
+            await fanout.unregister(ws)
+
     # ---- TODO routes (need deps not yet built) -------------------------
-    # POST /auth/challenge, POST /auth/verify           — §5 auth module
-    # WS   /stream                                      — fan-out plumbing
     # POST /blobs, GET /blobs/{hash}                    — §4 blob store
     # POST /admin/attest, /admin/revoke, /admin/limits  — root-key / admin ops
 

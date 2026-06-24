@@ -37,6 +37,7 @@ from cove.translog import (
     ConsistencyProof, InclusionProof, STH, TamperEvidentLog,
     verify_consistency, verify_inclusion, verify_sth,
 )
+from starlette.websockets import WebSocketDisconnect
 
 
 # ---- fixtures: a fully-wired hub --------------------------------------
@@ -247,6 +248,104 @@ def test_public_routes_remain_accessible_without_auth(hub):
     assert unauth.get("/healthz").status_code == 200
     assert unauth.get("/sth").status_code == 200
     assert unauth.post("/auth/challenge").status_code == 200
+
+
+# ---- WS /stream (§7, §7.1 step 10) -----------------------------------
+
+def test_stream_rejects_without_token(hub):
+    """No Authorization header AND no ?token= — server closes the WS with
+    code 1008 (policy violation). TestClient accepts then sees the close
+    frame on the first receive."""
+    unauth = TestClient(hub["app"])
+    with unauth.websocket_connect("/stream") as ws:
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_text()
+        assert ei.value.code == 1008
+
+
+def test_stream_rejects_invalid_token(hub):
+    unauth = TestClient(hub["app"])
+    with unauth.websocket_connect(
+            "/stream", headers={"Authorization": "Bearer " + "ff" * 32}) as ws:
+        with pytest.raises(WebSocketDisconnect) as ei:
+            ws.receive_text()
+        assert ei.value.code == 1008
+
+
+def test_stream_accepts_via_query_token_for_browser_clients(hub):
+    """Browsers can't set Authorization on a WS handshake — ?token= is the
+    documented fallback. Connecting via the query string must work."""
+    unauth = TestClient(hub["app"])
+    with unauth.websocket_connect(
+            f"/stream?token={hub['session_token']}") as ws:
+        # Connection accepted; trigger an entry and verify it's delivered.
+        ev = _signed_post(hub["member_priv"], hub["member_pub"], body="qstring")
+        hub["client"].post("/entries", json=_entry_payload(ev))
+        msg = ws.receive_json()
+        assert msg["entry"]["id"] == ev.id
+
+
+def test_stream_pushes_accepted_entry(hub):
+    """§7.1 step 10: an entry accepted into the log is fanned out to every
+    live subscriber. The push includes the full signed entry so the client
+    can verify origin without a separate /sync round trip."""
+    with hub["client"].websocket_connect("/stream") as ws:
+        ev = _signed_post(hub["member_priv"], hub["member_pub"], body="push")
+        r = hub["client"].post("/entries", json=_entry_payload(ev))
+        assert r.status_code == 200
+        msg = ws.receive_json()
+        assert msg["type"] == "entry"
+        assert msg["entry"]["id"] == ev.id
+        assert msg["seq"] == r.json()["seq"]
+        # Sig + id survived serialization — the client can verify_entry it.
+        assert msg["entry"]["sig"] == ev.sig
+
+
+def test_stream_delivers_to_every_subscriber(hub):
+    """Two subscribers, one POST -> both receive the push."""
+    with hub["client"].websocket_connect("/stream") as ws1:
+        with hub["client"].websocket_connect("/stream") as ws2:
+            ev = _signed_post(hub["member_priv"], hub["member_pub"], body="multi")
+            hub["client"].post("/entries", json=_entry_payload(ev))
+            m1, m2 = ws1.receive_json(), ws2.receive_json()
+            assert m1["entry"]["id"] == m2["entry"]["id"] == ev.id
+
+
+def test_stream_disconnect_unregisters_so_next_broadcast_succeeds(hub):
+    """A disconnected client must not stay in the fan-out registry —
+    otherwise the next broadcast tries to send into a dead socket and
+    might pollute the loop. We confirm by reconnecting and seeing a
+    later push delivered cleanly."""
+    with hub["client"].websocket_connect("/stream"):
+        pass        # exit immediately disconnects
+
+    # A POST after the disconnect must still succeed and not blow up.
+    a = _signed_post(hub["member_priv"], hub["member_pub"], body="post-disco")
+    r = hub["client"].post("/entries", json=_entry_payload(a))
+    assert r.status_code == 200
+
+    # A fresh subscriber gets the NEXT entry — confirms the fan-out is alive.
+    with hub["client"].websocket_connect("/stream") as ws:
+        b = _signed_post(hub["member_priv"], hub["member_pub"], body="after")
+        hub["client"].post("/entries", json=_entry_payload(b))
+        msg = ws.receive_json()
+        assert msg["entry"]["id"] == b.id
+
+
+def test_stream_does_not_replay_history_only_pushes_post_subscribe(hub):
+    """v1 push semantics: subscribers get entries accepted AFTER they
+    connect. Pre-subscribe history is the /sync responsibility (§7).
+    Without this, every reconnect would re-deliver the whole log."""
+    # An entry accepted BEFORE any subscriber.
+    pre = _signed_post(hub["member_priv"], hub["member_pub"], body="pre")
+    hub["client"].post("/entries", json=_entry_payload(pre))
+
+    with hub["client"].websocket_connect("/stream") as ws:
+        # POST after subscribe — that's the one we expect to receive.
+        post = _signed_post(hub["member_priv"], hub["member_pub"], body="post")
+        hub["client"].post("/entries", json=_entry_payload(post))
+        msg = ws.receive_json()
+        assert msg["entry"]["id"] == post.id    # not pre.id
 
 
 def test_session_invalidated_when_member_revoked(hub):
