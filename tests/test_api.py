@@ -27,8 +27,9 @@ from cove.api import create_app
 from cove.auth import AuthService
 from cove.entry import Entry, sign_entry
 from cove.identity import (
-    Directory, Revocation, issue_attestation, issue_directory,
+    Attestation, Directory, Revocation, issue_attestation, issue_directory,
 )
+from cove.config import TIERS
 from cove.index import Ledger, Overview
 from cove.pipeline import Pipeline
 from cove.store import EventStore
@@ -98,11 +99,14 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
         "client": client,
         "app": app,
         "member_priv": member_priv, "member_pub": member_pub,
+        "root_priv": root_priv, "root_pub": root_pub,
         "revoked_pub": revoked_pub,
-        "root_pub": root_pub, "hub_pub": hub_pub,
+        "hub_pub": hub_pub,
         "store": store, "translog": translog,
         "overview": overview, "ledger": ledger,
         "auth": auth, "directory": directory,
+        "throttler": throttler,
+        "att_member": att_member,
         "session_token": sess["token"],
     }
 
@@ -248,6 +252,152 @@ def test_public_routes_remain_accessible_without_auth(hub):
     assert unauth.get("/healthz").status_code == 200
     assert unauth.get("/sth").status_code == 200
     assert unauth.post("/auth/challenge").status_code == 200
+
+
+# ---- /admin/* (§7, §7.2.2) -------------------------------------------
+
+def test_admin_attest_replaces_directory_with_new_signed_manifest(hub):
+    """The admin tool (offline) builds a new manifest including the new
+    attestation and root-signs it. POST /admin/attest receives the signed
+    manifest; the hub validates and replaces its in-memory directory.
+    The hub itself never touches the root key — non-negotiable #1."""
+    # New member, attested by the same root.
+    new_priv, new_pub = crypto.generate_keypair()
+    att_new = issue_attestation(
+        hub["root_priv"], member_pubkey=new_pub, display_name="Carol",
+        unit="U-3", role="member", issuer_pubkey=hub["root_pub"],
+        issued_at="2026-06-01T00:00:00+00:00",
+    )
+    new_manifest = issue_directory(
+        hub["root_priv"], org=hub["root_pub"],
+        attestations=[hub["att_member"], att_new], revocations=[],
+        updated_at="2026-06-15T00:00:00+00:00",
+    )
+
+    r = hub["client"].post("/admin/attest", json={"manifest": _manifest_dict(new_manifest)})
+    assert r.status_code == 200, r.text
+    assert r.json()["attestations"] == 2
+
+    # The directory now resolves the new member; AuthService — which holds
+    # the SAME Directory object — sees the update too (no stale reference).
+    assert hub["directory"].resolve(new_pub) is not None
+    # And the manifest the hub serves is the new one.
+    served = hub["client"].get("/directory").json()
+    assert any(a["member_pubkey"] == new_pub for a in served["attestations"])
+
+
+def test_admin_attest_rejects_unsigned_or_forged_manifest(hub):
+    """A manifest the root didn't sign must NOT update the directory.
+    Otherwise an attacker hits /admin/attest with their own keys and
+    grants themselves an attestation."""
+    forged_priv, _ = crypto.generate_keypair()
+    forged = issue_directory(
+        forged_priv,                                  # signed by NOT-root
+        org=hub["root_pub"],                          # claims to be the real org
+        attestations=[hub["att_member"]], revocations=[],
+        updated_at="2026-06-15T00:00:00+00:00",
+    )
+    r = hub["client"].post("/admin/attest", json={"manifest": _manifest_dict(forged)})
+    assert r.status_code == 400
+    assert r.json()["error"] == "invalid_signature"
+
+
+def test_admin_revoke_propagates_through_to_session_gate(hub):
+    """End-to-end: admin pushes a revocation via /admin/revoke; the next
+    gated request on the previously-valid session is denied. Backs the
+    'revocation has immediate effect on the running system' invariant
+    from the auth slice."""
+    # The session is currently valid.
+    assert hub["client"].get("/directory").status_code == 200
+
+    # Admin tool builds a new manifest WITH a revocation for member_pub.
+    rev = Revocation(pubkey=hub["member_pub"],
+                     revoked_at="2026-06-15T00:00:00+00:00",
+                     reason="key compromise")
+    new_manifest = issue_directory(
+        hub["root_priv"], org=hub["root_pub"],
+        attestations=[hub["att_member"]], revocations=[rev],
+        updated_at="2026-06-15T00:00:00+00:00",
+    )
+    r = hub["client"].post("/admin/revoke", json={"manifest": _manifest_dict(new_manifest)})
+    assert r.status_code == 200
+
+    # Same client, same token — now denied (resolve_session checks
+    # is_revoked, which sees the new revocation through the same Directory
+    # object reference).
+    assert hub["client"].get("/directory").status_code == 401
+
+
+def test_admin_attest_missing_payload_returns_400(hub):
+    r = hub["client"].post("/admin/attest", json={})
+    assert r.status_code == 400
+
+
+# ---- /admin/limits (§7.2.2) ------------------------------------------
+
+def _sign_admin_payload(root_priv: str, payload: dict) -> str:
+    return crypto.sign(root_priv, crypto.canonicalize(payload))
+
+
+def test_admin_limits_applies_tier_override(hub):
+    """An override raises the throttle ceiling for a specific identity —
+    spec example: 'temporarily raise the board's limit for an
+    annual-meeting mailing'. After the override, the identity gets the
+    BOARD tier even though their directory role is 'member'."""
+    payload = {"pubkey": hub["member_pub"], "tier": "board"}
+    body = {"payload": payload,
+            "sig": _sign_admin_payload(hub["root_priv"], payload)}
+    r = hub["client"].post("/admin/limits", json=body)
+    assert r.status_code == 200, r.text
+
+    # The override is now live on the throttler. A member-tier burst+1
+    # would normally trip rate; with the board override it must succeed.
+    # Drain past the member burst and confirm.
+    over_member = TIERS["member"].burst + 1
+    for i in range(over_member):
+        ev = _signed_post(hub["member_priv"], hub["member_pub"], body=f"m{i}")
+        r = hub["client"].post("/entries", json=_entry_payload(ev))
+        assert r.status_code == 200, f"member burst {i+1}: {r.text}"
+
+
+def test_admin_limits_rejects_unsigned_payload(hub):
+    payload = {"pubkey": hub["member_pub"], "tier": "board"}
+    body = {"payload": payload, "sig": "ff" * 64}     # garbage sig
+    r = hub["client"].post("/admin/limits", json=body)
+    assert r.status_code == 401
+    assert r.json()["error"] == "invalid_signature"
+
+
+def test_admin_limits_rejects_non_root_signer(hub):
+    """A sig from a non-root key (even an attested member) is not enough
+    to drive an admin op — admin authority is root authority."""
+    payload = {"pubkey": hub["member_pub"], "tier": "board"}
+    body = {"payload": payload,
+            "sig": crypto.sign(hub["member_priv"],
+                               crypto.canonicalize(payload))}
+    r = hub["client"].post("/admin/limits", json=body)
+    assert r.status_code == 401
+
+
+def test_admin_limits_rejects_unknown_tier(hub):
+    payload = {"pubkey": hub["member_pub"], "tier": "platinum"}
+    body = {"payload": payload,
+            "sig": _sign_admin_payload(hub["root_priv"], payload)}
+    r = hub["client"].post("/admin/limits", json=body)
+    assert r.status_code == 400
+    assert r.json()["error"] == "bad_tier"
+
+
+def _manifest_dict(m) -> dict:
+    """Convenience for tests — wire-format dict from a DirectoryManifest."""
+    from dataclasses import asdict
+    return {
+        "org": m.org,
+        "attestations": [asdict(a) for a in m.attestations],
+        "revocations": [asdict(r) for r in m.revocations],
+        "updated_at": m.updated_at,
+        "sig": m.sig,
+    }
 
 
 # ---- stream/sync reconciliation (client-spec §4.1) -------------------

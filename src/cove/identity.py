@@ -143,17 +143,37 @@ class Directory:
         # after key rotation. The DAG of historical attestations is in the manifest
         # history; this in-memory view is the "current" lookup.
         self._by_key: dict[str, Attestation] = {}
-        for a in attestations or []:
-            existing = self._by_key.get(a.member_pubkey)
-            if existing is None or a.issued_at > existing.issued_at:
-                self._by_key[a.member_pubkey] = a
         # Keep EARLIEST revocation per pubkey — a key can't be un-revoked, so the
         # first revocation is the binding one for any historical lookup.
         self._revoked: dict[str, Revocation] = {}
-        for r in revocations or []:
+        self._manifest: Optional[DirectoryManifest] = None
+        self._absorb(attestations or [], revocations or [])
+
+    def _absorb(self, attestations: list[Attestation],
+                revocations: list[Revocation]) -> None:
+        for a in attestations:
+            existing = self._by_key.get(a.member_pubkey)
+            if existing is None or a.issued_at > existing.issued_at:
+                self._by_key[a.member_pubkey] = a
+        for r in revocations:
             existing = self._revoked.get(r.pubkey)
             if existing is None or r.revoked_at < existing.revoked_at:
                 self._revoked[r.pubkey] = r
+
+    @property
+    def manifest(self) -> Optional[DirectoryManifest]:
+        return self._manifest
+
+    def update_from(self, m: DirectoryManifest) -> None:
+        """Replace internal state from a verified manifest. Caller MUST have
+        already validated the manifest (verify_directory_manifest); this
+        method trusts it. Mutates in place so existing references — most
+        importantly AuthService's `self._dir` — stay valid across an
+        admin-driven /admin/attest or /admin/revoke."""
+        self._by_key.clear()
+        self._revoked.clear()
+        self._absorb(m.attestations, m.revocations)
+        self._manifest = m
 
     def resolve(self, pubkey: str) -> Optional[Attestation]:
         """Return the current attestation for a key, or None. Caller checks revocation/expiry."""
@@ -186,4 +206,6 @@ class Directory:
         """Verify the manifest end-to-end then construct the in-memory view."""
         if not verify_directory_manifest(m):
             raise ValueError("directory manifest signature invalid")
-        return cls(attestations=m.attestations, revocations=m.revocations)
+        d = cls()
+        d.update_from(m)
+        return d

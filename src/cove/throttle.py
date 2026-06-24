@@ -92,6 +92,10 @@ class Throttler:
         self._now = time_fn
         self._lock = threading.Lock()
         self._state: dict[str, _IdentityState] = {}
+        # Per-identity tier overrides set via POST /admin/limits (§7.2.2).
+        # Overrides are role-INDEPENDENT: once set, the throttler uses the
+        # override regardless of what role the directory says the author has.
+        self._overrides: dict[str, Tier] = {}
 
     def check_and_consume(self, author: str, role: str, entry_bytes: int,
                           new_blob_bytes: int = 0) -> None:
@@ -100,7 +104,7 @@ class Throttler:
         On any rejection, NO state is mutated — repeated failed attempts
         cannot themselves drain the bucket or the daily volume.
         """
-        tier = self._cfg.tier_for_role(role)
+        tier = self._overrides.get(author) or self._cfg.tier_for_role(role)
         with self._lock:
             st = self._state.setdefault(author, _IdentityState())
             now = self._now()
@@ -135,6 +139,18 @@ class Throttler:
             st.tokens -= 1.0
             st.volume_log.append((now, entry_bytes))
             st.storage_used += new_blob_bytes
+
+    def set_tier_override(self, author: str, tier_name: str) -> None:
+        """Apply a per-identity tier override (§7.2.2 'overridable per identity
+        via POST /admin/limits'). The override replaces the role-derived tier
+        for this author from now on. Pass None or a clearing call to remove
+        — not implemented yet; first writer wins for the pilot."""
+        from .config import TIERS
+        tier = TIERS.get(tier_name)
+        if tier is None:
+            raise ValueError(f"unknown tier {tier_name!r}")
+        with self._lock:
+            self._overrides[author] = tier
 
     def note_violation(self, author: str) -> bool:
         """Track sustained violations; return True when alert threshold crossed. §7.2.4.

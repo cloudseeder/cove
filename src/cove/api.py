@@ -18,13 +18,17 @@ from typing import Optional
 from fastapi import Body, Depends, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
+from . import crypto
 from .auth import AuthError, AuthService
 from .entry import BlobRef, Entry
-from .identity import Directory, DirectoryManifest
+from .identity import (
+    Attestation, Directory, DirectoryManifest, Revocation,
+    verify_directory_manifest,
+)
 from .index import Ledger, Overview
 from .pipeline import AcceptanceError, Pipeline
 from .store import EventStore
-from .throttle import ThrottleError
+from .throttle import ThrottleError, Throttler
 from .translog import TamperEvidentLog
 
 
@@ -89,6 +93,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                directory: Optional[Directory] = None,
                directory_manifest: Optional[DirectoryManifest] = None,
                auth: Optional[AuthService] = None,
+               throttler: Optional[Throttler] = None,
                fanout: Optional[FanOut] = None) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
@@ -105,6 +110,14 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     """
     if fanout is None:
         fanout = FanOut()
+    # /admin/limits applies overrides to the same Throttler the pipeline uses;
+    # default to pipeline.throttler so existing callers don't need to pass it.
+    if throttler is None:
+        throttler = pipeline.throttler
+    # Persist the seed manifest on the Directory so subsequent /directory
+    # reads and /admin/* updates use a single source of truth.
+    if directory is not None and directory_manifest is not None and directory.manifest is None:
+        directory._manifest = directory_manifest                      # noqa: SLF001
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -235,9 +248,10 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     # ---- GET /directory (§2.3) ------------------------------------------
     @api.get("/directory")
     def get_directory(_caller: str = Depends(require_session)):
-        if directory_manifest is None:
+        m = directory.manifest if directory is not None else None
+        if m is None:
             return _err(503, error="no_directory")
-        return _manifest_to_dict(directory_manifest)
+        return _manifest_to_dict(m)
 
     # ---- GET /ledger (§8) -----------------------------------------------
     @api.get("/ledger")
@@ -281,9 +295,70 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         finally:
             await fanout.unregister(ws)
 
+    # ---- /admin/* (§7, §7.2.2) -----------------------------------------
+    # Self-authenticating via root signature on the payload — CLAUDE.md
+    # non-negotiable #1 ('hub holds NO root private key') means the admin
+    # tool signs OFF-HUB, then submits the result here. The hub verifies
+    # and applies; it never signs anything with the root key.
+    #
+    # /admin/attest and /admin/revoke share an implementation: both take
+    # a NEW root-signed manifest (the admin tool built it offline with
+    # the change baked in). The route name encodes intent for log/audit
+    # readers; the mechanic is the same.
+
+    def _apply_manifest(body: dict):
+        m = body.get("manifest")
+        if not isinstance(m, dict):
+            return _err(400, error="bad_request", detail="manifest required")
+        try:
+            new_m = _manifest_from_dict(m)
+        except (TypeError, KeyError, ValueError) as e:
+            return _err(400, error="bad_manifest", detail=str(e))
+        if not verify_directory_manifest(new_m):
+            return _err(400, error="invalid_signature")
+        if directory is None:
+            return _err(503, error="no_directory")
+        directory.update_from(new_m)
+        return {"updated_at": new_m.updated_at,
+                "attestations": len(new_m.attestations),
+                "revocations": len(new_m.revocations)}
+
+    @api.post("/admin/attest")
+    def admin_attest(body: dict = Body(...)):
+        return _apply_manifest(body)
+
+    @api.post("/admin/revoke")
+    def admin_revoke(body: dict = Body(...)):
+        return _apply_manifest(body)
+
+    # POST /admin/limits — per-identity throttle override (§7.2.2)
+    @api.post("/admin/limits")
+    def admin_limits(body: dict = Body(...)):
+        if directory is None or directory.manifest is None:
+            return _err(503, error="no_directory")
+        payload = body.get("payload")
+        sig = body.get("sig")
+        if not isinstance(payload, dict) or not isinstance(sig, str):
+            return _err(400, error="bad_request",
+                        detail="payload (object) and sig (hex) required")
+        # Root signature gates this — same security model as the manifest:
+        # admin authority IS root authority.
+        root_pub = directory.manifest.org
+        if not crypto.verify(root_pub, sig, crypto.canonicalize(payload)):
+            return _err(401, error="invalid_signature")
+        pubkey = payload.get("pubkey")
+        tier = payload.get("tier")
+        if not (isinstance(pubkey, str) and isinstance(tier, str)):
+            return _err(400, error="bad_payload",
+                        detail="pubkey + tier required in payload")
+        try:
+            throttler.set_tier_override(pubkey, tier)
+        except ValueError as e:
+            return _err(400, error="bad_tier", detail=str(e))
+        return {"pubkey": pubkey, "tier": tier}
+
     # ---- TODO routes (need deps not yet built) -------------------------
     # POST /blobs, GET /blobs/{hash}                    — §4 blob store
-    # POST /admin/attest, /admin/revoke, /admin/limits  — root-key / admin ops
 
     return api
 
@@ -329,6 +404,18 @@ def _manifest_to_dict(m: DirectoryManifest) -> dict:
         "updated_at": m.updated_at,
         "sig": m.sig,
     }
+
+
+def _manifest_from_dict(d: dict) -> DirectoryManifest:
+    """Wire JSON -> DirectoryManifest. Strict (no extras) because the body
+    is about to drive a state-mutating admin op — schema drift should fail
+    loudly here, not silently coerce."""
+    atts = [Attestation(**a) for a in d.get("attestations", []) or []]
+    revs = [Revocation(**r) for r in d.get("revocations", []) or []]
+    return DirectoryManifest(
+        org=d["org"], attestations=atts, revocations=revs,
+        updated_at=d.get("updated_at", ""), sig=d.get("sig", ""),
+    )
 
 
 
