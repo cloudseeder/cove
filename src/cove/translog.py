@@ -59,6 +59,28 @@ def _mth(leaves: list[str]) -> str:
     return hash_node(_mth(leaves[:k]), _mth(leaves[k:]))
 
 
+def _audit_path(m: int, leaves: list[str]) -> list[str]:
+    """Sibling hashes from leaf m up to the root, deepest-first (RFC 6962 §2.1.1)."""
+    n = len(leaves)
+    if n <= 1:
+        return []
+    k = _lp2(n)
+    if m < k:
+        return _audit_path(m, leaves[:k]) + [_mth(leaves[k:])]
+    return _audit_path(m - k, leaves[k:]) + [_mth(leaves[:k])]
+
+
+def _recompute_root(leaf_hash: str, m: int, n: int, path: list[str]) -> str:
+    """Mirror of _audit_path; consumes path end-first (top sibling)."""
+    if n <= 1:
+        return leaf_hash
+    k = _lp2(n)
+    sib, rest = path[-1], path[:-1]
+    if m < k:
+        return hash_node(_recompute_root(leaf_hash, m, k, rest), sib)
+    return hash_node(sib, _recompute_root(leaf_hash, m - k, n - k, rest))
+
+
 # ---- data models ----------------------------------------------------------
 @dataclass
 class STH:
@@ -142,8 +164,15 @@ class TamperEvidentLog:
         return sth
 
     def inclusion_proof(self, entry_id: str) -> InclusionProof:
-        """Spec §6.4.2."""
-        raise NotImplementedError
+        """Spec §6.4.2. Raises KeyError if entry is absent."""
+        if entry_id not in self._index:
+            raise KeyError(f"entry {entry_id} not in log")
+        m = self._index[entry_id]
+        return InclusionProof(
+            leaf_index=m,
+            tree_size=len(self._leaves),
+            audit_path=_audit_path(m, self._leaves),
+        )
 
     def consistency_proof(self, first_size: int, second_size: int) -> ConsistencyProof:
         """Spec §6.4.2."""
@@ -153,7 +182,15 @@ class TamperEvidentLog:
 # ---- client-side verification (also used by the client; mirror in client repo) ----
 def verify_inclusion(entry_id: str, seq: int, proof: InclusionProof, sth: STH) -> bool:
     """Recompute root from leaf + audit_path; compare to sth.root_hash. §6.4.2."""
-    raise NotImplementedError
+    if not (0 <= proof.leaf_index < proof.tree_size):
+        return False
+    if proof.tree_size != sth.tree_size:
+        return False
+    if proof.leaf_index != seq:
+        return False
+    leaf = hash_leaf(entry_id, seq)
+    root = _recompute_root(leaf, proof.leaf_index, proof.tree_size, proof.audit_path)
+    return root == sth.root_hash
 
 
 def verify_consistency(proof: ConsistencyProof, old: STH, new: STH) -> bool:
