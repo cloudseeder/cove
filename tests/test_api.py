@@ -26,7 +26,7 @@ from cove import crypto
 from cove.api import create_app
 from cove.auth import AuthService
 from cove.blobs import BlobStore
-from cove.entry import Entry, sign_entry
+from cove.entry import BlobRef, Entry, sign_entry, verify_entry
 from cove.identity import (
     Attestation, Directory, Revocation, hash_manifest,
     issue_attestation, issue_directory,
@@ -357,6 +357,89 @@ def test_blob_routes_require_session(hub):
     unauth = TestClient(hub["app"])
     assert unauth.post("/blobs", content=b"x").status_code == 401
     assert unauth.get("/blobs/" + "ff" * 32).status_code == 401
+
+
+def test_entry_referencing_unstored_blob_is_rejected(hub):
+    """Blob-first ordering (client-spec §3): an entry that references a
+    blob the hub has never seen must be rejected at accept time, the
+    same way a dangling parent is. Otherwise verified entries point at
+    404 responses and the consistency story breaks at the seam between
+    the entry log and the blob store."""
+    bogus_hash = "sha256:" + "00" * 32
+    ev = sign_entry(Entry(
+        thread="t1", author=hub["member_pub"], kind="post",
+        created_at="2026-01-01T00:00:00Z", body="see attachment",
+        blobs=[BlobRef(hash=bogus_hash, media_type="image/png",
+                       size=128, name="dangling.png")],
+    ), hub["member_priv"])
+    r = hub["client"].post("/entries", json=_entry_payload(ev))
+    assert r.status_code == 400
+    assert "unstored blob" in r.json()["reason"].lower()
+    # And the entry was NOT persisted — fail before step 8.
+    assert hub["store"].exists(ev.id) is False
+
+
+def test_blob_to_entry_binding_round_trips_through_signature(hub):
+    """The end-to-end guarantee blobs exist to deliver: the bytes a
+    reader pulls are the bytes the author signed. Spans both endpoints.
+
+      author side: hash bytes, POST /blobs, build entry referencing
+                   that hash, sign the entry's canonical content,
+                   POST /entries
+      reader side: GET /sync, verify_entry on the received entry,
+                   GET /blobs/{hash} for each blob ref, re-hash the
+                   downloaded bytes, confirm match against the
+                   signed BlobRef.hash
+
+    If any link breaks — wrong hash returned, sig invalidated by
+    serialization, BlobRef.hash drifts on round trip — this test
+    fails. The blob analog of the inclusion-proof property.
+    """
+    import hashlib
+
+    # --- author side ---
+    payload = b"the actual attachment bytes\n\x00\xff"
+    upload = hub["client"].post("/blobs", content=payload).json()
+    blob_hash = upload["hash"]
+    assert blob_hash == "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    ev = sign_entry(Entry(
+        thread="t1", author=hub["member_pub"], kind="post",
+        created_at="2026-01-01T00:00:00Z", body="please see attached",
+        blobs=[BlobRef(hash=blob_hash, media_type="application/octet-stream",
+                       size=len(payload), name="attachment.bin")],
+    ), hub["member_priv"])
+    r = hub["client"].post("/entries", json=_entry_payload(ev))
+    assert r.status_code == 200, r.text
+
+    # --- reader side ---
+    sync = hub["client"].get("/sync", params={"thread": "t1", "since": -1}).json()
+    received = next(e for e in sync["entries"] if e["id"] == ev.id)
+    # The entry survives the wire round-trip with sig+id intact.
+    reread = Entry(
+        thread=received["thread"], author=received["author"],
+        kind=received["kind"], created_at=received["created_at"],
+        body=received["body"],
+        parents=received["parents"],
+        blobs=[BlobRef(**b) for b in received["blobs"]],
+        supersedes=received["supersedes"],
+    )
+    reread.id = received["id"]; reread.sig = received["sig"]
+    assert verify_entry(reread) is True
+
+    # The reader pulls each referenced blob and re-hashes to confirm the
+    # bytes the hub returns are the bytes the author committed to.
+    for ref in reread.blobs:
+        bare = ref.hash.split(":", 1)[1]
+        body = hub["client"].get(f"/blobs/{bare}").content
+        assert "sha256:" + hashlib.sha256(body).hexdigest() == ref.hash
+        # ETag also commits to the address — defense in depth for caches.
+        head = hub["client"].get(f"/blobs/{bare}")
+        assert head.headers["ETag"] == f'"{ref.hash}"'
+
+    # And the blob store recorded the reference, ready for a future GC.
+    assert ev.id in hub["blobs"].references_for(blob_hash)
+    assert hub["blobs"].ref_count(blob_hash) == 1
 
 
 # ---- /admin/* (§7, §7.2.2) -------------------------------------------

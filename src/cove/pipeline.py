@@ -5,6 +5,9 @@ tamper-evidence, and throttle — build it test-first and review carefully.
 """
 from __future__ import annotations
 
+from typing import Optional
+
+from .blobs import BlobStore
 from .entry import Entry, verify_entry
 from .identity import Directory
 from .index import Overview, Ledger
@@ -23,13 +26,17 @@ class AcceptanceError(Exception):
 
 class Pipeline:
     def __init__(self, store: EventStore, directory: Directory, translog: TamperEvidentLog,
-                 overview: Overview, ledger: Ledger, throttler: Throttler) -> None:
+                 overview: Overview, ledger: Ledger, throttler: Throttler,
+                 blobs: Optional[BlobStore] = None) -> None:
         self.store = store
         self.directory = directory
         self.translog = translog
         self.overview = overview
         self.ledger = ledger
         self.throttler = throttler
+        # Optional in tests where the entry never references blobs; required
+        # in production for the strict step-7 blob-presence check.
+        self.blobs = blobs
 
     def accept(self, ev: Entry) -> int:
         """Run the §7.1 pipeline. Return assigned per-thread seq, or raise.
@@ -62,10 +69,19 @@ class Pipeline:
         # for now this is a structural placeholder (a no-op deny would block all posts).
         # TODO(membership-acl): consult overview/membership entries to gate non-members.
 
-        # 7. Parents must exist (or be in flight in the same batch — not modeled yet).
+        # 7. References must exist: parents in the entry store, blobs in the
+        # blob store. The blob-first ordering is deliberate (client-spec §3):
+        # 'whatever the code happens to do' is the worst answer — readers
+        # would receive verified entries pointing at 404s, and client authors
+        # would each discover the gap differently. Upload bytes, then post
+        # the entry that references them.
         for p in ev.parents:
             if not self.store.exists(p):
                 raise AcceptanceError(f"dangling parent {p}")
+        if self.blobs is not None:
+            for b in ev.blobs:
+                if not self.blobs.has(b.hash):
+                    raise AcceptanceError(f"unstored blob reference {b.hash}")
 
         # 8. Assign per-thread seq, persist, extend translog, materialize the new STH.
         # Store-before-log because the entry store is source of truth (§9); the log
@@ -77,6 +93,11 @@ class Pipeline:
         seq = self.store.append_atomic(ev)
         self.translog.append(ev.id, seq)
         sth = self.translog.current_sth()
+        # Record blob references AFTER the entry is durably in the store
+        # (so the ref's entry_id is real). This is the recording layer a
+        # future GC will key off — refcount checks, not log-scan archaeology.
+        if self.blobs is not None and ev.blobs:
+            self.blobs.record_references(ev.id, ev.blobs)
 
         # 9. Overview index + ledger (receipts only).
         self.overview.add(ev.thread, ev.id, ev.parents, seq)

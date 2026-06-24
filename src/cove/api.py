@@ -122,6 +122,12 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     # default to pipeline.throttler so existing callers don't need to pass it.
     if throttler is None:
         throttler = pipeline.throttler
+    # Pipeline step 7 strict-checks blob references against the blob store
+    # (client-spec §3 upload-before-post). If the caller passed a BlobStore
+    # without wiring it to pipeline, do that now so the strict check works
+    # end-to-end through POST /entries.
+    if blobs is not None and pipeline.blobs is None:
+        pipeline.blobs = blobs
     # Persist the seed manifest on the Directory so subsequent /directory
     # reads and /admin/* updates use a single source of truth.
     if directory is not None and directory_manifest is not None and directory.manifest is None:
@@ -319,6 +325,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         # Dedup before quota: identical bytes from any author resolve to the
         # same content-address and have already been paid for. This is the
         # spec's 'realistic dedup ≈ 35%' (§4) at work.
+        #
+        # TODO(multi-tenant): the dedup:True response is a PRESENCE ORACLE —
+        # an uploader can learn that someone ELSE already stored these bytes.
+        # Benign in a single-org pilot (one trust domain). When a second org
+        # shares a hub: scope dedup per-tenant AND return dedup:False (with
+        # a fresh charge) for cross-tenant matches so presence doesn't leak.
+        # See cove/blobs.py module docstring.
         h = "sha256:" + crypto.sha256_hex(content)
         if blobs.has(h):
             return {"hash": h, "size": len(content), "dedup": True}

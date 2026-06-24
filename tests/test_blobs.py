@@ -90,6 +90,61 @@ def test_client_can_reverify_content_address(store):
     assert "sha256:" + hashlib.sha256(got).hexdigest() == addr
 
 
+# ---- metadata + references (data layer for future tiering/GC) -------
+
+def test_put_records_metadata_row_with_size_and_first_seen(store):
+    """A future cold-tier pass moves bytes off-disk but keeps this row —
+    the hash + size are permanent proof-of-existence regardless of where
+    the bytes themselves live."""
+    content = b"meta-target"
+    addr = store.put(content)
+    meta = store.metadata(addr)
+    assert meta is not None
+    assert meta["hash"] == addr
+    assert meta["size"] == len(content)
+    assert meta["first_seen_at"] > 0
+
+
+def test_metadata_returns_none_for_unknown(store):
+    assert store.metadata("sha256:" + "ff" * 32) is None
+
+
+def test_record_references_tracks_referencing_entries(store):
+    """The recording layer a future refcount-driven GC will read from.
+    Two entries referencing the same blob -> ref_count == 2; an entry
+    referencing two blobs -> each blob's references_for has that entry."""
+    a = store.put(b"shared bytes")
+    b = store.put(b"other bytes")
+
+    # entry e1 references both blobs; entry e2 references only `a`.
+    store.record_references("sha256:e1", [
+        {"hash": a, "media_type": "image/png", "size": 11, "name": "a.png"},
+        {"hash": b, "media_type": "image/png", "size": 11, "name": "b.png"},
+    ])
+    store.record_references("sha256:e2", [
+        {"hash": a, "media_type": "application/octet-stream",
+         "size": 11, "name": "a-renamed"},
+    ])
+
+    assert sorted(store.references_for(a)) == ["sha256:e1", "sha256:e2"]
+    assert store.references_for(b) == ["sha256:e1"]
+    assert store.ref_count(a) == 2
+    assert store.ref_count(b) == 1
+    assert store.ref_count("sha256:" + "ff" * 32) == 0
+
+
+def test_record_references_is_idempotent_on_replay(store):
+    """A pipeline retry that re-records the same (blob, entry) pair must
+    not double-count — otherwise a future refcount-based GC would
+    incorrectly believe the blob has more references than it does."""
+    a = store.put(b"x")
+    store.record_references("sha256:e", [{"hash": a, "media_type": "x/y",
+                                          "size": 1, "name": "n"}])
+    store.record_references("sha256:e", [{"hash": a, "media_type": "x/y",
+                                          "size": 1, "name": "n"}])
+    assert store.ref_count(a) == 1
+
+
 @pytest.mark.parametrize("bad", [
     "",
     "deadbeef",                                    # missing prefix

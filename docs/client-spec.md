@@ -41,10 +41,10 @@ It must behave like a messaging app, not a portal: **push-native** (notification
 
 To post, reply, attach, edit, or change membership, the client constructs an entry per server-hub-spec §3, then:
 
-1. Assemble `content` (all fields except `id`, `sig`).
-2. Compute `id = "sha256:" + hex(sha256(JCS(content)))`.
-3. `sig = Ed25519_sign(priv, JCS(content))`.
-4. For attachments: upload bytes to `POST /blobs` first (content-addressed), then reference the returned hash in `entry.blobs`.
+1. **For attachments: upload bytes to `POST /blobs` FIRST**, capture the returned hash, and reference it in `entry.blobs`. The hub strict-checks blob presence at accept time — an entry whose `blobs` reference an unstored hash is rejected (`400 rejected, unstored blob reference …`), the same way a dangling parent is. This rule is normative; "post the entry, upload the bytes later" is not a supported ordering, even when offline-queued — the client MUST queue the blob upload first and gate the entry submission on its success.
+2. Assemble `content` (all fields except `id`, `sig`).
+3. Compute `id = "sha256:" + hex(sha256(JCS(content)))`.
+4. `sig = Ed25519_sign(priv, JCS(content))`.
 5. Submit via `POST /entries`.
 
 Patterns:
