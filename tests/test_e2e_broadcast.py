@@ -79,6 +79,62 @@ def _payload(ev: Entry) -> dict:
     return asdict(ev)
 
 
+def _bootstrap_hub_at(*, paths: dict, root_keypair, hub_keypair, members):
+    """Wire every module against a CALLER-PROVIDED set of paths so a test
+    can shut the process down and re-bootstrap against the same disk
+    layout — the restart-survival case.
+
+    `paths` carries `db`, `blobs`, `manifest_jsonl`. Returns the same
+    dict shape as `_bootstrap_hub`.
+    """
+    root_priv, root_pub = root_keypair
+    hub_priv, hub_pub = hub_keypair
+    attestations = [
+        issue_attestation(
+            root_priv, member_pubkey=pub, display_name=name,
+            unit=unit, role=role, issuer_pubkey=root_pub,
+            issued_at="2026-01-01T00:00:00+00:00",
+        )
+        for pub, name, unit, role in members
+    ]
+    seed_manifest = issue_directory(
+        root_priv, org=root_pub,
+        attestations=attestations, revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    store = EventStore(str(paths["db"]))
+    translog = TamperEvidentLog(hub_priv, hub_pub)
+    overview = Overview()
+    ledger = Ledger()
+
+    # Bootstrap pattern: load any prior chain from disk; if none, seed
+    # with the genesis manifest. Either way, attach persistence so
+    # subsequent admin updates write through.
+    directory = Directory.load_chain(paths["manifest_jsonl"])
+    if directory.manifest is None:
+        directory.update_from(seed_manifest)
+    directory.attach_persistence(paths["manifest_jsonl"])
+
+    throttler = Throttler()
+    blobs = BlobStore(str(paths["blobs"]))
+    pipeline = Pipeline(
+        store=store, directory=directory, translog=translog,
+        overview=overview, ledger=ledger, throttler=throttler, blobs=blobs,
+    )
+    auth = AuthService(directory=directory)
+    app = create_app(
+        pipeline=pipeline, store=store, translog=translog,
+        overview=overview, ledger=ledger, directory=directory,
+        directory_manifest=directory.manifest, auth=auth, blobs=blobs,
+    )
+    return {
+        "app": app, "store": store, "translog": translog,
+        "overview": overview, "ledger": ledger,
+        "directory": directory, "blobs": blobs, "auth": auth,
+        "pipeline": pipeline,
+    }
+
+
 def _bootstrap_hub(tmp_path, root_keypair, hub_keypair, members):
     """Wire every module against a tmp_path-rooted store + blob dir.
 
@@ -701,3 +757,184 @@ def test_revocation_mid_session_immediately_cuts_off_revoked_member(
     ), alice_priv)
     r = alice_client.post("/entries", json=_payload(later))
     assert r.status_code == 200
+
+
+def test_hub_state_survives_full_restart(tmp_path, root_keypair, hub_keypair):
+    """The lifecycle gap between 'passes tests' and 'survives a restart' —
+    closed end-to-end. Simulates a process that:
+
+      1. boots, takes some entries and an admin action, shuts down;
+      2. starts again against the same disk layout;
+      3. resumes with every guarantee intact — durable AND derived
+         state both reconciled before the first request.
+
+    What MUST survive the restart:
+
+      - the entry store (it's on disk — sanity check, not the property
+        under test)
+      - the translog head (rebuilt from the store via the lifespan
+        hook; verify_sth on the post-restart head plus inclusion
+        proofs for every pre-restart entry must verify)
+      - the overview index (rebuilt from store via the SAME lifespan
+        hook; /overview must return the threads it returned before)
+      - the directory chain INCLUDING admin updates that landed
+        between boots (persisted to JSONL; load_chain re-applies
+        through update_from so the chain check + revocation-superset
+        rules are re-verified on every load)
+
+    What does NOT survive (by design — operational, transient state
+    per §9): session tokens, throttle buckets, fan-out registry,
+    /admin/limits overrides. Clients re-authenticate on reconnect.
+    """
+    paths = {
+        "db": tmp_path / "hub.db",
+        "blobs": tmp_path / "blobs",
+        "manifest_jsonl": tmp_path / "directory.jsonl",
+    }
+
+    # === Boot 1: take some entries and an admin action, then shut down ===
+    board_priv, board_pub = crypto.generate_keypair()
+    alice_priv, alice_pub = crypto.generate_keypair()
+    bob_priv,   bob_pub   = crypto.generate_keypair()
+    extra_priv, extra_pub = crypto.generate_keypair()       # added mid-life
+
+    hub_a = _bootstrap_hub_at(
+        paths=paths, root_keypair=root_keypair, hub_keypair=hub_keypair,
+        members=[
+            (board_pub, "Board", "B-1", "board"),
+            (alice_pub, "Alice", "U-1", "member"),
+            (bob_pub,   "Bob",   "U-2", "member"),
+        ],
+    )
+    app_a = hub_a["app"]
+
+    board_client = _auth_client(app_a, board_priv, board_pub)
+    alice_client = _auth_client(app_a, alice_priv, alice_pub)
+    bob_client   = _auth_client(app_a, bob_priv,   bob_pub)
+
+    THREAD = "annual-meeting"
+    notice = sign_entry(Entry(
+        thread=THREAD, author=board_pub, kind="notice",
+        created_at="2026-06-15T18:00:00Z",
+        body="Annual meeting Wednesday 7pm in the clubhouse.",
+    ), board_priv)
+    notice_seq = board_client.post(
+        "/entries", json=_payload(notice),
+    ).json()["seq"]
+
+    # Receipts from alice and bob.
+    receipts = {}
+    for name, client, priv, pub in [
+        ("alice", alice_client, alice_priv, alice_pub),
+        ("bob",   bob_client,   bob_priv,   bob_pub),
+    ]:
+        observed = STH(**client.get("/sth").json())
+        receipts[name] = _post_receipt(
+            client, thread=THREAD, priv=priv, pub=pub,
+            high_water_seq=notice_seq,
+            observed_size=observed.tree_size,
+            observed_root=observed.root_hash,
+        )
+
+    # Admin action: extend the directory with a new attestation. This
+    # is the durability story that MUST survive — pre-restart admin
+    # updates that aren't persisted would be silently lost.
+    root_priv, root_pub = root_keypair
+    pre_restart_manifest = hub_a["directory"].manifest
+    att_extra = issue_attestation(
+        root_priv, member_pubkey=extra_pub, display_name="Dana",
+        unit="U-4", role="member", issuer_pubkey=root_pub,
+        issued_at="2026-06-15T18:05:00+00:00",
+    )
+    next_m = issue_directory(
+        root_priv, org=root_pub,
+        attestations=list(pre_restart_manifest.attestations) + [att_extra],
+        revocations=list(pre_restart_manifest.revocations),
+        updated_at="2026-06-15T18:05:01+00:00",
+        prev_manifest_hash=hash_manifest(pre_restart_manifest),
+    )
+    admin_resp = board_client.post("/admin/attest", json={
+        "manifest": _manifest_dict_for_wire(next_m),
+    })
+    assert admin_resp.status_code == 200
+
+    # Capture state for post-restart comparison.
+    pre_restart_sth = STH(**board_client.get("/sth").json())
+    pre_restart_overview = board_client.get(
+        "/overview", params={"thread": THREAD},
+    ).json()
+    pre_restart_chain_head_hash = hash_manifest(hub_a["directory"].manifest)
+
+    # Shut down — close the DB connection so we know the new boot
+    # is reading from disk and not piggybacking on the open handle.
+    hub_a["store"].close()
+    hub_a["blobs"].close()
+
+    # === Boot 2: same disk, fresh process ===
+    hub_b = _bootstrap_hub_at(
+        paths=paths, root_keypair=root_keypair, hub_keypair=hub_keypair,
+        # The bootstrap's `members` only matters when there's NO chain on
+        # disk (genesis case). Here load_chain finds the chain and uses
+        # it; the members arg is moot.
+        members=[
+            (board_pub, "Board", "B-1", "board"),
+            (alice_pub, "Alice", "U-1", "member"),
+            (bob_pub,   "Bob",   "U-2", "member"),
+        ],
+    )
+    app_b = hub_b["app"]
+
+    # Use TestClient as a context manager so the lifespan startup runs.
+    with TestClient(app_b) as client:
+        # Re-auth board for the gated read paths.
+        ch = client.post("/auth/challenge").json()
+        sig = crypto.sign(board_priv, ch["nonce"].encode())
+        tok = client.post("/auth/verify", json={
+            "pubkey": board_pub, "nonce": ch["nonce"], "sig": sig,
+        }).json()["token"]
+        client.headers["Authorization"] = f"Bearer {tok}"
+
+        # --- translog rebuilt from store ---
+        post_restart_sth = STH(**client.get("/sth").json())
+        assert post_restart_sth.tree_size == pre_restart_sth.tree_size
+        assert post_restart_sth.root_hash == pre_restart_sth.root_hash
+        assert verify_sth(post_restart_sth) is True
+
+        # Inclusion proofs for every pre-restart entry verify under
+        # the post-restart head — the rebuild reproduced the same tree.
+        for ev in (notice, receipts["alice"], receipts["bob"]):
+            seq = hub_b["store"].seq_of(ev.id)
+            proof = InclusionProof(**client.get(
+                "/proof/inclusion", params={"entry": ev.id},
+            ).json())
+            assert verify_inclusion(ev.id, seq, proof, post_restart_sth) is True
+
+        # --- overview rebuilt from store ---
+        post_restart_overview = client.get(
+            "/overview", params={"thread": THREAD},
+        ).json()
+        assert post_restart_overview == pre_restart_overview
+
+        # --- directory chain (admin updates) survived ---
+        # The chain head matches: the admin /admin/attest from boot 1
+        # is on disk and got loaded into the boot 2 chain.
+        assert hash_manifest(hub_b["directory"].manifest) == pre_restart_chain_head_hash
+        # The new attestation is queryable.
+        assert hub_b["directory"].resolve(extra_pub) is not None
+        # And the manifest history has both manifests.
+        assert len(hub_b["directory"].manifest_history()) == 2
+
+        # --- ledger derives from receipts in the store ---
+        # ledger.apply_receipt state is in-memory; we DON'T expect /ledger
+        # to be populated post-restart without re-applying receipts from
+        # the store. (Ledger reconcile is a separate slice; documented
+        # here so the absence isn't mysterious.)
+        status = client.get(
+            "/ledger", params={"entry": notice.id},
+        ).json()
+        # Without ledger-reconcile-from-store, acked is empty post-restart.
+        # The cryptographic evidence (the receipt entries themselves) is
+        # still durable in the store and inclusion-provable.
+        assert status["acked"] == []
+        for r in (receipts["alice"], receipts["bob"]):
+            assert hub_b["store"].exists(r.id)

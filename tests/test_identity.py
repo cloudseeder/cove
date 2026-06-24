@@ -227,6 +227,82 @@ def test_directory_from_manifest_loads_signed_state(root_keypair, keypair):
     assert d.is_revoked(other_pub) is True
 
 
+# ---- persistence (manifest chain JSONL) -----------------------------
+
+def test_directory_persistence_survives_full_reload(tmp_path, root_keypair, keypair):
+    """Genesis + admin update → close → reload from disk. The reloaded
+    Directory must have the same state AND the same chain history.
+    The chain on disk is re-walked through update_from on load, so
+    every loaded manifest passes sig + chain + revocation-superset
+    validation — a tampered file fails loudly at load time."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    extra_priv, extra_pub = crypto.generate_keypair()
+
+    att_m = _issue(root_priv, root_pub, member_pub, role="member")
+    seed = issue_directory(root_priv, org=root_pub,
+                           attestations=[att_m], revocations=[],
+                           updated_at="2026-06-01T00:00:00+00:00")
+
+    path = tmp_path / "directory.jsonl"
+    d1 = Directory.from_manifest(seed)
+    d1.attach_persistence(path)
+
+    # Admin update — adds extra as attested.
+    from cove.identity import hash_manifest
+    att_extra = _issue(root_priv, root_pub, extra_pub, role="member")
+    next_m = issue_directory(
+        root_priv, org=root_pub,
+        attestations=[att_m, att_extra], revocations=[],
+        updated_at="2026-06-15T00:00:00+00:00",
+        prev_manifest_hash=hash_manifest(seed),
+    )
+    d1.update_from(next_m)
+
+    # === reload ===
+    d2 = Directory.load_chain(path)
+    assert d2.resolve(member_pub) is not None
+    assert d2.resolve(extra_pub) is not None
+    assert len(d2.manifest_history()) == 2
+    # Chain integrity verified on load via update_from's chain check.
+    assert hash_manifest(d2.manifest_history()[-1]) == hash_manifest(next_m)
+
+
+def test_load_chain_detects_tampered_manifest_on_disk(tmp_path, root_keypair, keypair):
+    """If someone edits the JSONL chain (changes an attestation, etc.)
+    update_from's sig check during load fails — the load raises rather
+    than silently producing a Directory that doesn't match its own
+    audit trail."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    seed = issue_directory(root_priv, org=root_pub,
+                           attestations=[att], revocations=[],
+                           updated_at="2026-06-01T00:00:00+00:00")
+
+    path = tmp_path / "tampered.jsonl"
+    d = Directory.from_manifest(seed)
+    d.attach_persistence(path)
+
+    # Tamper with the on-disk record after-the-fact.
+    raw = path.read_text()
+    tampered = raw.replace('"member"', '"board"')   # privilege escalation
+    assert tampered != raw
+    path.write_text(tampered)
+
+    with pytest.raises(Exception):
+        Directory.load_chain(path)
+
+
+def test_load_chain_on_missing_path_yields_empty_directory(tmp_path):
+    """Bootstrap pattern: 'load_chain returns empty if no file; caller
+    then issues the seed manifest and calls attach_persistence to
+    start writing.'"""
+    d = Directory.load_chain(tmp_path / "doesnt-exist.jsonl")
+    assert d.manifest is None
+    assert d.manifest_history() == []
+
+
 def test_directory_from_manifest_rejects_invalid_sig(root_keypair, keypair):
     root_priv, root_pub = root_keypair
     _, member_pub = keypair

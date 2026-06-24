@@ -30,6 +30,7 @@ from .identity import (
     Attestation, Directory, DirectoryManifest,
     InvalidManifestSignatureError, RevocationDroppedError,
     Revocation, StaleManifestError, hash_manifest,
+    manifest_from_dict, manifest_to_dict,
 )
 from .index import Ledger, Overview
 from .pipeline import AcceptanceError, Pipeline
@@ -135,7 +136,15 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # Reconcile every derived in-memory view with the on-disk source of
+        # truth BEFORE serving the first request. Without this, a restart
+        # would serve /sth, /overview etc. against empty in-memory state
+        # while the store still has entries — wrong responses, not absent
+        # ones. The store, blob store, and (when persistence is attached)
+        # the directory chain handle their own durability; this loop
+        # rebuilds the things that don't.
         translog.rebuild(store.iter_global())
+        overview.rebuild(store.iter_overview_seed())
         yield
 
     api = FastAPI(title="Cove Hub", version="0.1.0", lifespan=lifespan)
@@ -475,29 +484,11 @@ def _entry_to_dict(ev: Entry) -> dict:
     return asdict(ev)
 
 
-def _manifest_to_dict(m: DirectoryManifest) -> dict:
-    return {
-        "org": m.org,
-        "attestations": [asdict(a) for a in m.attestations],
-        "revocations": [asdict(r) for r in m.revocations],
-        "updated_at": m.updated_at,
-        "prev_manifest_hash": m.prev_manifest_hash,
-        "sig": m.sig,
-    }
-
-
-def _manifest_from_dict(d: dict) -> DirectoryManifest:
-    """Wire JSON -> DirectoryManifest. Strict (no extras) because the body
-    is about to drive a state-mutating admin op — schema drift should fail
-    loudly here, not silently coerce."""
-    atts = [Attestation(**a) for a in d.get("attestations", []) or []]
-    revs = [Revocation(**r) for r in d.get("revocations", []) or []]
-    return DirectoryManifest(
-        org=d["org"], attestations=atts, revocations=revs,
-        updated_at=d.get("updated_at", ""),
-        prev_manifest_hash=d.get("prev_manifest_hash", "sha256:" + "0" * 64),
-        sig=d.get("sig", ""),
-    )
+# Wire (de)serialization lives in identity.py so the persistence layer
+# and the api use the same code path; the api just re-exports here for
+# call sites that were already using the private name.
+_manifest_to_dict = manifest_to_dict
+_manifest_from_dict = manifest_from_dict
 
 
 

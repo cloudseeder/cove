@@ -10,8 +10,10 @@ off `att.issuer`, not a global constant.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from . import crypto
@@ -96,6 +98,32 @@ def hash_manifest(m: DirectoryManifest) -> str:
     control in one mechanism."""
     body = {**_manifest_content(m), "sig": m.sig}
     return "sha256:" + crypto.sha256_hex(crypto.canonicalize(body))
+
+
+def manifest_to_dict(m: DirectoryManifest) -> dict:
+    """Wire/disk JSON form. Every signed field included so a round trip
+    preserves what the sig covers."""
+    return {
+        "org": m.org,
+        "attestations": [asdict(a) for a in m.attestations],
+        "revocations": [asdict(r) for r in m.revocations],
+        "updated_at": m.updated_at,
+        "prev_manifest_hash": m.prev_manifest_hash,
+        "sig": m.sig,
+    }
+
+
+def manifest_from_dict(d: dict) -> DirectoryManifest:
+    """Inverse of manifest_to_dict. Strict on required org field; lenient
+    defaults for optional ones, matching the dataclass."""
+    atts = [Attestation(**a) for a in d.get("attestations", []) or []]
+    revs = [Revocation(**r) for r in d.get("revocations", []) or []]
+    return DirectoryManifest(
+        org=d["org"], attestations=atts, revocations=revs,
+        updated_at=d.get("updated_at", ""),
+        prev_manifest_hash=d.get("prev_manifest_hash", _ZERO_PREV_MANIFEST),
+        sig=d.get("sig", ""),
+    )
 
 
 def _now() -> str:
@@ -195,8 +223,10 @@ class Directory:
         self._manifest: Optional[DirectoryManifest] = None
         # The audit chain: every manifest ever applied here, in order. Each
         # successive entry's `prev_manifest_hash` points at the prior one.
-        # In-memory for the pilot; persistence is a deferred upgrade.
         self._history: list[DirectoryManifest] = []
+        # When attached, every update_from also appends the manifest to
+        # this JSONL file so admin actions survive a process restart.
+        self._persist_path: Optional[Path] = None
         self._absorb(attestations or [], revocations or [])
 
     def _absorb(self, attestations: list[Attestation],
@@ -262,6 +292,52 @@ class Directory:
         self._absorb(m.attestations, m.revocations)
         self._manifest = m
         self._history.append(m)
+        if self._persist_path is not None:
+            with self._persist_path.open("a") as f:
+                f.write(json.dumps(manifest_to_dict(m)) + "\n")
+
+    def attach_persistence(self, path: Path) -> None:
+        """Persist every applied manifest as JSONL at `path`. Flushes the
+        current chain immediately so the on-disk state matches the
+        in-memory state at the moment of attachment. Subsequent update_from
+        calls append.
+
+        Use load_chain() to read a chain back in; this method is the
+        write side, separated so the production wiring can attach
+        persistence to a freshly-constructed Directory (genesis case)
+        or to one that loaded a chain (restart case) uniformly.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # Truncate-and-rewrite — atomic-ish via temp + rename so a crashed
+        # write doesn't corrupt the chain.
+        import os
+        tmp = path.with_name(path.name + ".tmp")
+        with tmp.open("w") as f:
+            for m in self._history:
+                f.write(json.dumps(manifest_to_dict(m)) + "\n")
+        os.replace(tmp, path)
+        self._persist_path = path
+
+    @classmethod
+    def load_chain(cls, path: Path) -> "Directory":
+        """Build a Directory by reading the JSONL chain at `path` and
+        applying each manifest in order via update_from — which means
+        every loaded manifest passes the same sig + chain + revocation-
+        superset checks the live admin path does.
+
+        If `path` doesn't exist, returns a fresh empty Directory. The
+        caller is responsible for calling attach_persistence to start
+        writing subsequent updates. Tampering with the on-disk chain is
+        detected: a bad sig or broken chain raises during load."""
+        d = cls()
+        if path.exists():
+            with path.open() as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    d.update_from(manifest_from_dict(json.loads(line)))
+        return d
 
     def manifest_history(self) -> list[DirectoryManifest]:
         """Append-only audit trail of every manifest applied here, in order.
