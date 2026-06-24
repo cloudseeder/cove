@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from cove import crypto
 from cove.api import create_app
+from cove.auth import AuthService
 from cove.entry import Entry, sign_entry
 from cove.identity import (
     Directory, Revocation, issue_attestation, issue_directory,
@@ -75,10 +76,12 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
     throttler = Throttler()
     pipeline = Pipeline(store=store, directory=directory, translog=translog,
                         overview=overview, ledger=ledger, throttler=throttler)
+    auth = AuthService(directory=directory)
 
     app = create_app(pipeline=pipeline, store=store, translog=translog,
                      overview=overview, ledger=ledger,
-                     directory=directory, directory_manifest=manifest)
+                     directory=directory, directory_manifest=manifest,
+                     auth=auth)
     return {
         "client": TestClient(app),
         "member_priv": member_priv, "member_pub": member_pub,
@@ -86,6 +89,7 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
         "root_pub": root_pub, "hub_pub": hub_pub,
         "store": store, "translog": translog,
         "overview": overview, "ledger": ledger,
+        "auth": auth,
     }
 
 
@@ -109,6 +113,81 @@ def test_healthz_ok(hub):
     r = hub["client"].get("/healthz")
     assert r.status_code == 200
     assert r.json()["status"] == "ok"
+
+
+# ---- /auth/challenge + /auth/verify (§5) -----------------------------
+
+def test_auth_challenge_returns_nonce_and_expiry(hub):
+    r = hub["client"].post("/auth/challenge")
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["nonce"]) == 64
+    assert body["expires_at"] > 0
+
+
+def test_auth_verify_happy_path_returns_bound_session(hub):
+    ch = hub["client"].post("/auth/challenge").json()
+    sig = crypto.sign(hub["member_priv"], ch["nonce"].encode())
+    r = hub["client"].post("/auth/verify", json={
+        "pubkey": hub["member_pub"],
+        "nonce": ch["nonce"],
+        "sig": sig,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["pubkey"] == hub["member_pub"]
+    assert len(body["token"]) == 64
+    # The minted token resolves on the service to the same pubkey.
+    assert hub["auth"].resolve_session(body["token"]) == hub["member_pub"]
+
+
+def test_auth_verify_bad_signature_returns_401(hub):
+    ch = hub["client"].post("/auth/challenge").json()
+    other_priv, _ = crypto.generate_keypair()
+    sig = crypto.sign(other_priv, ch["nonce"].encode())
+    r = hub["client"].post("/auth/verify", json={
+        "pubkey": hub["member_pub"], "nonce": ch["nonce"], "sig": sig,
+    })
+    assert r.status_code == 401
+    assert r.json()["error"] == "auth_failed"
+
+
+def test_auth_verify_unknown_pubkey_returns_401(hub):
+    """Pubkey not in directory — caught at verify, not at challenge,
+    so /auth/challenge doesn't leak membership."""
+    other_priv, other_pub = crypto.generate_keypair()
+    ch = hub["client"].post("/auth/challenge").json()
+    sig = crypto.sign(other_priv, ch["nonce"].encode())
+    r = hub["client"].post("/auth/verify", json={
+        "pubkey": other_pub, "nonce": ch["nonce"], "sig": sig,
+    })
+    assert r.status_code == 401
+
+
+def test_auth_verify_unknown_nonce_returns_401(hub):
+    """Replay defense — a nonce the hub never issued is rejected."""
+    sig = crypto.sign(hub["member_priv"], (b"\x00" * 32).hex().encode())
+    r = hub["client"].post("/auth/verify", json={
+        "pubkey": hub["member_pub"], "nonce": "00" * 32, "sig": sig,
+    })
+    assert r.status_code == 401
+
+
+def test_auth_verify_consumed_nonce_returns_401_on_replay(hub):
+    """Spec §5 single-use: a replay of a previously-used (nonce, sig)
+    must fail. The first call succeeds; the second is rejected."""
+    ch = hub["client"].post("/auth/challenge").json()
+    sig = crypto.sign(hub["member_priv"], ch["nonce"].encode())
+    payload = {"pubkey": hub["member_pub"], "nonce": ch["nonce"], "sig": sig}
+    assert hub["client"].post("/auth/verify", json=payload).status_code == 200
+    r2 = hub["client"].post("/auth/verify", json=payload)
+    assert r2.status_code == 401
+
+
+def test_auth_verify_missing_fields_returns_400(hub):
+    r = hub["client"].post("/auth/verify", json={})
+    assert r.status_code == 400
+    assert r.json()["error"] == "bad_request"
 
 
 # ---- POST /entries ---------------------------------------------------

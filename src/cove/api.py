@@ -17,6 +17,7 @@ from typing import Optional
 from fastapi import Body, FastAPI, Query
 from fastapi.responses import JSONResponse
 
+from .auth import AuthError, AuthService
 from .entry import BlobRef, Entry
 from .identity import Directory, DirectoryManifest
 from .index import Ledger, Overview
@@ -41,7 +42,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                translog: TamperEvidentLog, overview: Overview,
                ledger: Ledger,
                directory: Optional[Directory] = None,
-               directory_manifest: Optional[DirectoryManifest] = None) -> FastAPI:
+               directory_manifest: Optional[DirectoryManifest] = None,
+               auth: Optional[AuthService] = None) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
     `directory_manifest` is the signed wire form served by GET /directory.
@@ -65,6 +67,34 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     @api.get("/healthz")
     def healthz() -> dict:
         return {"status": "ok", "version": api.version}
+
+    # ---- POST /auth/challenge (§5) -------------------------------------
+    @api.post("/auth/challenge")
+    def auth_challenge():
+        if auth is None:
+            return _err(503, error="no_auth")
+        return asdict(auth.issue_challenge())
+
+    # ---- POST /auth/verify (§5) ----------------------------------------
+    @api.post("/auth/verify")
+    def auth_verify(body: dict = Body(...)):
+        if auth is None:
+            return _err(503, error="no_auth")
+        pubkey = body.get("pubkey")
+        nonce = body.get("nonce")
+        sig = body.get("sig")
+        if not (pubkey and nonce and sig):
+            return _err(400, error="bad_request",
+                        detail="pubkey, nonce, sig required")
+        try:
+            sess = auth.verify_and_issue_session(pubkey=pubkey, nonce=nonce, sig=sig)
+        except AuthError as e:
+            # The reason is included here for pilot debuggability; the auth
+            # module docstring notes production may want to flatten this to
+            # avoid leaking which check (nonce/sig/directory/revocation) failed.
+            return _err(401, error="auth_failed", reason=str(e))
+        return {"token": sess.token, "pubkey": sess.pubkey,
+                "expires_at": sess.expires_at}
 
     # ---- POST /entries (§7.1) -------------------------------------------
     @api.post("/entries")
