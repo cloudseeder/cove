@@ -250,6 +250,96 @@ def test_public_routes_remain_accessible_without_auth(hub):
     assert unauth.post("/auth/challenge").status_code == 200
 
 
+# ---- stream/sync reconciliation (client-spec §4.1) -------------------
+
+def test_subscribe_then_sync_catches_pre_subscribe_entries(hub):
+    """The accept→broadcast seam: an entry committed BEFORE the subscriber
+    joined /stream is not in any fan-out snapshot. The client-spec §4.1
+    reconciliation contract — subscribe first, then /sync from
+    last-known seq — catches it via the sync side. This is the union
+    invariant the joint protocol relies on: every committed entry is
+    in (stream messages received during this session) ∪ (sync results
+    from last-known seq), never neither.
+    """
+    last_known_seq = -1
+
+    # Entry committed before the client subscribes — models the race
+    # window between accept-commit and any later stream subscribe.
+    ev = _signed_post(hub["member_priv"], hub["member_pub"], body="pre-subscribe")
+    assert hub["client"].post("/entries", json=_entry_payload(ev)).status_code == 200
+
+    # §4.1 ordering: subscribe BEFORE syncing.
+    with hub["client"].websocket_connect("/stream") as ws:
+        sync = hub["client"].get(
+            "/sync", params={"thread": "t1", "since": last_known_seq}).json()
+        sync_ids = {e["id"] for e in sync["entries"]}
+
+    # The entry is recovered via the sync channel — the stream had nothing
+    # to deliver for an entry committed before this subscriber existed.
+    assert ev.id in sync_ids
+
+
+def test_stream_and_sync_overlap_is_dedupable_by_seq(hub):
+    """An entry committed AFTER subscribe arrives on /stream. The same
+    entry also shows up in a /sync covering the window (the channels
+    overlap by design). The dedup key the spec mandates — (thread, seq)
+    — must be identical on both channels for the dedup rule to be
+    implementable client-side."""
+    with hub["client"].websocket_connect("/stream") as ws:
+        ev = _signed_post(hub["member_priv"], hub["member_pub"], body="overlap")
+        post_seq = hub["client"].post(
+            "/entries", json=_entry_payload(ev)).json()["seq"]
+
+        # Stream side
+        stream_msg = ws.receive_json()
+        # Sync side covering the same window
+        sync_entries = hub["client"].get(
+            "/sync", params={"thread": "t1", "since": -1}).json()["entries"]
+
+    assert stream_msg["entry"]["id"] == ev.id
+    sync_hit = next(e for e in sync_entries if e["id"] == ev.id)
+
+    # The dedup key MUST be identical on both channels.
+    assert stream_msg["seq"] == post_seq
+    assert sync_hit["thread"] == ev.thread
+    assert stream_msg["entry"]["thread"] == sync_hit["thread"]
+
+
+def test_broadcast_failure_leaves_entry_durably_in_log(hub, monkeypatch):
+    """The asymmetric failure mode the user flagged: pipeline.accept()
+    commits durably, then fanout.broadcast() raises. Per client-spec
+    §4.1, this is the TOLERABLE failure direction — the entry is
+    committed, provable, and recoverable via /sync. The push miss is
+    benign so long as the client treats /stream as a latency optimization
+    over the log.
+
+    This test pins that property: even with a guaranteed broadcast
+    failure, POST /entries durably commits and the entry shows up in
+    /sync. The 'log is authoritative' rule is backed by mechanics, not
+    just docs.
+    """
+    from cove.api import FanOut
+
+    async def boom(self, payload):
+        raise RuntimeError("simulated push failure")
+    monkeypatch.setattr(FanOut, "broadcast", boom)
+
+    # POST surfaces the 500 (no silent drops — broadcast failures show up
+    # in the response, just like the spec rule says they're not silent).
+    client = TestClient(hub["app"], raise_server_exceptions=False)
+    client.headers["Authorization"] = hub["client"].headers["Authorization"]
+    ev = _signed_post(hub["member_priv"], hub["member_pub"], body="broadcast-fails")
+    r = client.post("/entries", json=_entry_payload(ev))
+    assert r.status_code == 500
+
+    # But the entry IS durably in the log — committed before broadcast ran.
+    assert hub["store"].exists(ev.id)
+    # And recoverable via /sync, which is what the client-spec contract
+    # promises clients can rely on.
+    sync = client.get("/sync", params={"thread": "t1", "since": -1}).json()
+    assert any(e["id"] == ev.id for e in sync["entries"])
+
+
 # ---- WS /stream (§7, §7.1 step 10) -----------------------------------
 
 def test_stream_rejects_without_token(hub):

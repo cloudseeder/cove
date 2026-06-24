@@ -66,12 +66,26 @@ Hitting `rate`/`volume` under *normal* use should be rare; if a member hits it c
 
 ## 4. Sync and live push
 
-- Maintain a per-thread **high-water `seq`** locally, plus the **last verified STH** (Signed Tree Head, server-hub-spec §6.4).
-- On connect: `GET /sync?thread={id}&since={seq}` for each active thread — delta-sync only what's new.
-- **Verify the tamper-evident log on sync.** Fetch `GET /sth`; verify the hub's signature on it; then `GET /proof/consistency?from={last_size}&to={new_size}` and verify the log only **grew** (append-only — no rewrite, reorder, or deletion of previously-seen entries). Store the new STH as the last verified head. A failed consistency proof is a hard alarm: the hub has tampered with history — surface it, do not silently proceed.
-- Subscribe to `WS /stream` for live pushed entries. New entries arrive without polling; the client raises a native notification.
-- **Offline:** queue outbound entries locally; submit on reconnect. Inbound caught up via delta-sync.
-- This is what makes it feel like iMessage and not like logging into the HOA portal: the message comes to the member, on the device, now.
+The hub provides two delivery channels for accepted entries: durable `GET /sync` (authoritative) and best-effort `WS /stream` (live push). Correctness is a **joint property** of how the client combines them. Neither channel is correct alone, and the server cannot close the gap without the client doing its half.
+
+### 4.1 Reconciliation contract (normative)
+
+These rules MUST be followed; without them, the live-push + durable-log architecture has a lost-update window that the server cannot close from its side.
+
+- **The log is authoritative; `/stream` is a latency optimization over `/sync`.** A client MUST NOT treat absence on the stream as proof of non-existence. Every entry of consequence is recoverable via `/sync`.
+- **Subscribe BEFORE syncing.** On (re)connect, open `WS /stream` FIRST, then `GET /sync?since={last_known_seq}` — in that order. The opposite order has a window between sync-completion and stream-connect during which an accepted entry is delivered on neither channel.
+- **Dedupe by `(thread, seq)`.** The channels overlap by design: an entry committed in the window between subscribe and sync arrives on both. The `(thread, seq)` pair is the dedup key.
+- **Treat a broadcast miss as benign.** The server may fail to push an entry it has already committed (e.g. transient I/O on the fan-out path). The next `/sync` recovers it; do not surface the absence as an error.
+
+Maintain per-thread **high-water `seq`** locally + the **last verified STH** (Signed Tree Head, server-hub-spec §6.4). The high-water seq is the `since=` parameter on the next sync; the STH anchors the consistency proof.
+
+### 4.2 Verify the tamper-evident log on every sync
+
+Fetch `GET /sth`; verify the hub's signature on it; then `GET /proof/consistency?from={last_size}&to={new_size}` and verify the log only **grew** (append-only — no rewrite, reorder, or deletion of previously-seen entries). Store the new STH as the last verified head. A failed consistency proof is a hard alarm: the hub has tampered with history — surface it, do not silently proceed.
+
+### 4.3 Offline
+
+Queue outbound entries locally; submit on reconnect. Inbound is caught up via the §4.1 reconciliation. This is what makes it feel like iMessage and not like logging into the HOA portal: the message comes to the member, on the device, now.
 
 ---
 
