@@ -82,6 +82,21 @@ class EventStore:
              content_bytes, ev.sig),
         )
 
+    def append_atomic(self, ev: Entry) -> int:
+        """Atomic 'assign next per-thread seq + persist'. Spec §6: 'seq must be
+        assigned atomically with append.' Returns the assigned seq.
+
+        If the INSERT fails, the cached next_seq is NOT advanced — a failed
+        append cannot burn a seq number and leave a hole in the line. This is
+        what the pipeline uses; the two-step (next_seq + append) is kept for
+        callers that already hold a seq.
+        """
+        with self._lock:
+            seq = self._next_seq.get(ev.thread, 0)
+            self.append(ev, seq)
+            self._next_seq[ev.thread] = seq + 1
+            return seq
+
     # ---- reads ----------------------------------------------------------
     def get(self, entry_id: str) -> Optional[Entry]:
         row = self._conn.execute(
@@ -117,6 +132,19 @@ class EventStore:
             (thread, seq),
         ).fetchall()
         return [_row_to_entry(r) for r in rows]
+
+    def iter_global(self) -> Iterable[tuple[str, int]]:
+        """(entry_id, seq) for every accepted entry, in GLOBAL acceptance order.
+
+        Drives translog rebuild (§9 integrity rule). SQLite's implicit rowid
+        is monotonic in insertion order, so ORDER BY rowid IS the acceptance
+        sequence — even across threads, even with thread-local seq resetting
+        to 0 each thread.
+        """
+        rows = self._conn.execute(
+            "SELECT id, seq FROM entries ORDER BY rowid"
+        ).fetchall()
+        return [(r[0], int(r[1])) for r in rows]
 
 
 # ---- (de)serialization --------------------------------------------------

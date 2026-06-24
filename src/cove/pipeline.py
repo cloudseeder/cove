@@ -71,8 +71,10 @@ class Pipeline:
         # Store-before-log because the entry store is source of truth (§9); the log
         # leaf commits to (id, per-thread seq) so the hub cannot later equivocate
         # about either the entry or the seq it assigned (§6.4.1).
-        seq = self.store.next_seq(ev.thread)
-        self.store.append(ev, seq)
+        # append_atomic gives us (seq, persist) as one operation per §6 — a failed
+        # persist cannot burn a seq number. A translog failure AFTER persist is
+        # recoverable via TamperEvidentLog.rebuild from store.iter_global.
+        seq = self.store.append_atomic(ev)
         self.translog.append(ev.id, seq)
         sth = self.translog.current_sth()
 

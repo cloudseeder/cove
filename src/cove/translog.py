@@ -161,6 +161,22 @@ class TamperEvidentLog:
         self._leaves.append(hash_leaf(entry_id, seq))
         self._index[entry_id] = len(self._leaves) - 1
 
+    def rebuild(self, entries) -> None:
+        """Replace state from the source-of-truth entry stream. Spec §9
+        rebuild rule: the store is canonical, the translog is derived.
+
+        `entries` is an iterable yielding (entry_id, seq) in GLOBAL acceptance
+        order (`EventStore.iter_global()` provides this from rowid). Resets
+        the STH chain so the post-rebuild first STH chains from genesis again
+        — recovery scenarios don't pretend an STH was issued for a head that
+        the operator is repairing.
+        """
+        self._leaves.clear()
+        self._index.clear()
+        self._last_sth = None
+        for entry_id, seq in entries:
+            self.append(entry_id, seq)
+
     def current_sth(self) -> STH:
         """Compute root, chain prev_sth_hash, sign with hub key. Spec §6.4.1."""
         size = len(self._leaves)

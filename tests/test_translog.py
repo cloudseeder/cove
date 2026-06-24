@@ -53,6 +53,45 @@ def test_consistency_proof_holds_for_append_only_growth(log):
     assert verify_consistency(proof, old, new) is True
 
 
+def test_rebuild_replaces_state_from_source_of_truth(log):
+    """§9 integrity rule: the translog is derived from the entry store.
+    rebuild() must wipe prior state and reproduce the same root as if the
+    entries had been append()'d in the same order."""
+    _append_n(log, 5)
+    canonical_sth = log.current_sth()
+    canonical_root = canonical_sth.root_hash
+
+    # Corrupt with extra leaves.
+    log.append(entry_id="sha256:" + "cc" * 32, seq=99)
+    log.append(entry_id="sha256:" + "dd" * 32, seq=98)
+    assert log.current_sth().root_hash != canonical_root
+
+    # Rebuild from the canonical entry stream (what store.iter_global returns).
+    log.rebuild([(f"sha256:{i:064x}", i) for i in range(5)])
+    new_sth = log.current_sth()
+    assert new_sth.tree_size == 5
+    assert new_sth.root_hash == canonical_root
+
+
+def test_rebuild_resets_sth_chain_to_genesis(log):
+    """After rebuild, prev_sth_hash chains from the zero sentinel — the
+    operator is repairing the head, not pretending an earlier STH covered it."""
+    _append_n(log, 3)
+    log.current_sth()                                         # establish chain
+    log.rebuild([(f"sha256:{i:064x}", i) for i in range(3)])
+    sth = log.current_sth()
+    assert sth.prev_sth_hash == "sha256:" + "0" * 64
+
+
+def test_rebuilt_translog_serves_valid_inclusion_proof(log):
+    """The point of rebuild: post-recovery, inclusion proofs work again."""
+    log.rebuild([(f"sha256:{i:064x}", i) for i in range(4)])
+    sth = log.current_sth()
+    target = f"sha256:{2:064x}"
+    proof = log.inclusion_proof(target)
+    assert verify_inclusion(target, 2, proof, sth) is True
+
+
 def test_consistency_detects_rewrite(log, hub_keypair):
     """A new STH whose history is NOT a superset of the old must fail consistency.
 

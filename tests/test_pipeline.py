@@ -57,6 +57,12 @@ class StubStore:
         self._by_id[ev.id] = ev
         self.appended.append((ev.id, seq))
 
+    def append_atomic(self, ev: Entry) -> int:
+        seq = self._next_seq.get(ev.thread, 0)
+        self.append(ev, seq)
+        self._next_seq[ev.thread] = seq + 1
+        return seq
+
     def exists(self, entry_id: str) -> bool:
         return entry_id in self._by_id
 
