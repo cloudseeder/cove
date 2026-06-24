@@ -19,16 +19,25 @@ accountable for.
 
 ```
 src/
-  lib/cove/       # the TS verification + client library
-    types.ts       # wire types mirroring src/cove/entry.py et al.
-    crypto.ts      # sha256, Ed25519, RFC 8785 JCS canonicalization
-    verify.ts      # verifyEntry / verifySth / verifyInclusion / verifyDirectoryManifest
-    fixtures.json  # captured from the Python ref via scripts/dump_test_vectors.py
-    verify.test.ts # vitest — pins TS↔Python byte-identity
-    Seal.svelte    # the verification ceremony component (3 states)
-  routes/          # SvelteKit pages
+  lib/cove/          # the TS verification + client library
+    types.ts          # wire types mirroring src/cove/entry.py et al.
+    crypto.ts         # sha256, Ed25519, RFC 8785 JCS canonicalization
+    verify.ts         # verifyEntry / verifySth / verifyInclusion / verifyDirectoryManifest
+    errors.ts         # AuthenticationError / VerificationError / ClientError
+    client.ts         # Client class: auth + sync + post + WS subscribe
+    state.svelte.ts   # AppState — reactive Svelte 5 wrapper around Client
+    fixtures.json     # captured from the Python ref via scripts/dump_test_vectors.py
+    verify.test.ts    # vitest — pins TS↔Python byte-identity (21)
+    client.test.ts    # vitest — Client with mocked fetch + WebSocket (9)
+    Seal.svelte       # the verification ceremony component (3 states)
+    EntryCard.svelte  # a single VerifiedEntry rendered with its Seal
+  routes/             # SvelteKit pages
     +layout.svelte
-    +page.svelte   # current demo: Seal in all states against a fixture entry
+    +page.svelte      # main app: AuthPanel ↔ ThreadView based on auth state
+    AuthPanel.svelte  # hub URL + keypair → connect
+    ThreadView.svelte # live feed with the ceremony per entry
+    ComposeBox.svelte # ⌘⏎ to send; no optimistic insert
+    demo/+page.svelte # offline Seal showcase against fixtures.json
 src-tauri/         # Rust shell (minimal in slice 1)
   src/main.rs
   Cargo.toml
@@ -39,12 +48,16 @@ src-tauri/         # Rust shell (minimal in slice 1)
 
 - **Slice 1 (done):** project scaffold, TS verification library matching
   the Python reference, vitest contract suite, Seal ceremony component
-  + static demo page.
-- **Slice 2 (next):** `Client` TS class — auth + sync + post against a
-  running hub. Auth + thread UI. Live `/stream` subscription via
-  `EventSource` / `WebSocket`.
-- **Slice 3:** Tauri Rust layer for keychain custody, background subscription
-  hosting, native notifications. Native build + distribution.
+  + offline fixtures demo.
+- **Slice 2 (done):** `Client` TS class with auth + sync + post + WS
+  subscribe, the full §5 verification chain on every entry. Svelte
+  state (AppState class with $state runes), AuthPanel (paste or drop a
+  `.priv`+`.pub` pair → connect), ThreadView (live feed with the seal
+  ceremony per entry), ComposeBox (⌘⏎ to send). Demo route at `/demo`
+  for the offline Seal showcase.
+- **Slice 3 (next):** Tauri Rust layer for keychain custody (private
+  key never leaves OS keychain), background WS subscription with
+  native notifications, native build + distribution.
 
 ## Build / dev
 
@@ -66,8 +79,21 @@ pnpm install
 
 ```bash
 pnpm dev         # SvelteKit dev server on :1420
-pnpm test:run    # vitest — verification math contract
+pnpm test:run    # vitest — verification math contract + Client behaviour (30 cases)
 ```
+
+### Trying it against a running hub
+
+1. From the repo root, with the Python venv active:
+   ```bash
+   python scripts/gen_keys.py --kind member --name alice --out ~/cove-keys/
+   ```
+2. Boot the hub (a full bootstrap script lands in a later slice;
+   for now use `tests/test_e2e_broadcast.py`'s `_bootstrap_hub_at` as
+   the reference wiring or run uvicorn against your own factory).
+3. `pnpm dev`, open `http://localhost:1420`.
+4. Drop `~/cove-keys/alice.priv` and `~/cove-keys/alice.pub` into the
+   AuthPanel, point at your hub URL, connect.
 
 ### Desktop window (Rust required)
 

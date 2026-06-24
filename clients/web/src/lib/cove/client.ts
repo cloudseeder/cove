@@ -1,0 +1,365 @@
+/**
+ * Cove TS client — counterpart to src/cove/client/client.py.
+ *
+ * Holds the member keypair + local state, talks to a hub. The full
+ * client-spec §5 verification chain runs on every entry on the way out
+ * of sync() / verify() / subscribe() — UI never re-implements the math
+ * and never sees an unverified entry except as a VerificationError it
+ * has to render as broken.
+ *
+ * What's NOT here (slice-2 deliberately):
+ *   - on-disk persistence (session + high-water + last STH live in
+ *     memory; slice 3 puts them in Tauri's secure storage).
+ *   - throttle backoff queueing — 429 surfaces as ClientError.
+ *   - blob fetch with re-hash verify.
+ */
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
+import { sha256 } from '@noble/hashes/sha256';
+
+import { AuthenticationError, ClientError, VerificationError } from './errors';
+import { canonicalize, sign } from './crypto';
+import {
+  verifyDirectoryManifest, verifyEntry, verifyInclusion, verifySth,
+} from './verify';
+import type {
+  Attestation, DirectoryManifest, Entry, InclusionProof, STH,
+} from './types';
+
+export interface VerifiedEntry {
+  entry: Entry;
+  seq: number;
+  sth: STH;
+  inclusionProof: InclusionProof;
+  attestation: Attestation;
+}
+
+/** Convenience read-only view of the verification chain for ceremony reveal. */
+export function sigSummary(ve: VerifiedEntry): string {
+  return (
+    `Signed by ${ve.attestation.display_name} (${ve.attestation.role})`
+    + ` → verified against root ${ve.attestation.issuer.slice(0, 8)}…`
+    + ` → inclusion proof position ${ve.inclusionProof.leaf_index}`
+    + ` of ${ve.sth.tree_size}`
+  );
+}
+
+export interface ClientOptions {
+  hubUrl: string;
+  privateKey: string;
+  publicKey: string;
+  /** Override for tests; defaults to globalThis.fetch. */
+  fetch?: typeof fetch;
+  /** Override for tests; defaults to globalThis.WebSocket. */
+  WebSocket?: typeof WebSocket;
+}
+
+export class Client {
+  readonly hubUrl: string;
+  readonly publicKey: string;
+  private priv: string;
+  private fetchImpl: typeof fetch;
+  private WebSocketImpl: typeof WebSocket;
+
+  private sessionToken: string | null = null;
+  private sessionExpiresAt: number | null = null;
+  private directory: DirectoryManifest | null = null;
+  private directoryView: DirectoryView | null = null;
+  private lastSth: STH | null = null;
+  private highWater: Map<string, number> = new Map();
+
+  constructor(opts: ClientOptions) {
+    this.hubUrl = opts.hubUrl.replace(/\/+$/, '');
+    this.priv = opts.privateKey;
+    this.publicKey = opts.publicKey;
+    this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
+    this.WebSocketImpl = opts.WebSocket ?? globalThis.WebSocket;
+  }
+
+  // ---- introspection -------------------------------------------------
+  get authenticated(): boolean {
+    return (
+      this.sessionToken !== null
+      && (this.sessionExpiresAt ?? 0) * 1000 > Date.now()
+    );
+  }
+
+  highWaterFor(thread: string): number {
+    return this.highWater.get(thread) ?? -1;
+  }
+
+  // ---- auth (§5) -----------------------------------------------------
+  async authenticate(): Promise<string> {
+    const ch = await this.requestJson('POST', '/auth/challenge');
+    const sig = sign(this.priv, utf8ToBytes(ch.nonce));
+    const resp = await this.fetchImpl(this.hubUrl + '/auth/verify', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pubkey: this.publicKey, nonce: ch.nonce, sig }),
+    });
+    if (resp.status !== 200) {
+      const body = await safeJson(resp);
+      throw new AuthenticationError(body.reason ?? `auth_verify_failed: ${resp.status}`);
+    }
+    const body = await resp.json();
+    this.sessionToken = body.token;
+    this.sessionExpiresAt = body.expires_at;
+    return body.token;
+  }
+
+  // ---- directory + STH ----------------------------------------------
+  async fetchDirectory(): Promise<DirectoryManifest> {
+    const m = (await this.requestJson('GET', '/directory')) as DirectoryManifest;
+    if (!verifyDirectoryManifest(m)) {
+      throw new VerificationError('directory manifest signature invalid');
+    }
+    this.directory = m;
+    this.directoryView = buildDirectoryView(m);
+    return m;
+  }
+
+  async fetchSth(): Promise<STH> {
+    const sth = (await this.requestJson('GET', '/sth')) as STH;
+    if (!verifySth(sth)) {
+      throw new VerificationError('STH signature invalid — pinned hub key check failed');
+    }
+    this.lastSth = sth;
+    return sth;
+  }
+
+  // ---- sync (§7 + client-spec §4.1 + §5) ----------------------------
+  async sync(thread: string): Promise<VerifiedEntry[]> {
+    this.requireAuth();
+    if (this.directory === null) await this.fetchDirectory();
+    const sth = await this.fetchSth();
+
+    const since = this.highWaterFor(thread);
+    const params = new URLSearchParams({ thread, since: String(since) });
+    const data = await this.requestJson('GET', `/sync?${params}`);
+    const items = data.entries as Array<{ entry: Entry; seq: number }>;
+
+    const verified: VerifiedEntry[] = [];
+    for (const item of items) {
+      verified.push(await this.verify(item.entry, item.seq, sth));
+    }
+
+    if (verified.length > 0) {
+      const maxSeq = verified.reduce((m, v) => Math.max(m, v.seq), -1);
+      this.highWater.set(thread, Math.max(this.highWaterFor(thread), maxSeq));
+    }
+    return verified;
+  }
+
+  /** Standalone verification — used by subscribe() to verify pushed entries. */
+  async verify(entry: Entry, seq: number, sthArg?: STH): Promise<VerifiedEntry> {
+    this.requireAuth();
+    if (this.directory === null) await this.fetchDirectory();
+    const sth = sthArg ?? this.lastSth ?? await this.fetchSth();
+
+    // 1+2. id + sig (recomputes id, verifies sig over canonical content).
+    if (!verifyEntry(entry)) {
+      throw new VerificationError(`entry ${entry.id} id/sig invalid`);
+    }
+
+    // 3. directory resolution.
+    const att = this.directoryView!.resolve(entry.author);
+    if (att === null) {
+      throw new VerificationError(`author ${entry.author} not attested`);
+    }
+
+    // 4. revocation as-of entry time. §2.3: entries signed BEFORE revocation
+    // remain valid; entries signed AFTER are rejected.
+    if (this.directoryView!.isRevoked(entry.author, entry.created_at)) {
+      throw new VerificationError(
+        `author ${entry.author} was revoked as-of ${entry.created_at}`,
+      );
+    }
+
+    // 5. inclusion proof under the current STH.
+    const proof = await this.fetchInclusionProof(entry.id!);
+    if (!verifyInclusion(entry.id!, seq, proof, sth)) {
+      throw new VerificationError(
+        `inclusion proof failed for ${entry.id} under sth size=${sth.tree_size}`,
+      );
+    }
+
+    return { entry, seq, sth, inclusionProof: proof, attestation: att };
+  }
+
+  // ---- post (§3) -----------------------------------------------------
+  async post(entry: Entry): Promise<number> {
+    this.requireAuth();
+    const signed = entry.id && entry.sig ? entry : this.signEntry(entry);
+    const resp = await this.requestJson('POST', '/entries', signed);
+    return resp.seq as number;
+  }
+
+  /** Receipt assembly + sign + post in one call (§8 + §6.4.3). */
+  async postReceipt(opts: {
+    thread: string;
+    highWaterSeq: number;
+    observedSth: STH;
+  }): Promise<number> {
+    const ev: Entry = {
+      thread: opts.thread,
+      author: this.publicKey,
+      kind: 'receipt',
+      created_at: new Date().toISOString(),
+      parents: [],
+      body: '',
+      blobs: [],
+      supersedes: null,
+      receipt: {
+        high_water_seq: opts.highWaterSeq,
+        observed_sth_size: opts.observedSth.tree_size,
+        observed_sth_root: opts.observedSth.root_hash,
+      },
+      id: null,
+      sig: null,
+    };
+    return this.post(ev);
+  }
+
+  // ---- subscribe (§7 WS /stream + §4.1) -----------------------------
+  /**
+   * Open a /stream WebSocket and verify every pushed entry through the
+   * full §5 chain before invoking onEntry. Returns a teardown function.
+   *
+   * Use this AFTER an initial sync() so the high-water is set; per
+   * client-spec §4.1 the canonical ordering is subscribe-then-sync,
+   * but here we expose just the subscribe primitive — UI orchestrates
+   * the order.
+   */
+  subscribe(
+    thread: string,
+    onEntry: (ve: VerifiedEntry) => void,
+    onError?: (err: Error) => void,
+  ): () => void {
+    this.requireAuth();
+    const wsUrl = new URL(this.hubUrl.replace(/^http/, 'ws') + '/stream');
+    // Browsers can't set custom headers on WS handshake — the hub
+    // accepts ?token= as a fallback.
+    wsUrl.searchParams.set('token', this.sessionToken!);
+    const ws = new this.WebSocketImpl(wsUrl.toString());
+
+    ws.onmessage = async (event) => {
+      try {
+        const msg = JSON.parse(typeof event.data === 'string'
+          ? event.data
+          : await new Response(event.data as Blob).text());
+        if (msg.type !== 'entry') return;
+        const ve = await this.verify(msg.entry as Entry, msg.seq as number);
+        if (ve.entry.thread !== thread) return;
+        // Advance high-water as we go, so a later sync() doesn't redeliver.
+        this.highWater.set(thread, Math.max(this.highWaterFor(thread), ve.seq));
+        onEntry(ve);
+      } catch (err) {
+        onError?.(err as Error);
+      }
+    };
+    ws.onerror = () => onError?.(new ClientError('WebSocket error'));
+
+    return () => {
+      try {
+        ws.close();
+      } catch {
+        // already closed; ignore
+      }
+    };
+  }
+
+  // ---- internals -----------------------------------------------------
+  private requireAuth(): void {
+    if (!this.authenticated) {
+      throw new AuthenticationError('not authenticated; call authenticate() first');
+    }
+  }
+
+  private signEntry(entry: Entry): Entry {
+    const content: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(entry)) {
+      if (k !== 'id' && k !== 'sig') content[k] = v;
+    }
+    const canonical = canonicalize(content);
+    const id = 'sha256:' + bytesToHex(sha256(canonical));
+    const sig = sign(this.priv, canonical);
+    return { ...entry, id, sig };
+  }
+
+  private async fetchInclusionProof(entryId: string): Promise<InclusionProof> {
+    const params = new URLSearchParams({ entry: entryId });
+    const resp = await this.fetchImpl(
+      `${this.hubUrl}/proof/inclusion?${params}`,
+      { headers: this.authHeaders() },
+    );
+    if (resp.status !== 200) {
+      throw new VerificationError(
+        `no inclusion proof for ${entryId} (status ${resp.status})`,
+      );
+    }
+    return await resp.json();
+  }
+
+  private async requestJson(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+  ): Promise<any> {
+    const init: RequestInit = { method, headers: this.authHeaders() };
+    if (body !== undefined) {
+      (init.headers as Record<string, string>)['content-type'] = 'application/json';
+      init.body = JSON.stringify(body);
+    }
+    const resp = await this.fetchImpl(this.hubUrl + path, init);
+    if (resp.status >= 400) {
+      const err = await safeJson(resp);
+      throw new ClientError(`${path} returned ${resp.status}: ${JSON.stringify(err)}`);
+    }
+    return await resp.json();
+  }
+
+  private authHeaders(): Record<string, string> {
+    return this.sessionToken
+      ? { authorization: `Bearer ${this.sessionToken}` }
+      : {};
+  }
+}
+
+// ---- directory view (resolve + revocation lookups) ------------------
+interface DirectoryView {
+  resolve(pubkey: string): Attestation | null;
+  isRevoked(pubkey: string, asOf?: string): boolean;
+}
+
+function buildDirectoryView(m: DirectoryManifest): DirectoryView {
+  // Latest attestation per pubkey (by issued_at).
+  const attMap = new Map<string, Attestation>();
+  for (const a of m.attestations) {
+    const cur = attMap.get(a.member_pubkey);
+    if (!cur || a.issued_at > cur.issued_at) attMap.set(a.member_pubkey, a);
+  }
+  // EARLIEST revocation per pubkey — keys can't be un-revoked.
+  const revMap = new Map<string, { revoked_at: string }>();
+  for (const r of m.revocations) {
+    const cur = revMap.get(r.pubkey);
+    if (!cur || r.revoked_at < cur.revoked_at) revMap.set(r.pubkey, r);
+  }
+  return {
+    resolve(pk) {
+      return attMap.get(pk) ?? null;
+    },
+    isRevoked(pk, asOf) {
+      const r = revMap.get(pk);
+      if (!r) return false;
+      if (asOf === undefined) return true;
+      return asOf >= r.revoked_at;
+    },
+  };
+}
+
+async function safeJson(resp: Response): Promise<any> {
+  try {
+    return await resp.json();
+  } catch {
+    return {};
+  }
+}
