@@ -133,6 +133,21 @@ class EventStore:
         ).fetchall()
         return [_row_to_entry(r) for r in rows]
 
+    def since_with_seq(self, thread: str, seq: int) -> list[tuple[Entry, int]]:
+        """Same as since() but returns (Entry, per-thread seq) pairs.
+
+        Clients need the seq to recompute the leaf hash hash_leaf(id, seq)
+        for inclusion-proof verification — the leaf commits to BOTH the
+        entry id and its per-thread seq (§6.4.1). /sync uses this to
+        return entries enriched with seq.
+        """
+        rows = self._conn.execute(
+            "SELECT id, content, sig, seq FROM entries WHERE thread=? AND seq>?"
+            " ORDER BY seq",
+            (thread, seq),
+        ).fetchall()
+        return [(_row_to_entry((r[0], r[1], r[2])), int(r[3])) for r in rows]
+
     def iter_global(self) -> Iterable[tuple[str, int]]:
         """(entry_id, seq) for every accepted entry, in GLOBAL acceptance order.
 

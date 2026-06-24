@@ -414,7 +414,8 @@ def test_blob_to_entry_binding_round_trips_through_signature(hub):
 
     # --- reader side ---
     sync = hub["client"].get("/sync", params={"thread": "t1", "since": -1}).json()
-    received = next(e for e in sync["entries"] if e["id"] == ev.id)
+    item = next(e for e in sync["entries"] if e["entry"]["id"] == ev.id)
+    received = item["entry"]
     # The entry survives the wire round-trip with sig+id intact.
     reread = Entry(
         thread=received["thread"], author=received["author"],
@@ -783,7 +784,7 @@ def test_subscribe_then_sync_catches_pre_subscribe_entries(hub):
     with hub["client"].websocket_connect("/stream") as ws:
         sync = hub["client"].get(
             "/sync", params={"thread": "t1", "since": last_known_seq}).json()
-        sync_ids = {e["id"] for e in sync["entries"]}
+        sync_ids = {e["entry"]["id"] for e in sync["entries"]}
 
     # The entry is recovered via the sync channel — the stream had nothing
     # to deliver for an entry committed before this subscriber existed.
@@ -808,12 +809,12 @@ def test_stream_and_sync_overlap_is_dedupable_by_seq(hub):
             "/sync", params={"thread": "t1", "since": -1}).json()["entries"]
 
     assert stream_msg["entry"]["id"] == ev.id
-    sync_hit = next(e for e in sync_entries if e["id"] == ev.id)
+    sync_hit = next(e for e in sync_entries if e["entry"]["id"] == ev.id)
 
-    # The dedup key MUST be identical on both channels.
-    assert stream_msg["seq"] == post_seq
-    assert sync_hit["thread"] == ev.thread
-    assert stream_msg["entry"]["thread"] == sync_hit["thread"]
+    # The dedup key MUST be identical on both channels — same shape too:
+    # both wrap as {"entry": ..., "seq": ...}.
+    assert stream_msg["seq"] == post_seq == sync_hit["seq"]
+    assert stream_msg["entry"]["thread"] == sync_hit["entry"]["thread"] == ev.thread
 
 
 def test_broadcast_failure_leaves_entry_durably_in_log(hub, monkeypatch):
@@ -848,7 +849,7 @@ def test_broadcast_failure_leaves_entry_durably_in_log(hub, monkeypatch):
     # And recoverable via /sync, which is what the client-spec contract
     # promises clients can rely on.
     sync = client.get("/sync", params={"thread": "t1", "since": -1}).json()
-    assert any(e["id"] == ev.id for e in sync["entries"])
+    assert any(e["entry"]["id"] == ev.id for e in sync["entries"])
 
 
 # ---- WS /stream (§7, §7.1 step 10) -----------------------------------
@@ -1030,15 +1031,20 @@ def test_sync_returns_entries_strictly_after_since(hub):
         ids.append(ev.id)
     r = hub["client"].get("/sync", params={"thread": "t1", "since": 0})
     assert r.status_code == 200
-    got = [e["id"] for e in r.json()["entries"]]
+    got = [e["entry"]["id"] for e in r.json()["entries"]]
     assert got == ids[1:]   # seq 0 excluded, 1 and 2 returned
+    # Each item carries seq alongside the entry — matches the WS push shape.
+    seqs = [e["seq"] for e in r.json()["entries"]]
+    assert seqs == [1, 2]
 
 
 def test_sync_from_beginning_with_since_minus_one(hub):
     ev = _signed_post(hub["member_priv"], hub["member_pub"])
     hub["client"].post("/entries", json=_entry_payload(ev))
     r = hub["client"].get("/sync", params={"thread": "t1", "since": -1})
-    assert [e["id"] for e in r.json()["entries"]] == [ev.id]
+    items = r.json()["entries"]
+    assert [e["entry"]["id"] for e in items] == [ev.id]
+    assert [e["seq"] for e in items] == [0]
 
 
 # ---- GET /sth --------------------------------------------------------

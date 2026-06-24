@@ -313,7 +313,7 @@ def test_broadcast_notice_path_end_to_end(tmp_path, root_keypair, hub_keypair):
         alice_resync = alice_client.get("/sync", params={
             "thread": THREAD, "since": alice_last_seq,
         }).json()["entries"]
-        assert any(e["id"] == notice.id for e in alice_resync)
+        assert any(e["entry"]["id"] == notice.id for e in alice_resync)
 
         # 7. Each member verifies origin end-to-end.
         for push, client in [(alice_push, alice_client),

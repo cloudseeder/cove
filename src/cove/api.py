@@ -230,7 +230,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     @api.get("/sync")
     def get_sync(thread: str = Query(...), since: int = Query(...),
                  _caller: str = Depends(require_session)) -> dict:
-        entries = [_entry_to_dict(ev) for ev in store.since(thread, since)]
+        # Each item shape: {"entry": <signed entry>, "seq": <per-thread seq>}.
+        # Matches the WS push payload — clients write one merge / dedup path
+        # over both channels (client-spec §4.1).
+        entries = [
+            {"entry": _entry_to_dict(ev), "seq": s}
+            for ev, s in store.since_with_seq(thread, since)
+        ]
         return {"thread": thread, "since": since, "entries": entries}
 
     # ---- GET /overview (§6) --------------------------------------------
