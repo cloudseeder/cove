@@ -22,8 +22,9 @@ from . import crypto
 from .auth import AuthError, AuthService
 from .entry import BlobRef, Entry
 from .identity import (
-    Attestation, Directory, DirectoryManifest, Revocation,
-    verify_directory_manifest,
+    Attestation, Directory, DirectoryManifest,
+    InvalidManifestSignatureError, RevocationDroppedError,
+    Revocation, StaleManifestError, hash_manifest,
 )
 from .index import Ledger, Overview
 from .pipeline import AcceptanceError, Pipeline
@@ -314,14 +315,23 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             new_m = _manifest_from_dict(m)
         except (TypeError, KeyError, ValueError) as e:
             return _err(400, error="bad_manifest", detail=str(e))
-        if not verify_directory_manifest(new_m):
-            return _err(400, error="invalid_signature")
         if directory is None:
             return _err(503, error="no_directory")
-        directory.update_from(new_m)
+        try:
+            directory.update_from(new_m)
+        except InvalidManifestSignatureError as e:
+            return _err(400, error="invalid_signature", detail=str(e))
+        except StaleManifestError as e:
+            # 409 Conflict — the admin tool built this on a stale base; it
+            # should re-pull /directory (head moved) and rebuild.
+            return _err(409, error="stale_manifest", detail=str(e),
+                        current_head=hash_manifest(directory.manifest))
+        except RevocationDroppedError as e:
+            return _err(409, error="revocation_dropped", detail=str(e))
         return {"updated_at": new_m.updated_at,
                 "attestations": len(new_m.attestations),
-                "revocations": len(new_m.revocations)}
+                "revocations": len(new_m.revocations),
+                "manifest_hash": hash_manifest(new_m)}
 
     @api.post("/admin/attest")
     def admin_attest(body: dict = Body(...)):
@@ -332,6 +342,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         return _apply_manifest(body)
 
     # POST /admin/limits — per-identity throttle override (§7.2.2)
+    # Intentionally asymmetric to /admin/attest+revoke: limit overrides
+    # are PROCESS-LOCAL throttle state (Throttler._overrides) and
+    # EVAPORATE on restart, while attest/revoke is durable in the
+    # manifest chain. This is by design — a temporary 'raise the board's
+    # limit for the annual mailing' should not silently persist beyond
+    # the deploy that set it. If you need a durable limit change, push
+    # it as a config update, not a runtime override.
     @api.post("/admin/limits")
     def admin_limits(body: dict = Body(...)):
         if directory is None or directory.manifest is None:
@@ -402,6 +419,7 @@ def _manifest_to_dict(m: DirectoryManifest) -> dict:
         "attestations": [asdict(a) for a in m.attestations],
         "revocations": [asdict(r) for r in m.revocations],
         "updated_at": m.updated_at,
+        "prev_manifest_hash": m.prev_manifest_hash,
         "sig": m.sig,
     }
 
@@ -414,7 +432,9 @@ def _manifest_from_dict(d: dict) -> DirectoryManifest:
     revs = [Revocation(**r) for r in d.get("revocations", []) or []]
     return DirectoryManifest(
         org=d["org"], attestations=atts, revocations=revs,
-        updated_at=d.get("updated_at", ""), sig=d.get("sig", ""),
+        updated_at=d.get("updated_at", ""),
+        prev_manifest_hash=d.get("prev_manifest_hash", "sha256:" + "0" * 64),
+        sig=d.get("sig", ""),
     )
 
 

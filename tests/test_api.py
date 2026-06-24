@@ -27,7 +27,8 @@ from cove.api import create_app
 from cove.auth import AuthService
 from cove.entry import Entry, sign_entry
 from cove.identity import (
-    Attestation, Directory, Revocation, issue_attestation, issue_directory,
+    Attestation, Directory, Revocation, hash_manifest,
+    issue_attestation, issue_directory,
 )
 from cove.config import TIERS
 from cove.index import Ledger, Overview
@@ -256,32 +257,46 @@ def test_public_routes_remain_accessible_without_auth(hub):
 
 # ---- /admin/* (§7, §7.2.2) -------------------------------------------
 
+def _chained(hub, *, attestations, revocations, updated_at):
+    """Build a root-signed manifest that chains to the current directory head.
+    Convenience for admin tests — exactly what an admin tool would do
+    after pulling /directory and computing hash_manifest on the response.
+    """
+    return issue_directory(
+        hub["root_priv"], org=hub["root_pub"],
+        attestations=attestations, revocations=revocations,
+        updated_at=updated_at,
+        prev_manifest_hash=hash_manifest(hub["directory"].manifest),
+    )
+
+
 def test_admin_attest_replaces_directory_with_new_signed_manifest(hub):
     """The admin tool (offline) builds a new manifest including the new
-    attestation and root-signs it. POST /admin/attest receives the signed
-    manifest; the hub validates and replaces its in-memory directory.
-    The hub itself never touches the root key — non-negotiable #1."""
-    # New member, attested by the same root.
+    attestation, chains it via prev_manifest_hash, and root-signs it.
+    POST /admin/attest receives the signed manifest; the hub validates
+    chain + sig and replaces its in-memory directory. The hub itself
+    never touches the root key — non-negotiable #1."""
+    current = hub["directory"].manifest
     new_priv, new_pub = crypto.generate_keypair()
     att_new = issue_attestation(
         hub["root_priv"], member_pubkey=new_pub, display_name="Carol",
         unit="U-3", role="member", issuer_pubkey=hub["root_pub"],
         issued_at="2026-06-01T00:00:00+00:00",
     )
-    new_manifest = issue_directory(
-        hub["root_priv"], org=hub["root_pub"],
-        attestations=[hub["att_member"], att_new], revocations=[],
+    new_manifest = _chained(
+        hub,
+        attestations=list(current.attestations) + [att_new],
+        revocations=list(current.revocations),     # carry forward
         updated_at="2026-06-15T00:00:00+00:00",
     )
 
     r = hub["client"].post("/admin/attest", json={"manifest": _manifest_dict(new_manifest)})
     assert r.status_code == 200, r.text
-    assert r.json()["attestations"] == 2
+    assert r.json()["manifest_hash"] == hash_manifest(new_manifest)
 
     # The directory now resolves the new member; AuthService — which holds
     # the SAME Directory object — sees the update too (no stale reference).
     assert hub["directory"].resolve(new_pub) is not None
-    # And the manifest the hub serves is the new one.
     served = hub["client"].get("/directory").json()
     assert any(a["member_pubkey"] == new_pub for a in served["attestations"])
 
@@ -307,30 +322,186 @@ def test_admin_revoke_propagates_through_to_session_gate(hub):
     gated request on the previously-valid session is denied. Backs the
     'revocation has immediate effect on the running system' invariant
     from the auth slice."""
-    # The session is currently valid.
     assert hub["client"].get("/directory").status_code == 200
 
-    # Admin tool builds a new manifest WITH a revocation for member_pub.
+    current = hub["directory"].manifest
     rev = Revocation(pubkey=hub["member_pub"],
                      revoked_at="2026-06-15T00:00:00+00:00",
                      reason="key compromise")
-    new_manifest = issue_directory(
-        hub["root_priv"], org=hub["root_pub"],
-        attestations=[hub["att_member"]], revocations=[rev],
+    new_manifest = _chained(
+        hub,
+        attestations=list(current.attestations),
+        revocations=list(current.revocations) + [rev],
         updated_at="2026-06-15T00:00:00+00:00",
     )
     r = hub["client"].post("/admin/revoke", json={"manifest": _manifest_dict(new_manifest)})
     assert r.status_code == 200
-
-    # Same client, same token — now denied (resolve_session checks
-    # is_revoked, which sees the new revocation through the same Directory
-    # object reference).
+    # Same client, same token — now denied.
     assert hub["client"].get("/directory").status_code == 401
 
 
 def test_admin_attest_missing_payload_returns_400(hub):
     r = hub["client"].post("/admin/attest", json={})
     assert r.status_code == 400
+
+
+def test_admin_rejects_stale_manifest_so_concurrent_updates_do_not_silently_lose(hub):
+    """Two officers, two manifests built from the same starting point;
+    whichever POSTs second was built on a stale base. Without chain
+    enforcement, the second silently overwrites the first under a valid
+    root signature — exactly the failure mode that turns into a
+    governance dispute about whose action 'really' happened. The chain
+    check turns 'last-writer-silently-wins' into 'stale update rejected,
+    admin re-pulls and re-applies'."""
+    current = hub["directory"].manifest
+
+    # Two admin actions built atop the SAME prior state.
+    carol_priv, carol_pub = crypto.generate_keypair()
+    att_carol = issue_attestation(
+        hub["root_priv"], member_pubkey=carol_pub, display_name="Carol",
+        unit="U-3", role="member", issuer_pubkey=hub["root_pub"],
+        issued_at="2026-06-01T00:00:00+00:00",
+    )
+    dave_priv, dave_pub = crypto.generate_keypair()
+    att_dave = issue_attestation(
+        hub["root_priv"], member_pubkey=dave_pub, display_name="Dave",
+        unit="U-4", role="member", issuer_pubkey=hub["root_pub"],
+        issued_at="2026-06-01T00:00:01+00:00",
+    )
+    m_carol = _chained(
+        hub,
+        attestations=list(current.attestations) + [att_carol],
+        revocations=list(current.revocations),
+        updated_at="2026-06-15T00:00:00+00:00",
+    )
+    m_dave = _chained(
+        hub,
+        attestations=list(current.attestations) + [att_dave],
+        revocations=list(current.revocations),
+        updated_at="2026-06-15T00:00:01+00:00",
+    )
+    # m_carol lands first.
+    r1 = hub["client"].post("/admin/attest", json={"manifest": _manifest_dict(m_carol)})
+    assert r1.status_code == 200
+    # m_dave was built atop the same prior head — now stale. Must be rejected,
+    # not silently overwrite Carol.
+    r2 = hub["client"].post("/admin/attest", json={"manifest": _manifest_dict(m_dave)})
+    assert r2.status_code == 409
+    assert r2.json()["error"] == "stale_manifest"
+    # The response hands the admin tool the current head so it can rebuild.
+    assert r2.json()["current_head"] == hash_manifest(hub["directory"].manifest)
+    # State: Carol survives, Dave was never added.
+    assert hub["directory"].resolve(carol_pub) is not None
+    assert hub["directory"].resolve(dave_pub) is None
+
+
+def test_admin_rejects_manifest_that_drops_a_prior_revocation(hub):
+    """A new manifest that omits a prior tombstone must be rejected.
+    Otherwise an admin could silently un-revoke a key by submitting a
+    manifest 'cleansed' of an inconvenient revocation — the equivalent
+    of editing the audit log."""
+    current = hub["directory"].manifest
+    extra_priv, extra_pub = crypto.generate_keypair()
+    rev_extra = Revocation(pubkey=extra_pub,
+                           revoked_at="2026-06-10T00:00:00+00:00",
+                           reason="test")
+    m_with_rev = _chained(
+        hub,
+        attestations=list(current.attestations),
+        revocations=list(current.revocations) + [rev_extra],
+        updated_at="2026-06-10T00:00:01+00:00",
+    )
+    r1 = hub["client"].post("/admin/revoke", json={"manifest": _manifest_dict(m_with_rev)})
+    assert r1.status_code == 200, r1.text
+
+    # Now an admin tries to push a manifest that drops rev_extra.
+    head = hub["directory"].manifest
+    m_drop = issue_directory(
+        hub["root_priv"], org=hub["root_pub"],
+        attestations=list(head.attestations),
+        revocations=[r for r in head.revocations if r.pubkey != extra_pub],
+        updated_at="2026-06-11T00:00:00+00:00",
+        prev_manifest_hash=hash_manifest(head),
+    )
+    r2 = hub["client"].post("/admin/revoke", json={"manifest": _manifest_dict(m_drop)})
+    assert r2.status_code == 409
+    assert r2.json()["error"] == "revocation_dropped"
+
+
+def test_directory_manifest_history_is_walkable_and_chains(hub):
+    """The chain doubles as audit history: after multiple admin actions,
+    every transition is preserved with the root signature that authorized
+    it. A governance dispute can walk the chain to see who revoked whom,
+    when, and under whose root sig. Each entry's prev_manifest_hash must
+    match the prior entry's hash — the chain integrity is verifiable."""
+    history_before = len(hub["directory"].manifest_history())
+
+    for i in range(3):
+        new_priv, new_pub = crypto.generate_keypair()
+        att_new = issue_attestation(
+            hub["root_priv"], member_pubkey=new_pub, display_name=f"M{i}",
+            unit=f"U-{i}", role="member", issuer_pubkey=hub["root_pub"],
+            issued_at=f"2026-06-1{i}T00:00:00+00:00",
+        )
+        current = hub["directory"].manifest
+        m_new = _chained(
+            hub,
+            attestations=list(current.attestations) + [att_new],
+            revocations=list(current.revocations),
+            updated_at=f"2026-06-1{i}T00:00:01+00:00",
+        )
+        assert hub["client"].post("/admin/attest",
+                                  json={"manifest": _manifest_dict(m_new)}
+                                  ).status_code == 200
+
+    history = hub["directory"].manifest_history()
+    assert len(history) == history_before + 3
+    # Chain integrity: each manifest commits to its predecessor's hash.
+    for i in range(1, len(history)):
+        assert history[i].prev_manifest_hash == hash_manifest(history[i - 1])
+
+
+def test_pre_revocation_entry_remains_verifiable_after_revoke_lands(hub):
+    """§2.3: 'events signed before a key's revocation remain verifiable.'
+    The revoke test proves FUTURE requests are blocked. This is the other
+    half — protecting HISTORY, not restricting the future.
+
+    The pilot's whole audit story depends on this property. If a member
+    leaves and we revoke them, the board's signed paper trail with them
+    must NOT retroactively become 'unverifiable' — that would let any
+    revocation event delete the historical record."""
+    # Member signs an entry while still attested.
+    pre = sign_entry(Entry(
+        thread="t1", author=hub["member_pub"], kind="post",
+        created_at="2026-05-01T00:00:00+00:00",     # well before revocation
+        body="historical record",
+    ), hub["member_priv"])
+    assert hub["client"].post("/entries", json=_entry_payload(pre)).status_code == 200
+
+    # Admin revokes the member at a LATER time.
+    current = hub["directory"].manifest
+    rev = Revocation(pubkey=hub["member_pub"],
+                     revoked_at="2026-06-15T00:00:00+00:00",
+                     reason="left the board")
+    m_rev = _chained(
+        hub,
+        attestations=list(current.attestations),
+        revocations=list(current.revocations) + [rev],
+        updated_at="2026-06-15T00:00:01+00:00",
+    )
+    # Need a fresh client because the member's session is about to die.
+    unauth = TestClient(hub["app"])
+    assert unauth.post("/admin/revoke",
+                       json={"manifest": _manifest_dict(m_rev)}).status_code == 200
+
+    # The directory now reports the member as currently revoked.
+    assert hub["directory"].is_revoked(hub["member_pub"]) is True
+    # BUT as-of the pre-revocation entry's created_at, they were not.
+    assert hub["directory"].is_revoked(
+        hub["member_pub"], as_of=pre.created_at) is False
+    # And the entry itself still verifies — no fields tampered.
+    from cove.entry import verify_entry
+    assert verify_entry(pre) is True
 
 
 # ---- /admin/limits (§7.2.2) ------------------------------------------
@@ -389,13 +560,16 @@ def test_admin_limits_rejects_unknown_tier(hub):
 
 
 def _manifest_dict(m) -> dict:
-    """Convenience for tests — wire-format dict from a DirectoryManifest."""
+    """Convenience for tests — wire-format dict from a DirectoryManifest.
+    Must include every signed field, or the sig fails to verify after
+    a round trip through JSON."""
     from dataclasses import asdict
     return {
         "org": m.org,
         "attestations": [asdict(a) for a in m.attestations],
         "revocations": [asdict(r) for r in m.revocations],
         "updated_at": m.updated_at,
+        "prev_manifest_hash": m.prev_manifest_hash,
         "sig": m.sig,
     }
 

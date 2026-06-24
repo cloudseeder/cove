@@ -16,6 +16,8 @@ from typing import Optional
 
 from . import crypto
 
+_ZERO_PREV_MANIFEST = "sha256:" + "0" * 64
+
 
 @dataclass
 class Attestation:
@@ -39,12 +41,38 @@ class Revocation:
 
 @dataclass
 class DirectoryManifest:
-    """The signed directory wire format (§2.3)."""
+    """The signed directory wire format (§2.3).
+
+    Every manifest commits to its predecessor via `prev_manifest_hash` —
+    the genesis manifest uses the zero sentinel ('sha256:000...0'). The
+    chain serves two jobs at once: optimistic-concurrency control (a
+    stale update is detectable as 'this prev_hash isn't the current
+    head') and an append-only audit trail of admin actions (you can
+    walk the chain back through every directory change).
+    """
     org: str                        # root pubkey
     attestations: list[Attestation] = field(default_factory=list)
     revocations: list[Revocation] = field(default_factory=list)
     updated_at: str = ""
+    prev_manifest_hash: str = _ZERO_PREV_MANIFEST
     sig: str = ""                   # root sig over canonical(manifest minus sig)
+
+
+# ---- exceptions -------------------------------------------------------
+class InvalidManifestSignatureError(ValueError):
+    """Root signature doesn't verify against m.org."""
+
+
+class StaleManifestError(ValueError):
+    """Manifest's prev_manifest_hash doesn't match the current head — the
+    admin tool built it on a stale base and a newer update has landed in
+    between. Re-pull the current manifest and rebuild."""
+
+
+class RevocationDroppedError(ValueError):
+    """New manifest is missing a revocation from the prior one — a key
+    that was tombstoned cannot be un-tombstoned by submitting a manifest
+    'cleansed' of it. The admin tool must carry forward prior revocations."""
 
 
 # ---- signing payloads (everything except `sig`) -------------------------
@@ -58,7 +86,16 @@ def _manifest_content(m: DirectoryManifest) -> dict:
         "attestations": [asdict(a) for a in m.attestations],
         "revocations": [asdict(r) for r in m.revocations],
         "updated_at": m.updated_at,
+        "prev_manifest_hash": m.prev_manifest_hash,
     }
+
+
+def hash_manifest(m: DirectoryManifest) -> str:
+    """Content-and-sig hash. The next manifest's `prev_manifest_hash`
+    points here, chaining the audit history and giving concurrency
+    control in one mechanism."""
+    body = {**_manifest_content(m), "sig": m.sig}
+    return "sha256:" + crypto.sha256_hex(crypto.canonicalize(body))
 
 
 def _now() -> str:
@@ -106,13 +143,22 @@ def verify_attestation(att: Attestation) -> bool:
 def issue_directory(root_private_hex: str, *, org: str,
                     attestations: list[Attestation],
                     revocations: list[Revocation],
-                    updated_at: Optional[str] = None) -> DirectoryManifest:
-    """Build and sign a directory manifest with the ROOT key. Admin-tool only."""
+                    updated_at: Optional[str] = None,
+                    prev_manifest_hash: str = _ZERO_PREV_MANIFEST,
+                    ) -> DirectoryManifest:
+    """Build and sign a directory manifest with the ROOT key. Admin-tool only.
+
+    `prev_manifest_hash` defaults to the genesis sentinel — pass the
+    current head's hash (from `hash_manifest`) for any non-genesis update.
+    The hub will reject an update whose prev hash doesn't match its current
+    head (StaleManifestError, §2.3 concurrency control).
+    """
     m = DirectoryManifest(
         org=org,
         attestations=list(attestations),
         revocations=list(revocations),
         updated_at=updated_at or _now(),
+        prev_manifest_hash=prev_manifest_hash,
         sig="",
     )
     m.sig = crypto.sign(root_private_hex, crypto.canonicalize(_manifest_content(m)))
@@ -147,6 +193,10 @@ class Directory:
         # first revocation is the binding one for any historical lookup.
         self._revoked: dict[str, Revocation] = {}
         self._manifest: Optional[DirectoryManifest] = None
+        # The audit chain: every manifest ever applied here, in order. Each
+        # successive entry's `prev_manifest_hash` points at the prior one.
+        # In-memory for the pilot; persistence is a deferred upgrade.
+        self._history: list[DirectoryManifest] = []
         self._absorb(attestations or [], revocations or [])
 
     def _absorb(self, attestations: list[Attestation],
@@ -165,15 +215,61 @@ class Directory:
         return self._manifest
 
     def update_from(self, m: DirectoryManifest) -> None:
-        """Replace internal state from a verified manifest. Caller MUST have
-        already validated the manifest (verify_directory_manifest); this
-        method trusts it. Mutates in place so existing references — most
-        importantly AuthService's `self._dir` — stay valid across an
-        admin-driven /admin/attest or /admin/revoke."""
+        """Apply a manifest update with full validation:
+
+          1. Root signature verifies (InvalidManifestSignatureError).
+          2. Chain check: `m.prev_manifest_hash` matches `hash_manifest`
+             of the current head — rejects a stale-base submission
+             (StaleManifestError). Skipped on the genesis load (no
+             current head yet).
+          3. Revocation-superset: every prior `(pubkey, revoked_at)`
+             tombstone must appear in the new manifest's revocations
+             (RevocationDroppedError). Prevents accidental un-revocation
+             via a manifest 'cleansed' of prior revocations.
+
+        On success, mutates in place — existing references to this
+        Directory (AuthService._dir, /ledger's directory, etc.) stay
+        valid across the update. The full manifest is appended to
+        the audit chain (manifest_history()).
+
+        Note on §2.3 as-of-time semantics: revocations carry their
+        own `revoked_at`. Replacing state does NOT change the
+        `revoked_at` of a preserved revocation, so an entry signed
+        before that timestamp is still 'not revoked as of then',
+        and historical inclusion-verified entries from a now-revoked
+        member remain valid.
+        """
+        if not verify_directory_manifest(m):
+            raise InvalidManifestSignatureError("manifest signature invalid")
+
+        if self._manifest is not None:
+            expected = hash_manifest(self._manifest)
+            if m.prev_manifest_hash != expected:
+                raise StaleManifestError(
+                    f"prev_manifest_hash {m.prev_manifest_hash} does not chain "
+                    f"to current head {expected}"
+                )
+            prior = {(r.pubkey, r.revoked_at) for r in self._manifest.revocations}
+            new = {(r.pubkey, r.revoked_at) for r in m.revocations}
+            dropped = prior - new
+            if dropped:
+                raise RevocationDroppedError(
+                    f"new manifest is missing {len(dropped)} prior revocation(s)"
+                )
+
         self._by_key.clear()
         self._revoked.clear()
         self._absorb(m.attestations, m.revocations)
         self._manifest = m
+        self._history.append(m)
+
+    def manifest_history(self) -> list[DirectoryManifest]:
+        """Append-only audit trail of every manifest applied here, in order.
+        Each successive entry chains to its predecessor via
+        `prev_manifest_hash` — a governance dispute can walk this chain
+        to see who attested or revoked whom, when, and under whose root
+        signature. Returns a copy so callers can iterate safely."""
+        return list(self._history)
 
     def resolve(self, pubkey: str) -> Optional[Attestation]:
         """Return the current attestation for a key, or None. Caller checks revocation/expiry."""
@@ -203,9 +299,9 @@ class Directory:
 
     @classmethod
     def from_manifest(cls, m: DirectoryManifest) -> "Directory":
-        """Verify the manifest end-to-end then construct the in-memory view."""
-        if not verify_directory_manifest(m):
-            raise ValueError("directory manifest signature invalid")
+        """Seed a fresh Directory from a manifest. The chain check is
+        skipped (this IS the genesis from the in-memory view's perspective)
+        but the signature still must verify."""
         d = cls()
         d.update_from(m)
         return d
