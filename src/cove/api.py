@@ -10,6 +10,7 @@ get their own isolated app and production wires real deps.
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Optional
 
@@ -46,8 +47,20 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     `directory_manifest` is the signed wire form served by GET /directory.
     `directory` is the in-memory view used by /ledger to enumerate members.
     Both are optional — endpoints that need them return 503 when absent.
+
+    The lifespan reconciles the in-memory translog against the on-disk store
+    BEFORE serving the first request. The translog isn't persisted in the
+    pilot (translog-notes §6 'don't over-engineer'); the store is canonical
+    and the translog is derived. Without this reconcile, a process restart
+    would serve /sth + /proof/* against an empty tree even though the store
+    is non-empty — wrong proofs, not absent ones.
     """
-    api = FastAPI(title="Cove Hub", version="0.1.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        translog.rebuild(store.iter_global())
+        yield
+
+    api = FastAPI(title="Cove Hub", version="0.1.0", lifespan=lifespan)
 
     @api.get("/healthz")
     def healthz() -> dict:

@@ -310,3 +310,79 @@ def test_ledger_partitions_members_into_acked_and_not(hub):
 def test_ledger_404_for_unknown_entry(hub):
     r = hub["client"].get("/ledger", params={"entry": "sha256:" + "ff" * 32})
     assert r.status_code == 404
+
+
+# ---- restart path: lifespan rebuilds the translog from the store ----
+
+def test_startup_reconciles_in_memory_translog_with_on_disk_store(
+        tmp_path, hub_keypair, root_keypair, keypair):
+    """The translog isn't persisted (translog-notes §6); on process restart
+    the in-memory tree is empty even when the store on disk is not. The
+    create_app lifespan must rebuild from store.iter_global() BEFORE the
+    first request — otherwise /sth and /proof/* would serve correct-looking
+    but stale responses against a tree_size=0 root.
+
+    This is the rebuild-equals-incremental property exercised through the
+    restart path specifically rather than the fault path.
+    """
+    hub_priv, hub_pub = hub_keypair
+    root_priv, root_pub = root_keypair
+    member_priv, member_pub = keypair
+
+    # --- prior life: a process that already accepted entries ---
+    store = EventStore(str(tmp_path / "hub.db"))
+    pre_restart_translog = TamperEvidentLog(hub_priv, hub_pub)
+    overview = Overview()
+    ledger = Ledger()
+
+    att = issue_attestation(
+        root_priv, member_pubkey=member_pub, display_name="Alice",
+        unit="U-1", role="member", issuer_pubkey=root_pub,
+        issued_at="2026-01-01T00:00:00+00:00",
+    )
+    directory = Directory(attestations=[att])
+
+    pipeline = Pipeline(store=store, directory=directory,
+                        translog=pre_restart_translog,
+                        overview=overview, ledger=ledger,
+                        throttler=Throttler())
+
+    pre_restart_ids: list[tuple[str, int]] = []
+    for i in range(4):
+        ev = sign_entry(Entry(thread="t1", author=member_pub, kind="post",
+                              created_at="2026-01-01T00:00:00Z", body=f"pre-{i}"),
+                        member_priv)
+        seq = pipeline.accept(ev)
+        pre_restart_ids.append((ev.id, seq))
+    pre_restart_root = pre_restart_translog.current_sth().root_hash
+
+    # --- restart: store stays on disk; everything in-memory is reborn empty ---
+    store2 = EventStore(str(tmp_path / "hub.db"))
+    fresh_translog = TamperEvidentLog(hub_priv, hub_pub)
+    fresh_overview = Overview()
+    fresh_ledger = Ledger()
+    fresh_pipeline = Pipeline(store=store2, directory=directory,
+                              translog=fresh_translog,
+                              overview=fresh_overview, ledger=fresh_ledger,
+                              throttler=Throttler())
+
+    assert fresh_translog.current_sth().tree_size == 0   # empty before startup
+
+    app = create_app(pipeline=fresh_pipeline, store=store2,
+                     translog=fresh_translog, overview=fresh_overview,
+                     ledger=fresh_ledger, directory=directory)
+
+    # TestClient as context manager triggers lifespan startup.
+    with TestClient(app) as client:
+        sth = STH(**client.get("/sth").json())
+        # Size matches the on-disk store.
+        assert sth.tree_size == len(pre_restart_ids)
+        # Root matches what the pre-restart translog computed: rebuild is
+        # equivalent to incremental append for the same input sequence.
+        assert sth.root_hash == pre_restart_root
+        # Every pre-restart entry is provable under the post-restart STH.
+        for entry_id, seq in pre_restart_ids:
+            proof = InclusionProof(**client.get(
+                "/proof/inclusion", params={"entry": entry_id}
+            ).json())
+            assert verify_inclusion(entry_id, seq, proof, sth) is True
