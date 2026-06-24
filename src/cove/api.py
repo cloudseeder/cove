@@ -15,11 +15,16 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Optional
 
-from fastapi import Body, Depends, FastAPI, Header, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import (
+    Body, Depends, FastAPI, Header, Query, Request,
+    WebSocket, WebSocketDisconnect,
+)
+from fastapi.responses import JSONResponse, Response
 
 from . import crypto
 from .auth import AuthError, AuthService
+from .blobs import BlobStore
+from .config import DEFAULT, HubConfig
 from .entry import BlobRef, Entry
 from .identity import (
     Attestation, Directory, DirectoryManifest,
@@ -95,7 +100,9 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                directory_manifest: Optional[DirectoryManifest] = None,
                auth: Optional[AuthService] = None,
                throttler: Optional[Throttler] = None,
-               fanout: Optional[FanOut] = None) -> FastAPI:
+               fanout: Optional[FanOut] = None,
+               blobs: Optional[BlobStore] = None,
+               config: HubConfig = DEFAULT) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
     `directory_manifest` is the signed wire form served by GET /directory.
@@ -296,6 +303,49 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         finally:
             await fanout.unregister(ws)
 
+    # ---- POST /blobs + GET /blobs/{hash} (§4) --------------------------
+    @api.post("/blobs")
+    async def post_blob(request: Request,
+                        caller: str = Depends(require_session)):
+        if blobs is None:
+            return _err(503, error="no_blobs")
+        content = await request.body()
+        # §7.2.1 structural cap — pre-quota, content-agnostic.
+        if len(content) > config.bounds.max_blob_bytes:
+            return _throttle_response(ThrottleError(
+                "structural", config.bounds.max_blob_bytes, None,
+                f"blob size {len(content)} > max {config.bounds.max_blob_bytes}",
+            ))
+        # Dedup before quota: identical bytes from any author resolve to the
+        # same content-address and have already been paid for. This is the
+        # spec's 'realistic dedup ≈ 35%' (§4) at work.
+        h = "sha256:" + crypto.sha256_hex(content)
+        if blobs.has(h):
+            return {"hash": h, "size": len(content), "dedup": True}
+        # §7.2.2 storage quota — per attested identity.
+        att = directory.resolve(caller) if directory is not None else None
+        role = att.role if att is not None else "member"
+        try:
+            throttler.reserve_storage(caller, role, len(content))
+        except ThrottleError as e:
+            return _throttle_response(e)
+        blobs.put(content)
+        return {"hash": h, "size": len(content), "dedup": False}
+
+    @api.get("/blobs/{blob_hash}")
+    def get_blob(blob_hash: str, _caller: str = Depends(require_session)):
+        if blobs is None:
+            return _err(503, error="no_blobs")
+        data = blobs.get(f"sha256:{blob_hash}")
+        if data is None:
+            return _err(404, error="not_found")
+        # The content-address IS the ETag — clients re-hash on download to
+        # detect tampering (§4 integrity); a matching ETag also makes
+        # blob bodies trivially cacheable since the bytes are immutable.
+        return Response(content=data,
+                        media_type="application/octet-stream",
+                        headers={"ETag": f'"sha256:{blob_hash}"'})
+
     # ---- /admin/* (§7, §7.2.2) -----------------------------------------
     # Self-authenticating via root signature on the payload — CLAUDE.md
     # non-negotiable #1 ('hub holds NO root private key') means the admin
@@ -373,9 +423,6 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         except ValueError as e:
             return _err(400, error="bad_tier", detail=str(e))
         return {"pubkey": pubkey, "tier": tier}
-
-    # ---- TODO routes (need deps not yet built) -------------------------
-    # POST /blobs, GET /blobs/{hash}                    — §4 blob store
 
     return api
 

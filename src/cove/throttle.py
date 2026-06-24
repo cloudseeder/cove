@@ -140,6 +140,27 @@ class Throttler:
             st.volume_log.append((now, entry_bytes))
             st.storage_used += new_blob_bytes
 
+    def reserve_storage(self, author: str, role: str, new_blob_bytes: int) -> None:
+        """Pre-flight quota check for a blob upload. §7.2.2 storage quota.
+
+        Does NOT consume a rate token — blob uploads are byte-driven, not
+        request-rate-driven (one POST /blobs is many MB of payload, not
+        a 'request' in the rate-bucket sense). Raises ThrottleError(storage)
+        on quota exhaustion; on success, charges the storage counter.
+
+        Callers should call this AFTER dedup-check: if the blob already
+        exists in the store, no charge is needed (the bytes are already
+        paid for by the original uploader).
+        """
+        tier = self._overrides.get(author) or self._cfg.tier_for_role(role)
+        with self._lock:
+            st = self._state.setdefault(author, _IdentityState())
+            if st.storage_used + new_blob_bytes > tier.storage_quota_bytes:
+                raise ThrottleError("storage", tier.storage_quota_bytes, None,
+                                    f"storage {st.storage_used + new_blob_bytes} > "
+                                    f"quota {tier.storage_quota_bytes}")
+            st.storage_used += new_blob_bytes
+
     def set_tier_override(self, author: str, tier_name: str) -> None:
         """Apply a per-identity tier override (§7.2.2 'overridable per identity
         via POST /admin/limits'). The override replaces the role-derived tier

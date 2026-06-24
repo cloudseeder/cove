@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from cove import crypto
 from cove.api import create_app
 from cove.auth import AuthService
+from cove.blobs import BlobStore
 from cove.entry import Entry, sign_entry
 from cove.identity import (
     Attestation, Directory, Revocation, hash_manifest,
@@ -80,11 +81,12 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
     pipeline = Pipeline(store=store, directory=directory, translog=translog,
                         overview=overview, ledger=ledger, throttler=throttler)
     auth = AuthService(directory=directory)
+    blobs = BlobStore(str(tmp_path / "blobs"))
 
     app = create_app(pipeline=pipeline, store=store, translog=translog,
                      overview=overview, ledger=ledger,
                      directory=directory, directory_manifest=manifest,
-                     auth=auth)
+                     auth=auth, blobs=blobs)
 
     client = TestClient(app)
     # Pre-auth the test client so existing tests of gated routes Just Work.
@@ -107,6 +109,7 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
         "overview": overview, "ledger": ledger,
         "auth": auth, "directory": directory,
         "throttler": throttler,
+        "blobs": blobs,
         "att_member": att_member,
         "session_token": sess["token"],
     }
@@ -253,6 +256,107 @@ def test_public_routes_remain_accessible_without_auth(hub):
     assert unauth.get("/healthz").status_code == 200
     assert unauth.get("/sth").status_code == 200
     assert unauth.post("/auth/challenge").status_code == 200
+
+
+# ---- /blobs (§4) -----------------------------------------------------
+
+def test_post_blob_stores_bytes_and_returns_content_address(hub):
+    """The hash MUST be sha256 of the body the client sent. Anything else
+    means the hub can substitute content undetected — exactly the §4
+    integrity property we're claiming."""
+    import hashlib
+    body = b"hello blob"
+    r = hub["client"].post("/blobs", content=body)
+    assert r.status_code == 200, r.text
+    payload = r.json()
+    assert payload["hash"] == "sha256:" + hashlib.sha256(body).hexdigest()
+    assert payload["size"] == len(body)
+    assert payload["dedup"] is False
+
+
+def test_post_blob_then_get_round_trips_bytes_exactly(hub):
+    """Down/up byte-identical; the content-address is also returned as the
+    ETag header so cache layers can rely on it."""
+    body = b"\x00\x01\xfe\xff some\nbinary\tstuff"
+    h = hub["client"].post("/blobs", content=body).json()["hash"]
+    bare = h.split(":", 1)[1]
+    r = hub["client"].get(f"/blobs/{bare}")
+    assert r.status_code == 200
+    assert r.content == body
+    assert r.headers.get("ETag") == f'"{h}"'
+
+
+def test_post_blob_deduplicates_within_organization(hub):
+    """Two members sending identical bytes get the same address and the
+    second upload is flagged as dedup. The spec's 'dedup within the
+    organization' (§4)."""
+    body = b"shared notice attachment"
+    r1 = hub["client"].post("/blobs", content=body).json()
+    r2 = hub["client"].post("/blobs", content=body).json()
+    assert r1["hash"] == r2["hash"]
+    assert r1["dedup"] is False
+    assert r2["dedup"] is True
+
+
+def test_get_blob_unknown_hash_returns_404(hub):
+    r = hub["client"].get("/blobs/" + "ff" * 32)
+    assert r.status_code == 404
+
+
+def test_post_blob_oversized_returns_structured_throttle(hub, tmp_path, root_keypair, hub_keypair, keypair):
+    """§7.2.1 max_blob_bytes is a hard pre-quota cap — applied here against
+    the raw upload, not just against entries referencing the blob, so an
+    attacker can't fill disk by uploading huge blobs and never minting an
+    entry."""
+    # Build a hub with a tiny max_blob_bytes so the test body doesn't have to be huge.
+    from cove.config import HubConfig, StructuralBounds
+    root_priv, root_pub = root_keypair
+    hub_priv_, hub_pub_ = hub_keypair
+    apriv, apub = keypair
+
+    att = issue_attestation(
+        root_priv, member_pubkey=apub, display_name="Alice",
+        unit="U-1", role="member", issuer_pubkey=root_pub,
+        issued_at="2026-01-01T00:00:00+00:00",
+    )
+    manifest = issue_directory(root_priv, org=root_pub,
+                               attestations=[att], revocations=[],
+                               updated_at="2026-06-01T00:00:00+00:00")
+    store = EventStore(str(tmp_path / "tiny.db"))
+    translog = TamperEvidentLog(hub_priv_, hub_pub_)
+    overview = Overview(); ledger = Ledger()
+    directory = Directory.from_manifest(manifest)
+    pipeline = Pipeline(store=store, directory=directory, translog=translog,
+                        overview=overview, ledger=ledger,
+                        throttler=Throttler())
+    cfg = HubConfig(bounds=StructuralBounds(max_blob_bytes=1024))
+    app = create_app(pipeline=pipeline, store=store, translog=translog,
+                     overview=overview, ledger=ledger, directory=directory,
+                     directory_manifest=manifest,
+                     auth=AuthService(directory=directory),
+                     blobs=BlobStore(str(tmp_path / "tiny-blobs")),
+                     config=cfg)
+    c = TestClient(app)
+    ch = c.post("/auth/challenge").json()
+    sig = crypto.sign(apriv, ch["nonce"].encode())
+    tok = c.post("/auth/verify", json={
+        "pubkey": apub, "nonce": ch["nonce"], "sig": sig,
+    }).json()["token"]
+    c.headers["Authorization"] = f"Bearer {tok}"
+
+    r = c.post("/blobs", content=b"x" * 2048)
+    assert r.status_code == 429
+    body = r.json()
+    assert body["scope"] == "structural"
+    assert body["limit"] == 1024
+
+
+def test_blob_routes_require_session(hub):
+    """Both /blobs routes are gated like the other data routes — a
+    sessionless request is rejected before disk is touched."""
+    unauth = TestClient(hub["app"])
+    assert unauth.post("/blobs", content=b"x").status_code == 401
+    assert unauth.get("/blobs/" + "ff" * 32).status_code == 401
 
 
 # ---- /admin/* (§7, §7.2.2) -------------------------------------------
