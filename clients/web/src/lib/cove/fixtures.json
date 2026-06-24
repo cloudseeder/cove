@@ -1,0 +1,139 @@
+{
+  "keypairs": {
+    "root": {
+      "priv": "b9cf5f311182bb8b73c8a52b502ceb244af5ba0d535cdde6385039ece898ce68",
+      "pub": "3cbffd6d6216b9eb461711217e37eab58ab326478dcef791e6371754425eccb6"
+    },
+    "hub": {
+      "priv": "961b2d993a4bc3deaaf6e9cb4b663e7895ad441ee13c6e85b65a8073056f7d26",
+      "pub": "0c3c97d285841079ed586cbb6301850863966cfd7399d1417ebb019c3fa955e3"
+    },
+    "board": {
+      "priv": "ff54c3bceda0801a5fb5a2a2f537b6f738be9c02d2e888182e2f502d949a4523",
+      "pub": "ccad89b09ecba445aaf2f93d0d3e0111e4c7a514f353c50210666e4b426309ec"
+    },
+    "alice": {
+      "priv": "f1aa710ca6c4e7484158a358b72d98b2ccd1900e20dd0652316cc0f4f319e5d6",
+      "pub": "0598bf8d19bc619cf35eccfc059b1bf62ec4065d40fae4af7e83cdd9e28350d5"
+    }
+  },
+  "manifest": {
+    "org": "3cbffd6d6216b9eb461711217e37eab58ab326478dcef791e6371754425eccb6",
+    "attestations": [
+      {
+        "member_pubkey": "ccad89b09ecba445aaf2f93d0d3e0111e4c7a514f353c50210666e4b426309ec",
+        "enc_pubkey": null,
+        "display_name": "Board",
+        "unit": "B-1",
+        "role": "board",
+        "issued_at": "2026-01-01T00:00:00+00:00",
+        "expires_at": null,
+        "issuer": "3cbffd6d6216b9eb461711217e37eab58ab326478dcef791e6371754425eccb6",
+        "sig": "12807f59aecb85334575fdb4c3e905a485544880acb289ee2fb3b67197377830e8ee0bb4fc0b895fd4cb8b4c2b3062bd47cfaf6cc103928901d0748e0e750b0f"
+      },
+      {
+        "member_pubkey": "0598bf8d19bc619cf35eccfc059b1bf62ec4065d40fae4af7e83cdd9e28350d5",
+        "enc_pubkey": null,
+        "display_name": "Alice",
+        "unit": "U-1",
+        "role": "member",
+        "issued_at": "2026-01-01T00:00:00+00:00",
+        "expires_at": null,
+        "issuer": "3cbffd6d6216b9eb461711217e37eab58ab326478dcef791e6371754425eccb6",
+        "sig": "8be62fff63b1533ff08bb1050e9132022c4f72b0c1f56bcebdba35534050549105828086cb91b2bc1b9a91340f78d4a523ecc31b665465e44084d73c8a50d208"
+      }
+    ],
+    "revocations": [
+      {
+        "pubkey": "0000000000000000000000000000000000000000000000000000000000000000",
+        "revoked_at": "2026-02-01T00:00:00+00:00",
+        "reason": "never attested, in fixture only"
+      }
+    ],
+    "updated_at": "2026-06-01T00:00:00+00:00",
+    "prev_manifest_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "sig": "6109309c87ca0757aea738d5a8a85c5435452978f8d236c4cb868c262e5a8b2b5abc23a2d8a9e7b7e50c14d2bd3c5c390eb144d6df807953c760eea2bd9d5403"
+  },
+  "manifest_hash": "sha256:5d21b71d88ed1caf6aa1cc51917b10432ac72fbaba54e6b16f9f6df03f5bb6c8",
+  "entries": [
+    {
+      "entry": {
+        "thread": "annual-meeting",
+        "author": "ccad89b09ecba445aaf2f93d0d3e0111e4c7a514f353c50210666e4b426309ec",
+        "kind": "notice",
+        "created_at": "2026-06-15T18:00:00Z",
+        "parents": [],
+        "body": "first notice",
+        "blobs": [],
+        "supersedes": null,
+        "receipt": null,
+        "id": "sha256:a843ac3ce9310aa7d09e5eec6272a139b7f2b570042bdc372ddeb876d9a701dd",
+        "sig": "d27f00a1c3d55986bbdd1bd0cac3c60fa59341ffa511eac76f9d5eef7047adf1db4651a6235686a247cff8a6d6dc7fe15b7de724bb731b1a99687335801fa90d"
+      },
+      "seq": 0,
+      "proof": {
+        "leaf_index": 0,
+        "tree_size": 3,
+        "audit_path": [
+          "b90f7bbba497a645e3e1bbb958c5941016ffa8300c043880df7aedfd04bcf426",
+          "b563a85be50af98d2a5886361dcafba9936657f04c87beeb35125426a4a133ad"
+        ]
+      }
+    },
+    {
+      "entry": {
+        "thread": "annual-meeting",
+        "author": "ccad89b09ecba445aaf2f93d0d3e0111e4c7a514f353c50210666e4b426309ec",
+        "kind": "notice",
+        "created_at": "2026-06-15T18:01:00Z",
+        "parents": [],
+        "body": "second post",
+        "blobs": [],
+        "supersedes": null,
+        "receipt": null,
+        "id": "sha256:5171b3c4a93fb5715e9fe3262c108d21bb33ef61fbaeccc2321af8a1f63c19f8",
+        "sig": "92caa2d3a8e404f9f7cfd4bec8f4f44b2d5b4f77572e6a9c41b49aceda439c30ccd9b651d3d3fecb18f413079bb2dba3539a75a2c8eac7688dffad2af5e07d09"
+      },
+      "seq": 1,
+      "proof": {
+        "leaf_index": 1,
+        "tree_size": 3,
+        "audit_path": [
+          "5123452f70514b05c02cc9c44967ffcc23be2c9392afcecb1ae986b2ad01ab60",
+          "b563a85be50af98d2a5886361dcafba9936657f04c87beeb35125426a4a133ad"
+        ]
+      }
+    },
+    {
+      "entry": {
+        "thread": "annual-meeting",
+        "author": "ccad89b09ecba445aaf2f93d0d3e0111e4c7a514f353c50210666e4b426309ec",
+        "kind": "notice",
+        "created_at": "2026-06-15T18:02:00Z",
+        "parents": [],
+        "body": "third reply",
+        "blobs": [],
+        "supersedes": null,
+        "receipt": null,
+        "id": "sha256:2d516a7813bf540b8ea8a5e28cefa0ab748a5bb69a6fa6d05dd9b90a451e94fb",
+        "sig": "49a2ec04f46e4736d4afc7f583a9a73dae15505da1b04f50e0e996ae0b7c640eef9e86cf3854d9d892452d937e7e376fcbc37ce91a81f35e622cc0a80123ab0d"
+      },
+      "seq": 2,
+      "proof": {
+        "leaf_index": 2,
+        "tree_size": 3,
+        "audit_path": [
+          "74e8ea82a054863ad0414c915e79bbff90b97cca6551bf19421b91674e23fa73"
+        ]
+      }
+    }
+  ],
+  "sth": {
+    "tree_size": 3,
+    "root_hash": "cddc92be6f98361a7c2c4f10d540db2018f75f606f66461b874a3eebc474b62e",
+    "prev_sth_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "timestamp": "2026-06-24T23:23:10.762353+00:00",
+    "hub_key": "0c3c97d285841079ed586cbb6301850863966cfd7399d1417ebb019c3fa955e3",
+    "sig": "efa6ed3c8fba46a3503c3ff69d1f0d470a4a16a715ec34511672167802f68f4194860232c3a2874932f3cd889ad7867c15bef3b188660eef33b4844dee474e0c"
+  }
+}

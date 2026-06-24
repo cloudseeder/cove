@@ -1,0 +1,19 @@
+# node
+node_modules/
+.svelte-kit/
+build/
+.vite/
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local env
+.env
+.env.local
