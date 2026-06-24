@@ -94,6 +94,16 @@ class EventStore:
             "SELECT 1 FROM entries WHERE id=? LIMIT 1", (entry_id,)
         ).fetchone() is not None
 
+    def seq_of(self, entry_id: str) -> Optional[int]:
+        """Per-thread seq assigned to an accepted entry, or None if absent.
+        Entry objects don't carry seq (it's a store assignment); callers like
+        /ledger need it to translate (entry_id) into (thread, required_seq).
+        """
+        row = self._conn.execute(
+            "SELECT seq FROM entries WHERE id=?", (entry_id,)
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
     def since(self, thread: str, seq: int) -> Iterable[Entry]:
         """Delta-sync: entries in thread strictly AFTER `seq`, in seq order. §7 /sync.
 

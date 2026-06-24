@@ -159,6 +159,13 @@ class Directory:
         """Return the current attestation for a key, or None. Caller checks revocation/expiry."""
         return self._by_key.get(pubkey)
 
+    def attested_keys(self) -> list[str]:
+        """All pubkeys that have been attested at any point — regardless of
+        current revocation status. Used by /ledger to enumerate historical
+        recipients (a notice sent before a revocation is still 'owed' to
+        them, per §2.3)."""
+        return list(self._by_key.keys())
+
     def is_revoked(self, pubkey: str, as_of: Optional[str] = None) -> bool:
         """Spec §2.3: entries signed before revocation remain verifiable.
 
