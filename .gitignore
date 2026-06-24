@@ -1,0 +1,25 @@
+# secrets — NEVER commit
+*.key
+*.pem
+*.seed
+.env
+secrets/
+keys/
+
+# data
+*.db
+*.sqlite
+*.sqlite3
+data/
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# os
+.DS_Store
