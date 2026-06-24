@@ -25,7 +25,7 @@ from . import crypto
 from .auth import AuthError, AuthService
 from .blobs import BlobStore
 from .config import DEFAULT, HubConfig
-from .entry import BlobRef, Entry
+from .entry import BlobRef, Entry, Receipt
 from .identity import (
     Attestation, Directory, DirectoryManifest,
     InvalidManifestSignatureError, RevocationDroppedError,
@@ -449,7 +449,7 @@ class _AuthRequired(Exception):
 
 
 _CONTENT_FIELDS = {"thread", "author", "kind", "created_at", "parents",
-                   "body", "blobs", "supersedes"}
+                   "body", "blobs", "supersedes", "receipt"}
 
 
 def _entry_from_dict(d: dict) -> Entry:
@@ -463,6 +463,8 @@ def _entry_from_dict(d: dict) -> Entry:
     blobs = [BlobRef(**b) for b in d.get("blobs", []) or []]
     fields = {k: d[k] for k in _CONTENT_FIELDS if k in d}
     fields["blobs"] = blobs
+    if fields.get("receipt") is not None:
+        fields["receipt"] = Receipt(**fields["receipt"])
     ev = Entry(**fields)
     ev.id = d.get("id")
     ev.sig = d.get("sig")

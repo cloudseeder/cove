@@ -29,6 +29,21 @@ class BlobRef:
 
 
 @dataclass
+class Receipt:
+    """Cumulative receipt payload (kind='receipt'). Spec §8.
+
+    The recipient (entry.author) is acking 'thread C through seq N', where C
+    is entry.thread and N is high_water_seq. observed_sth_(size,root) is the
+    Signed Tree Head this recipient saw when they sent the ack — the
+    receipt-carried evidence §6.4.3 uses to detect hub equivocation
+    (same tree_size, different root_hash across recipients).
+    """
+    high_water_seq: int
+    observed_sth_size: int
+    observed_sth_root: str
+
+
+@dataclass
 class Entry:
     thread: str                      # thread root id; root: thread == id
     author: str                    # author public key (hex)
@@ -38,6 +53,7 @@ class Entry:
     body: str = ""
     blobs: list[BlobRef] = field(default_factory=list)
     supersedes: Optional[str] = None
+    receipt: Optional[Receipt] = None   # set for kind='receipt' (§8)
     id: Optional[str] = None       # set by compute_id
     sig: Optional[str] = None      # set by sign
 

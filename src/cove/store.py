@@ -13,7 +13,7 @@ from dataclasses import asdict
 from typing import Iterable, Optional
 
 from . import crypto
-from .entry import BlobRef, Entry
+from .entry import BlobRef, Entry, Receipt
 
 
 _SCHEMA = """
@@ -156,7 +156,9 @@ def _row_to_entry(row: tuple) -> Entry:
     entry_id, content_blob, sig = row
     content = json.loads(content_blob)
     blobs = [BlobRef(**b) for b in content.pop("blobs", [])]
-    ev = Entry(blobs=blobs, **content)
+    receipt_dict = content.pop("receipt", None)
+    receipt = Receipt(**receipt_dict) if receipt_dict is not None else None
+    ev = Entry(blobs=blobs, receipt=receipt, **content)
     ev.id = entry_id
     ev.sig = sig
     return ev

@@ -1139,25 +1139,71 @@ def test_directory_returns_signed_manifest(hub):
 # ---- GET /ledger ----------------------------------------------------
 
 def test_ledger_partitions_members_into_acked_and_not(hub):
-    """Post a broadcast (the notice), then submit a receipt covering it.
-    /ledger?entry=<notice_id> must report alice as acked, anyone else not_acked.
-    """
+    """End-to-end through the real receipt-entry path now that it's wired:
+    post a broadcast notice, then submit a kind='receipt' entry that
+    carries the cumulative ack + observed STH. The receipt routes through
+    the pipeline (auth, sig, etc.) and feeds the ledger automatically;
+    /ledger?entry=<notice_id> reports the acker as acked, anyone else not."""
+    from cove.entry import Receipt
     notice = _signed_post(hub["member_priv"], hub["member_pub"], body="notice")
-    notice_seq = hub["client"].post("/entries", json=_entry_payload(notice)).json()["seq"]
+    notice_seq = hub["client"].post(
+        "/entries", json=_entry_payload(notice)).json()["seq"]
 
-    # Bypass the pipeline for the receipt — the receipt-acceptance path needs
-    # the receipt body shape to land, which is a later slice. Hand the ack to
-    # the ledger directly so /ledger can exercise the response contract.
+    # Recipient signs a receipt entry — exactly what a real client would
+    # construct from its observed STH and the seq it's caught up to.
     sth = STH(**hub["client"].get("/sth").json())
-    hub["ledger"].apply_receipt(hub["member_pub"], "t1", notice_seq,
-                                (sth.tree_size, sth.root_hash))
+    receipt_ev = sign_entry(Entry(
+        thread="t1", author=hub["member_pub"], kind="receipt",
+        created_at="2026-01-01T00:00:01Z", body="",
+        receipt=Receipt(high_water_seq=notice_seq,
+                        observed_sth_size=sth.tree_size,
+                        observed_sth_root=sth.root_hash),
+    ), hub["member_priv"])
+    r = hub["client"].post("/entries", json=_entry_payload(receipt_ev))
+    assert r.status_code == 200, r.text
 
+    # Now /ledger reflects the ack — no bypass, no direct apply_receipt call.
     r = hub["client"].get("/ledger", params={"entry": notice.id})
     assert r.status_code == 200
     payload = r.json()
     assert hub["member_pub"] in payload["acked"]
-    # revoked member never acked — should appear in not_acked.
     assert hub["revoked_pub"] in payload["not_acked"]
+
+
+def test_receipt_entry_round_trip_through_store_preserves_payload(hub):
+    """The receipt payload travels through canonical-JCS bytes in the
+    store, gets re-parsed on read, and still verifies as a signed entry.
+    If the (de)serialization drops the receipt field, sig fails."""
+    from cove.entry import Receipt
+    receipt_ev = sign_entry(Entry(
+        thread="t1", author=hub["member_pub"], kind="receipt",
+        created_at="2026-01-01T00:00:01Z", body="",
+        receipt=Receipt(high_water_seq=5,
+                        observed_sth_size=10,
+                        observed_sth_root="abc123"),
+    ), hub["member_priv"])
+    hub["client"].post("/entries", json=_entry_payload(receipt_ev))
+
+    # Round trip via the store (independent of the API):
+    reread = hub["store"].get(receipt_ev.id)
+    assert reread is not None
+    assert reread.receipt is not None
+    assert reread.receipt.high_water_seq == 5
+    assert reread.receipt.observed_sth_size == 10
+    assert reread.receipt.observed_sth_root == "abc123"
+    assert verify_entry(reread) is True
+
+
+def test_post_entries_rejects_receipt_kind_without_payload(hub):
+    """Wire-level confirmation of the pipeline rule: a receipt entry with
+    receipt=None gets 400 'rejected', not a silently-accepted ledger-no-op."""
+    ev = sign_entry(Entry(
+        thread="t1", author=hub["member_pub"], kind="receipt",
+        created_at="2026-01-01T00:00:00Z", body="",
+    ), hub["member_priv"])
+    r = hub["client"].post("/entries", json=_entry_payload(ev))
+    assert r.status_code == 400
+    assert "receipt" in r.json()["reason"].lower()
 
 
 def test_ledger_404_for_unknown_entry(hub):

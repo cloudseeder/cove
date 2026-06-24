@@ -236,3 +236,57 @@ def test_accepted_entry_is_persisted_then_logged(pipeline):
     # translog leaf at position 0 is hash_leaf(ev.id, 0); inclusion proof checks it.
     proof = pl.translog.inclusion_proof(ev.id)
     assert proof.leaf_index == 0
+
+
+# ---- receipt acceptance (§8) -----------------------------------------
+
+def test_receipt_entry_feeds_ledger_with_observed_sth(pipeline):
+    """A kind='receipt' entry routes through the pipeline like any other —
+    auth + sig + parent checks — and additionally calls
+    Ledger.apply_receipt with the cumulative-ack payload AND the
+    recipient's OBSERVED Signed Tree Head. The observed STH is what
+    Ledger.equivocation_signals() cross-checks across recipients (§6.4.3)."""
+    from cove.entry import Receipt
+    pl, apriv, apub = pipeline
+    receipt_payload = Receipt(high_water_seq=17,
+                              observed_sth_size=42,
+                              observed_sth_root="root_at_observe_time")
+    ev = sign_entry(Entry(
+        thread="t1", author=apub, kind="receipt",
+        created_at="2026-01-01T00:00:00Z", body="",
+        receipt=receipt_payload,
+    ), apriv)
+
+    pl.accept(ev)
+
+    assert pl.ledger.receipts == [(
+        apub, "t1", 17, (42, "root_at_observe_time"),
+    )]
+
+
+def test_receipt_entry_without_payload_is_rejected(pipeline):
+    """Acceptance step refuses a kind='receipt' entry with receipt=None —
+    the alternative would be silently accepting an opaque marker that
+    contributes nothing to the ledger. Loud rejection forces the client
+    to send a well-formed receipt."""
+    pl, apriv, apub = pipeline
+    ev = sign_entry(Entry(
+        thread="t1", author=apub, kind="receipt",
+        created_at="2026-01-01T00:00:00Z", body="",
+    ), apriv)
+
+    with pytest.raises(AcceptanceError, match="receipt"):
+        pl.accept(ev)
+
+    # And nothing landed in the ledger or the store.
+    assert pl.ledger.receipts == []
+    assert pl.store.appended == []
+
+
+def test_non_receipt_entry_does_not_call_apply_receipt(pipeline):
+    """A regular post never feeds the ledger — only kind='receipt' does.
+    Regression guard against accidentally always-calling apply_receipt."""
+    pl, apriv, apub = pipeline
+    ev = sign_entry(_post("t1", apub, "just a post"), apriv)
+    pl.accept(ev)
+    assert pl.ledger.receipts == []

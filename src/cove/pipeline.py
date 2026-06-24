@@ -82,6 +82,12 @@ class Pipeline:
             for b in ev.blobs:
                 if not self.blobs.has(b.hash):
                     raise AcceptanceError(f"unstored blob reference {b.hash}")
+        # kind=receipt structural check: the cumulative-ack payload must be
+        # present, otherwise the receipt has nothing to feed the ledger and
+        # is just an opaque marker — refuse it loudly here rather than
+        # accept-and-silently-no-op in step 9.
+        if ev.kind == "receipt" and ev.receipt is None:
+            raise AcceptanceError("receipt entry missing receipt payload")
 
         # 8. Assign per-thread seq, persist, extend translog, materialize the new STH.
         # Store-before-log because the entry store is source of truth (§9); the log
@@ -117,8 +123,28 @@ def _entry_bytes(ev: Entry) -> int:
 
 
 def _apply_receipt(ledger: Ledger, ev: Entry, sth: STH) -> None:
-    """Receipt body shape lands in a later slice; isolated here so step 9 is clean."""
-    # TODO(receipts): parse (recipient, thread, high_water_seq, observed_sth) from ev
-    # per §8, then ledger.apply_receipt(...). Until then this is a no-op so a receipt
-    # entry can still be accepted into the log.
-    return None
+    """Feed a kind='receipt' entry into the ledger. Spec §8.
+
+      - recipient = ev.author (the receipt is authored by who's acking).
+      - thread    = ev.thread (cumulative ack is per-thread).
+      - high_water_seq = ev.receipt.high_water_seq (TCP-cumulative-ack style).
+      - observed_sth   = the (tree_size, root_hash) the recipient SAW when
+                         they sent this receipt — not the hub's current head.
+                         §6.4.3 equivocation evidence: different roots
+                         observed at the same tree_size across recipients
+                         is cryptographic proof of split-view, surfaced by
+                         Ledger.equivocation_signals().
+
+    The pipeline has already validated that ev.receipt is not None
+    (acceptance step above). `sth` is the post-acceptance head; we don't
+    use it here — the recipient's OBSERVED sth is the evidentially
+    relevant one and lives in ev.receipt.
+    """
+    r = ev.receipt
+    assert r is not None  # acceptance step guarantees this
+    ledger.apply_receipt(
+        recipient=ev.author,
+        thread=ev.thread,
+        high_water_seq=r.high_water_seq,
+        observed_sth=(r.observed_sth_size, r.observed_sth_root),
+    )
