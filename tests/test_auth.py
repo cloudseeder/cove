@@ -202,6 +202,27 @@ def test_revoke_session_invalidates_immediately(auth, keypair):
     assert auth.resolve_session(sess.token) is None
 
 
+def test_resolve_session_returns_none_after_pubkey_revoked(clock, root_keypair, keypair):
+    """§5: 'session token bound to a NON-REVOKED attested key'. If a member is
+    revoked after their session was minted, the token must stop resolving —
+    otherwise the revocation has no immediate effect on the running system."""
+    root_priv, root_pub = root_keypair
+    member_priv, member_pub = keypair
+    directory = _directory_with(member_pub, root_priv, root_pub)
+    a = AuthService(directory=directory, time_fn=clock.now)
+    ch = a.issue_challenge()
+    sess = a.verify_and_issue_session(pubkey=member_pub, nonce=ch.nonce,
+                                      sig=_sign_nonce(member_priv, ch.nonce))
+    assert a.resolve_session(sess.token) == member_pub
+
+    # Mutate the directory's revocation set in place — simulates a fresh
+    # manifest landing while a process is running.
+    directory._revoked[member_pub] = Revocation(
+        pubkey=member_pub, revoked_at="2026-02-01T00:00:00+00:00", reason="left",
+    )
+    assert a.resolve_session(sess.token) is None
+
+
 def test_revoking_one_session_does_not_affect_others(auth, keypair):
     member_priv, member_pub = keypair
     # Two sessions.

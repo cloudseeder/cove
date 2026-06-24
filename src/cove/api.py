@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from typing import Optional
 
-from fastapi import Body, FastAPI, Query
+from fastapi import Body, Depends, FastAPI, Header, Query
 from fastapi.responses import JSONResponse
 
 from .auth import AuthError, AuthService
@@ -64,6 +64,28 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
     api = FastAPI(title="Cove Hub", version="0.1.0", lifespan=lifespan)
 
+    # ---- auth gate (§5) -------------------------------------------------
+    # Data routes require a valid session token bound to a non-revoked
+    # attested key. Public routes:
+    #   /healthz, /auth/*, /sth, /proof/*  — verification artifacts and the
+    #   auth handshake itself stay accessible without a token (CT-style
+    #   transparency: the head and proofs are intrinsically verifiable).
+
+    def require_session(authorization: Optional[str] = Header(None)) -> str:
+        if auth is None:
+            raise _AuthRequired("auth not configured")
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise _AuthRequired("missing bearer token")
+        token = authorization.split(" ", 1)[1].strip()
+        pubkey = auth.resolve_session(token)
+        if pubkey is None:
+            raise _AuthRequired("invalid or expired token")
+        return pubkey
+
+    @api.exception_handler(_AuthRequired)
+    async def _auth_required_handler(_request, exc: "_AuthRequired"):
+        return _err(401, error="auth_required", reason=exc.reason)
+
     @api.get("/healthz")
     def healthz() -> dict:
         return {"status": "ok", "version": api.version}
@@ -98,7 +120,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
     # ---- POST /entries (§7.1) -------------------------------------------
     @api.post("/entries")
-    def post_entries(body: dict = Body(...)):
+    def post_entries(body: dict = Body(...),
+                     _caller: str = Depends(require_session)):
         try:
             ev = _entry_from_dict(body)
         except (TypeError, ValueError) as e:
@@ -113,13 +136,15 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
     # ---- GET /sync (§7) -------------------------------------------------
     @api.get("/sync")
-    def get_sync(thread: str = Query(...), since: int = Query(...)) -> dict:
+    def get_sync(thread: str = Query(...), since: int = Query(...),
+                 _caller: str = Depends(require_session)) -> dict:
         entries = [_entry_to_dict(ev) for ev in store.since(thread, since)]
         return {"thread": thread, "since": since, "entries": entries}
 
     # ---- GET /overview (§6) --------------------------------------------
     @api.get("/overview")
-    def get_overview(thread: str = Query(...)) -> dict:
+    def get_overview(thread: str = Query(...),
+                     _caller: str = Depends(require_session)) -> dict:
         rows = []
         for entry_id, seq, parents in overview.thread_entries(thread):
             rows.append({
@@ -153,14 +178,15 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
     # ---- GET /directory (§2.3) ------------------------------------------
     @api.get("/directory")
-    def get_directory():
+    def get_directory(_caller: str = Depends(require_session)):
         if directory_manifest is None:
             return _err(503, error="no_directory")
         return _manifest_to_dict(directory_manifest)
 
     # ---- GET /ledger (§8) -----------------------------------------------
     @api.get("/ledger")
-    def get_ledger(entry: str = Query(...)):
+    def get_ledger(entry: str = Query(...),
+                   _caller: str = Depends(require_session)):
         target = store.get(entry)
         seq = store.seq_of(entry) if target is not None else None
         if target is None or seq is None:
@@ -178,6 +204,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
 
 # ---- helpers ------------------------------------------------------------
+class _AuthRequired(Exception):
+    """Internal exception raised by require_session; mapped to a flat-body
+    401 by an exception handler registered inside create_app."""
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+
 _CONTENT_FIELDS = {"thread", "author", "kind", "created_at", "parents",
                    "body", "blobs", "supersedes"}
 

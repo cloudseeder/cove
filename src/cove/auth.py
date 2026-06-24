@@ -114,13 +114,21 @@ class AuthService:
         return sess
 
     def resolve_session(self, token: str) -> Optional[str]:
-        """Return the pubkey bound to this token, or None if unknown/expired.
-        Lazily evicts an expired session on lookup — cheaper than a sweeper
-        at pilot scale."""
+        """Return the pubkey bound to this token, or None if unknown/expired/revoked.
+
+        The revocation check is what makes the §5 invariant hold across the
+        session lifetime: 'a valid session token bound to a *non-revoked*
+        attested key'. A member revoked AFTER login cannot keep serving with
+        their pre-revocation token. Lazy eviction on lookup — cheaper than a
+        sweeper at pilot scale.
+        """
         sess = self._sessions.get(token)
         if sess is None:
             return None
         if sess.expires_at < self._now():
+            del self._sessions[token]
+            return None
+        if self._dir.is_revoked(sess.pubkey):
             del self._sessions[token]
             return None
         return sess.pubkey

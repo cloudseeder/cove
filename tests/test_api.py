@@ -82,14 +82,27 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
                      overview=overview, ledger=ledger,
                      directory=directory, directory_manifest=manifest,
                      auth=auth)
+
+    client = TestClient(app)
+    # Pre-auth the test client so existing tests of gated routes Just Work.
+    # An unauth'd client is constructed inline in the dedicated 401 tests.
+    ch = client.post("/auth/challenge").json()
+    sig = crypto.sign(member_priv, ch["nonce"].encode())
+    sess = client.post("/auth/verify", json={
+        "pubkey": member_pub, "nonce": ch["nonce"], "sig": sig,
+    }).json()
+    client.headers["Authorization"] = f"Bearer {sess['token']}"
+
     return {
-        "client": TestClient(app),
+        "client": client,
+        "app": app,
         "member_priv": member_priv, "member_pub": member_pub,
         "revoked_pub": revoked_pub,
         "root_pub": root_pub, "hub_pub": hub_pub,
         "store": store, "translog": translog,
         "overview": overview, "ledger": ledger,
-        "auth": auth,
+        "auth": auth, "directory": directory,
+        "session_token": sess["token"],
     }
 
 
@@ -188,6 +201,67 @@ def test_auth_verify_missing_fields_returns_400(hub):
     r = hub["client"].post("/auth/verify", json={})
     assert r.status_code == 400
     assert r.json()["error"] == "bad_request"
+
+
+# ---- gating: data routes require a valid session ---------------------
+
+GATED_GETS = ["/sync?thread=t1&since=-1", "/overview?thread=t1",
+              "/directory", "/ledger?entry=anything"]
+
+
+@pytest.mark.parametrize("path", GATED_GETS)
+def test_gated_get_without_auth_header_returns_401(hub, path):
+    """No Authorization header at all -> 401 auth_required, BEFORE the
+    handler runs (no entry id lookup, no 404)."""
+    unauth = TestClient(hub["app"])
+    r = unauth.get(path)
+    assert r.status_code == 401
+    body = r.json()
+    assert body["error"] == "auth_required"
+    assert "missing" in body["reason"].lower()
+
+
+@pytest.mark.parametrize("path", GATED_GETS)
+def test_gated_get_with_bogus_bearer_returns_401(hub, path):
+    unauth = TestClient(hub["app"])
+    unauth.headers["Authorization"] = "Bearer " + ("ff" * 32)
+    r = unauth.get(path)
+    assert r.status_code == 401
+    assert "invalid" in r.json()["reason"].lower()
+
+
+def test_post_entries_without_auth_returns_401(hub):
+    ev = _signed_post(hub["member_priv"], hub["member_pub"])
+    unauth = TestClient(hub["app"])
+    r = unauth.post("/entries", json=_entry_payload(ev))
+    assert r.status_code == 401
+    # Gate runs BEFORE the pipeline — so even a perfectly-signed entry by
+    # an attested member is rejected without a token.
+    assert hub["store"].exists(ev.id) is False
+
+
+def test_public_routes_remain_accessible_without_auth(hub):
+    """Verification artifacts (sth, proofs) and the auth handshake stay
+    public — CT-style transparency for the head and proofs."""
+    unauth = TestClient(hub["app"])
+    assert unauth.get("/healthz").status_code == 200
+    assert unauth.get("/sth").status_code == 200
+    assert unauth.post("/auth/challenge").status_code == 200
+
+
+def test_session_invalidated_when_member_revoked(hub):
+    """§5 invariant: the session is bound to a *non-revoked* attested key.
+    Revoke the member mid-session; the next gated request must fail."""
+    # Confirm the pre-auth client works first.
+    assert hub["client"].get("/directory").status_code == 200
+    # Mutate the directory to revoke the member.
+    hub["directory"]._revoked[hub["member_pub"]] = Revocation(
+        pubkey=hub["member_pub"],
+        revoked_at="2026-02-01T00:00:00+00:00", reason="key compromise",
+    )
+    # Same client, same token — now denied.
+    r = hub["client"].get("/directory")
+    assert r.status_code == 401
 
 
 # ---- POST /entries ---------------------------------------------------
