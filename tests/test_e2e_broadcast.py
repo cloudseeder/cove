@@ -42,7 +42,10 @@ from cove.api import create_app
 from cove.auth import AuthService
 from cove.blobs import BlobStore
 from cove.entry import BlobRef, Entry, Receipt, sign_entry, verify_entry
-from cove.identity import Directory, issue_attestation, issue_directory
+from cove.identity import (
+    Directory, Revocation, hash_manifest,
+    issue_attestation, issue_directory,
+)
 from cove.index import Ledger, Overview
 from cove.pipeline import Pipeline
 from cove.store import EventStore
@@ -141,6 +144,20 @@ def _post_receipt(client: TestClient, *, thread: str, priv: str, pub: str,
     r = client.post("/entries", json=_payload(ev))
     assert r.status_code == 200, r.text
     return ev
+
+
+def _manifest_dict_for_wire(m) -> dict:
+    """Match the api's _manifest_to_dict: include every signed field, or
+    the sig fails to verify after a round trip through JSON."""
+    from dataclasses import asdict
+    return {
+        "org": m.org,
+        "attestations": [asdict(a) for a in m.attestations],
+        "revocations": [asdict(r) for r in m.revocations],
+        "updated_at": m.updated_at,
+        "prev_manifest_hash": m.prev_manifest_hash,
+        "sig": m.sig,
+    }
 
 
 def _entry_from_pushed(pushed: dict) -> Entry:
@@ -496,3 +513,191 @@ def test_equivocation_substrate_fires_on_divergent_observed_sths(tmp_path, root_
     # belongs (a governance signal, not an ack signal).
     status = board_client.get("/ledger", params={"entry": notice.id}).json()
     assert sorted(status["acked"]) == sorted([alice_pub, bob_pub])
+
+
+def test_revocation_mid_session_immediately_cuts_off_revoked_member(
+        tmp_path, root_keypair, hub_keypair):
+    """Revocation lands while a member is in mid-flow — walked end-to-end.
+
+    Setup: board, alice, bob — all attested, all authenticated, all with
+    a live session token. Board posts a notice; alice and bob both ack
+    via signed receipts; /ledger shows both as acked. Then an admin
+    pushes a /admin/revoke with a new root-signed, chain-linked manifest
+    that tombstones bob.
+
+    Six invariants pinned end-to-end:
+
+      1. bob's existing session token DIES immediately. The next gated
+         request returns 401 because resolve_session checks is_revoked
+         on every lookup — the §5 'session bound to a NON-REVOKED
+         attested key' guarantee.
+
+      2. bob CANNOT re-authenticate. A fresh /auth/challenge +
+         /auth/verify with a valid signature still returns 401, because
+         the directory check at verify time sees the revocation.
+
+      3. bob's POST /entries with his old token returns 401 from the
+         auth gate BEFORE the pipeline runs. Defense-in-depth — even
+         if the auth gate were bypassed, the pipeline's step-2
+         directory.is_revoked check would also reject.
+
+      4. §2.3 historical-entry survival. The receipt bob already signed
+         is durably in the log, inclusion-proves under the post-revoke
+         STH, and verify_entry still passes. is_revoked(bob,
+         as_of=receipt.created_at) is False — entries signed before
+         revocation remain valid as of the moment they were signed.
+         The board's signed paper trail with the now-departed member
+         is NOT retroactively invalidated.
+
+      5. /ledger still acks bob. The partition is based on signed
+         receipts that exist; it does NOT consult current attestation
+         status. The board can answer 'did bob ack this notice?'
+         affirmatively forever — the cryptographic record stands
+         independently of bob's current membership.
+
+      6. Board and alice are unaffected — their sessions still resolve,
+         their gated routes still work, alice can still post.
+
+    Known v1 gap (intentionally NOT asserted here): a WebSocket /stream
+    connection bob opened BEFORE the revoke would continue to receive
+    pushed entries. The auth check runs at WS connect time only, not
+    per-broadcast. Production should either re-check resolve_session
+    per-broadcast or close stale connections on revoke; the pilot's
+    session TTL (1h) is the operational bound. Pinning the broken
+    behavior here would resist a future fix.
+    """
+    root_priv, root_pub = root_keypair
+
+    # === Bootstrap ===
+    board_priv, board_pub = crypto.generate_keypair()
+    alice_priv, alice_pub = crypto.generate_keypair()
+    bob_priv,   bob_pub   = crypto.generate_keypair()
+    hub_ = _bootstrap_hub(tmp_path, root_keypair, hub_keypair, members=[
+        (board_pub, "Board", "B-1", "board"),
+        (alice_pub, "Alice", "U-1", "member"),
+        (bob_pub,   "Bob",   "U-2", "member"),
+    ])
+    app = hub_["app"]
+    directory = hub_["directory"]
+    store = hub_["store"]
+
+    # All three auth and capture live sessions.
+    board_client = _auth_client(app, board_priv, board_pub)
+    alice_client = _auth_client(app, alice_priv, alice_pub)
+    bob_client   = _auth_client(app, bob_priv,   bob_pub)
+
+    THREAD = "annual-meeting"
+
+    # === Board posts notice; both members ack — PRE-revoke evidence ===
+    notice = sign_entry(Entry(
+        thread=THREAD, author=board_pub, kind="notice",
+        created_at="2026-06-15T18:00:00Z",
+        body="Annual meeting Wednesday 7pm in the clubhouse.",
+    ), board_priv)
+    notice_seq = board_client.post(
+        "/entries", json=_payload(notice),
+    ).json()["seq"]
+
+    receipts = {}
+    for name, client, priv, pub in [
+        ("alice", alice_client, alice_priv, alice_pub),
+        ("bob",   bob_client,   bob_priv,   bob_pub),
+    ]:
+        observed = STH(**client.get("/sth").json())
+        receipts[name] = _post_receipt(
+            client, thread=THREAD, priv=priv, pub=pub,
+            high_water_seq=notice_seq,
+            observed_size=observed.tree_size,
+            observed_root=observed.root_hash,
+            created_at="2026-06-15T18:00:30Z",
+        )
+    pre_status = board_client.get(
+        "/ledger", params={"entry": notice.id},
+    ).json()
+    assert sorted(pre_status["acked"]) == sorted([alice_pub, bob_pub])
+
+    # === Admin pushes a chained, root-signed manifest that revokes bob ===
+    current = directory.manifest
+    rev_bob = Revocation(pubkey=bob_pub,
+                         revoked_at="2026-06-15T19:00:00+00:00",
+                         reason="key compromise")
+    new_manifest = issue_directory(
+        root_priv, org=root_pub,
+        attestations=list(current.attestations),         # unchanged
+        revocations=list(current.revocations) + [rev_bob],
+        updated_at="2026-06-15T19:00:01+00:00",
+        prev_manifest_hash=hash_manifest(current),
+    )
+    # /admin/revoke is self-authenticating via the root sig on the
+    # manifest — any client can POST.
+    admin_resp = board_client.post(
+        "/admin/revoke",
+        json={"manifest": _manifest_dict_for_wire(new_manifest)},
+    )
+    assert admin_resp.status_code == 200, admin_resp.text
+
+    # === Invariant 1: bob's existing session is dead immediately ===
+    r = bob_client.get("/directory")
+    assert r.status_code == 401
+    assert r.json()["error"] == "auth_required"
+
+    # === Invariant 2: bob cannot re-authenticate ===
+    fresh = TestClient(app)
+    ch = fresh.post("/auth/challenge").json()
+    sig = crypto.sign(bob_priv, ch["nonce"].encode())
+    r = fresh.post("/auth/verify", json={
+        "pubkey": bob_pub, "nonce": ch["nonce"], "sig": sig,
+    })
+    assert r.status_code == 401
+    assert r.json()["error"] == "auth_failed"
+
+    # === Invariant 3: bob cannot post new entries with his old token ===
+    post_revoke_ev = sign_entry(Entry(
+        thread=THREAD, author=bob_pub, kind="post",
+        created_at="2026-06-15T19:30:00Z", body="should not land",
+    ), bob_priv)
+    r = bob_client.post("/entries", json=_payload(post_revoke_ev))
+    assert r.status_code == 401
+    assert store.exists(post_revoke_ev.id) is False
+
+    # === Invariant 4: §2.3 — historical receipt survives ===
+    bob_receipt = receipts["bob"]
+    assert store.exists(bob_receipt.id)
+
+    # Inclusion-proves under the CURRENT post-revoke STH.
+    sth_now = STH(**board_client.get("/sth").json())
+    proof = InclusionProof(**board_client.get(
+        "/proof/inclusion", params={"entry": bob_receipt.id},
+    ).json())
+    seq = store.seq_of(bob_receipt.id)
+    assert verify_inclusion(bob_receipt.id, seq, proof, sth_now) is True
+
+    # The signed content still verifies — the directory revocation does
+    # NOT retroactively invalidate signatures from before that time.
+    reread = store.get(bob_receipt.id)
+    assert verify_entry(reread) is True
+
+    # As-of-time: at the moment bob signed his receipt he was not revoked.
+    # Current: he is revoked. Both views co-exist correctly.
+    assert directory.is_revoked(bob_pub, as_of=bob_receipt.created_at) is False
+    assert directory.is_revoked(bob_pub) is True
+
+    # === Invariant 5: /ledger still acks bob ===
+    # The ack partition is the set of signed receipts that exist; it
+    # is independent of who's currently attested. bob's signed ack
+    # against this notice will remain in 'acked' as long as the
+    # receipt entry is in the log.
+    post_status = board_client.get(
+        "/ledger", params={"entry": notice.id},
+    ).json()
+    assert sorted(post_status["acked"]) == sorted([alice_pub, bob_pub])
+
+    # === Invariant 6: board and alice are unaffected ===
+    assert board_client.get("/directory").status_code == 200
+    assert alice_client.get("/directory").status_code == 200
+    later = sign_entry(Entry(
+        thread=THREAD, author=alice_pub, kind="post",
+        created_at="2026-06-15T19:35:00Z", body="discussion item",
+    ), alice_priv)
+    r = alice_client.post("/entries", json=_payload(later))
+    assert r.status_code == 200
