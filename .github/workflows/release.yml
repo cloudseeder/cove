@@ -107,6 +107,42 @@ jobs:
         working-directory: clients/web
         run: pnpm install --frozen-lockfile
 
+      # OS code-signing — conditionally exported.
+      #
+      # Critical subtlety: if we just YAML-forward `${{ secrets.X }}` as
+      # env vars at the action level, an absent secret resolves to an
+      # empty string and tauri-action treats "set to empty" as
+      # "configured but malformed" → tries to import a 0-byte cert,
+      # fails with `SecKeychainItemImport: parameters were not valid`.
+      #
+      # So: only write the signing env vars to $GITHUB_ENV when the
+      # secret actually has content. Empty / unset → env var never
+      # appears → tauri-action correctly does an unsigned build.
+      - name: Configure Apple code-signing (only if secret present)
+        if: matrix.platform == 'macos-latest' && env.HAS_APPLE_CERT == 'true'
+        env:
+          HAS_APPLE_CERT: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        run: |
+          {
+            echo "APPLE_CERTIFICATE=${{ secrets.APPLE_CERTIFICATE }}"
+            echo "APPLE_CERTIFICATE_PASSWORD=${{ secrets.APPLE_CERTIFICATE_PASSWORD }}"
+            echo "APPLE_SIGNING_IDENTITY=${{ secrets.APPLE_SIGNING_IDENTITY }}"
+            echo "APPLE_ID=${{ secrets.APPLE_ID }}"
+            echo "APPLE_PASSWORD=${{ secrets.APPLE_PASSWORD }}"
+            echo "APPLE_TEAM_ID=${{ secrets.APPLE_TEAM_ID }}"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure Windows code-signing (only if secret present)
+        if: matrix.platform == 'windows-latest' && env.HAS_WIN_CERT == 'true'
+        env:
+          HAS_WIN_CERT: ${{ secrets.WINDOWS_CERTIFICATE != '' }}
+        shell: bash
+        run: |
+          {
+            echo "WINDOWS_CERTIFICATE=${{ secrets.WINDOWS_CERTIFICATE }}"
+            echo "WINDOWS_CERTIFICATE_PASSWORD=${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}"
+          } >> "$GITHUB_ENV"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -117,22 +153,9 @@ jobs:
           # the next one (set blank if you generated without a password).
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-          # === OPTIONAL: macOS code-signing + notarization ===
-          # Absent → unsigned macOS build (Gatekeeper warning on first
-          # open). Present → signed + notarized. tauri-action sees these
-          # automatically; we just forward them through env.
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-
-          # === OPTIONAL: Windows code-signing ===
-          # Absent → SmartScreen warning. Present → signed MSI/NSIS.
-          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
-          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          # OS code-signing vars (Apple + Windows) come from $GITHUB_ENV
+          # via the conditional steps above. Don't forward them here —
+          # forwarding empty values defeats the whole point.
         with:
           projectPath: clients/web
           tagName: ${{ github.ref_name }}
