@@ -110,3 +110,81 @@ export async function ensureNotificationPermission(): Promise<boolean> {
   const result = await plugin.requestPermission();
   return result === 'granted';
 }
+
+/**
+ * Auto-update — slice 4b.
+ *
+ * Trust posture: the updater plugin verifies every downloaded bundle
+ * against the public key embedded in tauri.conf.json BEFORE it's
+ * installed. That signature is independent of OS code-signing — so
+ * even unsigned macOS/Windows builds get an authenticated update
+ * channel. A tampered or unsigned bundle is refused by the plugin
+ * with no UI involvement.
+ *
+ * UX intent: we own the prompt (tauri.conf.json sets `dialog: false`).
+ * The default modal would shove a system-y dialog in front of the
+ * verification ceremony, which fights the rest of the app's tone.
+ * Our flow is: silent check on startup → quiet affordance in the
+ * thread view → user explicitly opts in to install + restart.
+ */
+export interface AvailableUpdate {
+  version: string;
+  /** Release notes from latest.json; may be empty. */
+  notes: string | null;
+  /** ISO-8601 publish date if present in the feed. */
+  date: string | null;
+}
+
+export const updater = {
+  /**
+   * Check the updater feed. Returns null when up-to-date, an
+   * AvailableUpdate record otherwise. NEVER throws on "no update
+   * available"; only throws on network/signature failure — those are
+   * worth surfacing.
+   */
+  async check(): Promise<AvailableUpdate | null> {
+    if (!isTauri()) return null;
+    const plugin = await import('@tauri-apps/plugin-updater');
+    const update = await plugin.check();
+    if (update === null) return null;
+    return {
+      version: update.version,
+      notes: update.body ?? null,
+      date: update.date ?? null,
+    };
+  },
+  /**
+   * Download, verify (the plugin checks the signature against the
+   * pubkey baked into tauri.conf.json), install, then restart. This
+   * is one atomic operation from the user's perspective — once they
+   * say yes, they're getting a new app.
+   *
+   * The intermediate progress callback is fired with bytes-downloaded
+   * tallies; the UI can show a progress bar if desired. We keep it
+   * simple for now.
+   */
+  async downloadAndInstallAndRestart(
+    onProgress?: (downloaded: number, total: number | null) => void,
+  ): Promise<void> {
+    if (!isTauri()) {
+      throw new Error('updater.downloadAndInstallAndRestart() requires the Tauri shell');
+    }
+    const plugin = await import('@tauri-apps/plugin-updater');
+    const update = await plugin.check();
+    if (update === null) {
+      throw new Error('No update available');
+    }
+    let downloaded = 0;
+    let total: number | null = null;
+    await update.downloadAndInstall((event) => {
+      if (event.event === 'Started') {
+        total = event.data.contentLength ?? null;
+      } else if (event.event === 'Progress') {
+        downloaded += event.data.chunkLength;
+        onProgress?.(downloaded, total);
+      }
+    });
+    const process = await import('@tauri-apps/plugin-process');
+    await process.relaunch();
+  },
+};

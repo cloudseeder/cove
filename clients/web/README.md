@@ -126,8 +126,121 @@ private key in the JS heap. Less secure; the app still works.
   System tray (Open / Quit), close-to-tray on window close so the
   subscriber keeps running. JS branches: Tauri uses Rust subscription,
   browser uses the in-tab WebSocket — verification path identical.
-- **Slice 4b (next):** packaging (DMG / MSI / AppImage), code-signing,
-  auto-update, mobile (Tauri 2's iOS + Android targets).
+- **Slice 4b (done):** explicit per-platform bundle targets (DMG + app
+  for macOS, MSI + NSIS for Windows, AppImage + deb for Linux);
+  `tauri-plugin-updater` wired both sides with a quiet
+  `UpdateBar` affordance (no modal nag); `.github/workflows/release.yml`
+  multi-platform matrix build keyed off `v*.*.*` tag pushes, drafts a
+  GitHub Release with all three bundles + a signed `latest.json`.
+  Code-signing for macOS/Windows is **env-driven and optional** —
+  unsigned pilot builds work, just trip Gatekeeper / SmartScreen once
+  per user. Mobile bundle config is in place; the `pnpm tauri ios init`
+  and `pnpm tauri android init` bootstrap commands run on your machine
+  (see "Mobile bootstrap" below).
+- **Slice 4c (next):** observability + crash reporting, multi-window
+  shortcuts, real app icon set (current icon is a placeholder), and
+  the first round of pilot feedback.
+
+## Releasing & auto-update — slice 4b mechanics
+
+### Sign the updater channel (required, free)
+
+The updater verifies every downloaded bundle against a public key
+**before** installing it. This is independent of OS code-signing and
+gives even unsigned macOS/Windows builds a cryptographically
+authenticated update channel.
+
+```bash
+pnpm tauri signer generate -w ~/.tauri/cove-updater.key
+# Outputs the public key in the terminal; the private key writes to the
+# path you gave. Treat the private key like any signing key — don't
+# commit it, don't share it.
+```
+
+Then:
+
+1. Paste the **public** key into `src-tauri/tauri.conf.json` →
+   `plugins.updater.pubkey` (replacing the `REPLACE_WITH_...`
+   placeholder).
+2. Add the **private** key contents and password to the repo's
+   GitHub Actions secrets as `TAURI_SIGNING_PRIVATE_KEY` and
+   `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. (Password is blank if you
+   skipped the prompt.)
+
+That's it. Tagging `v0.2.0` and pushing now produces a verifiable
+update.
+
+### Optional OS code-signing (defer for pilot)
+
+The `release.yml` workflow accepts these as repo secrets and uses them
+if present, no-ops if absent. **Acquiring them is optional for a
+pilot**; you ship unsigned and ask pilot users to dismiss the one-time
+warning.
+
+| Platform | Secrets | Cost | What it buys |
+|---|---|---|---|
+| macOS | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | $99/yr (Apple Developer) | Notarized DMG; silent first-open instead of Gatekeeper warning. Also a prerequisite for the App Store and TestFlight. |
+| Windows | `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD` | ~$200–400/yr (codesigning cert from Certum / SSL.com / etc.) | Signed MSI/NSIS; fewer SmartScreen surprises. EV certs build reputation faster but cost more. |
+| Linux | none | $0 | AppImage runs as-is. |
+
+Pilot recipe: skip these, ship Linux AppImage + unsigned macOS DMG +
+unsigned Windows MSI. Add notarization the day a pilot user complains
+about the Gatekeeper warning.
+
+### Cutting a release
+
+1. Bump `version` in **both** `src-tauri/tauri.conf.json` and
+   `package.json` (must match).
+2. Commit, then `git tag v0.2.0 && git push --tags`.
+3. Watch the Actions tab — the workflow drafts a GitHub Release with
+   all three platform bundles and a signed `latest.json`.
+4. Review the draft; click **Publish**. Running Cove clients pick up
+   the update on their next `checkForUpdate()` (currently: on app
+   load).
+
+For a dry run without publishing, trigger the workflow manually from
+the Actions tab and tick "Build only, do not publish Release" — the
+draft Release is still created so you can inspect the artifacts.
+
+## Mobile bootstrap (one-time, runs on your machine)
+
+The bundle config keys for mobile are already in `tauri.conf.json`;
+what's missing is the platform-specific scaffolding that Tauri's CLI
+generates on your machine. Run once, commit the result:
+
+```bash
+# iOS — requires Xcode and an Apple Developer cert ($99/yr) to run on a
+# real device. The simulator works without paying.
+pnpm tauri ios init
+
+# Android — requires Android Studio / Android SDK. Sideload-ready APKs
+# can be built with a self-signed keystore (free).
+pnpm tauri android init
+```
+
+Each command creates a `src-tauri/gen/<platform>/` directory with the
+native project. Commit them. Then:
+
+```bash
+pnpm tauri ios dev      # simulator dev loop
+pnpm tauri android dev  # emulator dev loop
+pnpm tauri ios build
+pnpm tauri android build
+```
+
+Mobile auto-update routes through the App Store / Play Store, not the
+Tauri updater — so the `latest.json` feed is desktop-only.
+
+## Secrets checklist (TL;DR)
+
+Required for any release:
+- `TAURI_SIGNING_PRIVATE_KEY` + `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
+
+Optional (graduated rollout, $-gated):
+- macOS notarization: `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`,
+  `APPLE_SIGNING_IDENTITY`, `APPLE_ID`, `APPLE_PASSWORD`,
+  `APPLE_TEAM_ID`
+- Windows signing: `WINDOWS_CERTIFICATE`, `WINDOWS_CERTIFICATE_PASSWORD`
 
 ## Build / dev
 

@@ -1,0 +1,152 @@
+# Cove client — multi-platform release build.
+#
+# Triggers on v*.*.* tag push (e.g. `git tag v0.2.0 && git push --tags`).
+# Builds the Tauri desktop bundles on macOS / Windows / Linux in
+# parallel via tauri-action, which also generates the `latest.json`
+# updater feed entries from each bundle and attaches everything to a
+# GitHub Release.
+#
+# Signing posture (slice 4b):
+#
+#   - TAURI_SIGNING_PRIVATE_KEY (+ password): REQUIRED. This signs the
+#     updater bundle so installs verify against the pubkey baked into
+#     tauri.conf.json. Without it, the updater channel cannot work —
+#     the workflow will fail loud rather than ship un-updatable builds.
+#
+#   - APPLE_* + WINDOWS_CERTIFICATE_* are OPTIONAL. Absent → unsigned
+#     macOS/Windows builds (Gatekeeper + SmartScreen warn on first
+#     open; survivable for pilots). Present → signed + notarized macOS,
+#     signed Windows. tauri-action picks them up from env without any
+#     conditional logic on our side.
+#
+# How a release goes out, once you've set the secrets:
+#
+#   1. Bump version in clients/web/src-tauri/tauri.conf.json AND
+#      clients/web/package.json (keep them in sync).
+#   2. Commit, then `git tag v0.2.0 && git push --tags`.
+#   3. This workflow opens a draft Release named "Cove v0.2.0",
+#      attaches the three platform bundles + a signed latest.json,
+#      and leaves it as DRAFT for you to review + publish.
+#   4. Publish the Release. The updater endpoint
+#      (https://github.com/<owner>/<repo>/releases/latest/download/latest.json)
+#      now serves the new manifest; running Cove clients pick it up
+#      on next checkForUpdate().
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  # Manual trigger so you can dry-run signing setup before tagging.
+  # The dry-run skips Release publication.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build only, do not publish Release'
+        type: boolean
+        default: true
+
+jobs:
+  build-tauri:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # macOS universal binary so a single .dmg covers Intel + Apple
+          # Silicon. tauri-action handles the lipo step.
+          - platform: macos-latest
+            args: '--target universal-apple-darwin'
+          - platform: ubuntu-22.04
+            args: ''
+          - platform: windows-latest
+            args: ''
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # macOS universal needs both architectures available to rustc.
+      - name: Install Rust targets (macOS universal)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          rustup target add aarch64-apple-darwin
+          rustup target add x86_64-apple-darwin
+
+      # Linux WebView + the libsecret dep the keychain crate needs.
+      - name: Install Linux build deps
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libsecret-1-dev
+
+      - uses: pnpm/action-setup@v3
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: clients/web/pnpm-lock.yaml
+
+      - name: Install JS deps
+        working-directory: clients/web
+        run: pnpm install --frozen-lockfile
+
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          # === REQUIRED for updater channel ===
+          # Generate locally with `pnpm tauri signer generate -w ~/.tauri/cove.key`.
+          # Copy the private key contents into this secret; password into
+          # the next one (set blank if you generated without a password).
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+          # === OPTIONAL: macOS code-signing + notarization ===
+          # Absent → unsigned macOS build (Gatekeeper warning on first
+          # open). Present → signed + notarized. tauri-action sees these
+          # automatically; we just forward them through env.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+          # === OPTIONAL: Windows code-signing ===
+          # Absent → SmartScreen warning. Present → signed MSI/NSIS.
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        with:
+          projectPath: clients/web
+          tagName: ${{ github.ref_name }}
+          releaseName: 'Cove ${{ github.ref_name }}'
+          releaseBody: |
+            See CHANGELOG for details.
+
+            ### Install notes (unsigned builds)
+            - **macOS:** right-click the app → Open the first time.
+              Gatekeeper warns once, then never again.
+            - **Windows:** SmartScreen → "More info" → "Run anyway"
+              the first time.
+            - **Linux:** AppImage runs as-is (`chmod +x` if needed).
+
+            Updates are cryptographically verified by the updater
+            plugin against the pubkey baked into tauri.conf.json —
+            independent of OS code-signing.
+          # Always draft. You review the bundles + release notes before
+          # publishing — once published, the updater feed serves it to
+          # every running client on next check, which is not the kind
+          # of thing you want behind a single 'git push --tags'.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}

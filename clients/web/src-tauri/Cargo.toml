@@ -31,6 +31,19 @@ hex = "0.4"
 # Native notifications. JS counterpart: @tauri-apps/plugin-notification.
 tauri-plugin-notification = "2"
 
+# Auto-update. JS counterpart: @tauri-apps/plugin-updater. The bundle is
+# verified against a Tauri-signer public key (separate from OS code-
+# signing) before it's allowed to install — so even unsigned macOS/
+# Windows builds get a cryptographically authenticated update channel.
+# The private key is held by CI as a secret; the public key is baked
+# into tauri.conf.json (see `plugins.updater.pubkey`).
+tauri-plugin-updater = "2"
+
+# Lets the webview JS side restart the app after applying an update.
+# JS counterpart: @tauri-apps/plugin-process. Only the `restart`
+# permission is exposed via capabilities/default.json.
+tauri-plugin-process = "2"
+
 # Background WebSocket subscription — held by the Rust process so push
 # messages arrive even when the webview window is closed. We pin to a
 # tokio-tungstenite version that connects to ws:// and wss:// without

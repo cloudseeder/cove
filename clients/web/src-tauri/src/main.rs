@@ -1,12 +1,22 @@
 // Cove — Tauri shell.
 //
-// Slice 3 wired the keychain custody commands. Slice 4 adds:
+// Slice 3 wired the keychain custody commands. Slice 4 added:
 //   - background /stream subscriber held by this process so push
 //     messages arrive even when the webview is closed
 //   - native notifications (tauri-plugin-notification) — fires only
 //     when the main window isn't focused
 //   - system tray with Open / Quit
 //   - hide-to-tray on window close (the subscriber stays alive)
+//
+// Slice 4b adds:
+//   - tauri-plugin-updater: cryptographically-verified self-update
+//     against the latest.json feed configured in tauri.conf.json.
+//     The Tauri-signer public key embedded there is what gates an
+//     update install — separate from (and independent of) OS code-
+//     signing, so even unsigned macOS/Windows builds get an integrity-
+//     checked update channel.
+//   - tauri-plugin-process: lets the JS side restart the app after
+//     applying an update.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -27,6 +37,8 @@ use crate::subscription::Subscription;
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // Shared subscription handle — slice 4. Wrapped in Arc so the
         // tokio task can also hold a reference and clear its own slot
         // when it exits.

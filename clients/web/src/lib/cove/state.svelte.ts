@@ -7,7 +7,8 @@
  */
 import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
 import {
-  ensureNotificationPermission, isTauri, keychain, stream,
+  ensureNotificationPermission, isTauri, keychain, stream, updater,
+  type AvailableUpdate,
 } from './tauri';
 
 type AuthStatus =
@@ -21,6 +22,13 @@ type ThreadStatus =
   | { kind: 'syncing' }
   | { kind: 'error'; message: string };
 
+type UpdateStatus =
+  | { kind: 'idle' }
+  | { kind: 'checking' }
+  | { kind: 'available'; update: AvailableUpdate }
+  | { kind: 'installing'; downloaded: number; total: number | null }
+  | { kind: 'error'; message: string };
+
 export class AppState {
   authStatus = $state<AuthStatus>({ kind: 'unauthenticated' });
   thread = $state<string>('annual-meeting');
@@ -32,6 +40,9 @@ export class AppState {
   /** Public key stored in the OS keychain (Tauri only). When set,
    *  AuthPanel shows 'Unlock' rather than the import form. */
   storedPublicKey = $state<string | null>(null);
+  /** Updater status — drives the quiet 'Update available' affordance.
+   *  Set by checkForUpdate(); resolution by installUpdate(). */
+  updateStatus = $state<UpdateStatus>({ kind: 'idle' });
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
@@ -60,6 +71,49 @@ export class AppState {
     if (!this.inTauri) return;
     await keychain.clear();
     await this.refreshKeychain();
+  }
+
+  /**
+   * Quietly check the updater feed. Call once on app load; the feed
+   * URL + pubkey live in tauri.conf.json. A signature-verification
+   * failure is surfaced as an error — the rest of the chain (no
+   * network, no update available) is silent so the UI doesn't shout
+   * about routine outcomes.
+   */
+  async checkForUpdate(): Promise<void> {
+    if (!this.inTauri) return;
+    this.updateStatus = { kind: 'checking' };
+    try {
+      const available = await updater.check();
+      this.updateStatus = available === null
+        ? { kind: 'idle' }
+        : { kind: 'available', update: available };
+    } catch (err) {
+      this.updateStatus = { kind: 'error', message: (err as Error).message };
+    }
+  }
+
+  /**
+   * Install the available update and restart. Only callable when
+   * updateStatus.kind === 'available'. The plugin verifies the
+   * downloaded bundle against the Tauri-signer pubkey BEFORE install
+   * — a tampered or unsigned bundle is refused, lands here as an
+   * error.
+   */
+  async installUpdate(): Promise<void> {
+    if (!this.inTauri) return;
+    if (this.updateStatus.kind !== 'available') return;
+    this.updateStatus = { kind: 'installing', downloaded: 0, total: null };
+    try {
+      await updater.downloadAndInstallAndRestart((downloaded, total) => {
+        this.updateStatus = { kind: 'installing', downloaded, total };
+      });
+      // Process restarts before we reach here in practice; leave the
+      // status as installing so any frame painted between download
+      // and restart shows the progress, not 'idle'.
+    } catch (err) {
+      this.updateStatus = { kind: 'error', message: (err as Error).message };
+    }
   }
 
   /** Reset all per-session state. Used on disconnect / re-auth. */
