@@ -19,6 +19,7 @@ from fastapi import (
     Body, Depends, FastAPI, Header, Query, Request,
     WebSocket, WebSocketDisconnect,
 )
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from . import crypto
@@ -148,6 +149,30 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         yield
 
     api = FastAPI(title="Cove Hub", version="0.1.0", lifespan=lifespan)
+
+    # ---- CORS: allow Tauri webview origins + dev ------------------------
+    # Tauri webviews load from a custom origin that differs per platform:
+    #   macOS:   tauri://localhost
+    #   Linux:   http://tauri.localhost
+    #   Windows: http://tauri.localhost (custom-protocol mode)
+    # Plus the SvelteKit dev server origin for local browser testing.
+    # Browsers refuse to surface response bodies from cross-origin requests
+    # unless the response carries an explicit Access-Control-Allow-Origin
+    # header naming the caller's origin. WebSocket connections are NOT
+    # gated by CORS the same way, so /stream works regardless.
+    api.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "tauri://localhost",
+            "http://tauri.localhost",
+            "https://tauri.localhost",
+            "http://localhost:1420",
+            "http://localhost:5173",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # ---- auth gate (§5) -------------------------------------------------
     # Data routes require a valid session token bound to a non-revoked
