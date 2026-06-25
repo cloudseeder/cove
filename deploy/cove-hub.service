@@ -1,0 +1,49 @@
+# Cove hub — FastAPI under uvicorn.
+#
+# Install (run as root):
+#   sudo cp deploy/cove-hub.service /etc/systemd/system/cove-hub.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now cove-hub.service
+#
+# Runs as the `brooks` user (the dev user — pilot posture). For LWCCOA
+# production, create a dedicated `cove` user with /var/lib/cove as state
+# and update User/Group/WorkingDirectory/Environment below. The same
+# user must own COVE_STATE_DIR.
+#
+# Binds 127.0.0.1:8000 — TLS is terminated by cloudflared (deploy/
+# cloudflared-cove.service) which proxies to this port. Don't bind 0.0.0.0
+# here; the tunnel is the only public-facing surface.
+
+[Unit]
+Description=Cove hub (FastAPI / uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=brooks
+Group=brooks
+WorkingDirectory=/home/brooks/dev/cove
+Environment=COVE_STATE_DIR=/home/brooks/cove-state
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/brooks/dev/cove/.venv/bin/uvicorn scripts.run_hub:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --log-level info
+Restart=on-failure
+RestartSec=5
+
+# Tighten the blast radius — these are cheap to enable and they harden
+# against an accidentally-introduced exploit class without changing
+# behavior.
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/home/brooks/cove-state
+PrivateTmp=true
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

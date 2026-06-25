@@ -1,0 +1,26 @@
+# Cloudflare Tunnel config for the Cove pilot hub.
+#
+# This is the per-tunnel routing config — NOT the credentials. Drop into
+# ~/.cloudflared/config.yml after `cloudflared tunnel create cove-pilot`,
+# replacing TUNNEL_UUID with the value the create command printed.
+#
+# Two ingress entries: the public hostname → local uvicorn, then a
+# catch-all 404 so anything else hitting the tunnel is refused. The
+# catch-all is mandatory; cloudflared rejects configs without one.
+
+tunnel: TUNNEL_UUID
+credentials-file: /home/brooks/.cloudflared/TUNNEL_UUID.json
+
+# Reach the hub on localhost:8000 — the hub binds 127.0.0.1 in the
+# systemd unit, so the tunnel is the only path in from outside.
+ingress:
+  - hostname: cove.oap.dev
+    service: http://localhost:8000
+    originRequest:
+      # WebSocket support — required for /stream fan-out. cloudflared
+      # tunnels websockets natively, but the upstream timeout defaults
+      # short and a quiet thread will get its connection closed; bump
+      # to keep long-lived subscriptions stable.
+      connectTimeout: 10s
+      noTLSVerify: false
+  - service: http_status:404
