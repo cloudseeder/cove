@@ -12,6 +12,22 @@ tauri = { version = "2.0", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Key custody: OS keychain access via the `keyring` crate.
+#   macOS:   Keychain Services
+#   Windows: Credential Manager (Win32 wincred)
+#   Linux:   Secret Service (requires libsecret-1-dev at build time;
+#            see clients/web/README.md slice 3 notes)
+keyring = "3"
+
+# Ed25519 signing — performed Rust-side so the private key never crosses
+# the JS↔Rust boundary after import. ed25519-dalek is the same algorithm
+# the hub uses (Python PyNaCl); signatures interoperate.
+ed25519-dalek = { version = "2", features = ["std"] }
+
+# Hex encode/decode for the wire (priv/pub keys are 64-char hex strings
+# matching scripts/gen_keys.py output).
+hex = "0.4"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

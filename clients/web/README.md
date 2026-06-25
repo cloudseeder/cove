@@ -24,11 +24,17 @@ src/
     crypto.ts         # sha256, Ed25519, RFC 8785 JCS canonicalization
     verify.ts         # verifyEntry / verifySth / verifyInclusion / verifyDirectoryManifest
     errors.ts         # AuthenticationError / VerificationError / ClientError
-    client.ts         # Client class: auth + sync + post + WS subscribe
-    state.svelte.ts   # AppState — reactive Svelte 5 wrapper around Client
+    client.ts         # Client class + Signer abstraction (InJSSigner /
+                      #   TauriKeychainSigner)
+    tauri.ts          # Tauri detection + typed wrappers around the
+                      #   Rust commands (keychain.status/import/clear/
+                      #   signMessage)
+    state.svelte.ts   # AppState — reactive Svelte 5 wrapper. Tracks
+                      #   inTauri + storedPublicKey for keychain mode.
     fixtures.json     # captured from the Python ref via scripts/dump_test_vectors.py
     verify.test.ts    # vitest — pins TS↔Python byte-identity (21)
-    client.test.ts    # vitest — Client with mocked fetch + WebSocket (9)
+    client.test.ts    # vitest — Client with mocked fetch + WebSocket
+                      #   + the Signer abstraction (10)
     Seal.svelte       # the verification ceremony component (3 states)
     EntryCard.svelte  # a single VerifiedEntry rendered with its Seal
   routes/             # SvelteKit pages
@@ -38,11 +44,35 @@ src/
     ThreadView.svelte # live feed with the ceremony per entry
     ComposeBox.svelte # ⌘⏎ to send; no optimistic insert
     demo/+page.svelte # offline Seal showcase against fixtures.json
-src-tauri/         # Rust shell (minimal in slice 1)
-  src/main.rs
+src-tauri/         # Rust shell
+  src/main.rs       # registers the Tauri commands
+  src/keys.rs       # OS keychain ops (keyring crate) + ed25519 signing
+  src/commands.rs   # Tauri command handlers wrapping keys.rs
   Cargo.toml
   tauri.conf.json
 ```
+
+## Key custody — what slice 3 changed
+
+After slice 3, the private key flow in the Tauri shell is:
+
+1. **First launch** — user pastes/drops a paired `.priv`/`.pub` in the
+   AuthPanel. The webview calls `keys_import(priv, pub)`, which sends
+   the priv string to Rust. Rust validates that the claimed pub matches
+   the actual derivation, stores both in the OS keychain (macOS Keychain
+   Services / Windows Credential Manager / Linux Secret Service), and
+   the webview wipes its local copy of the priv string.
+2. **Subsequent launches** — `keys_status` returns `{has_keys: true,
+   public_key: <pub>}`. The AuthPanel shows "Unlock" instead of the
+   import form. The Client is constructed with a `TauriKeychainSigner`;
+   every signature operation roundtrips through Rust's `sign_message`.
+   The private key never reaches the webview JS heap.
+3. **Forget identity** — `keys_clear` wipes both keychain entries.
+   Used for "switch identity" / "this device left the org" cleanup.
+
+In browser-only mode (no Tauri shell), `isTauri()` returns false and
+the AuthPanel falls back to the slice-2 paste flow with `InJSSigner` —
+private key in the JS heap. Less secure; the app still works.
 
 ## Slice status
 
@@ -55,9 +85,16 @@ src-tauri/         # Rust shell (minimal in slice 1)
   `.priv`+`.pub` pair → connect), ThreadView (live feed with the seal
   ceremony per entry), ComposeBox (⌘⏎ to send). Demo route at `/demo`
   for the offline Seal showcase.
-- **Slice 3 (next):** Tauri Rust layer for keychain custody (private
-  key never leaves OS keychain), background WS subscription with
-  native notifications, native build + distribution.
+- **Slice 3 (done):** Rust keychain integration via the `keyring`
+  crate. Tauri commands: `keys_status`, `keys_import`, `keys_clear`,
+  `sign_message`. JS `Signer` abstraction with `InJSSigner` (browser
+  mode) and `TauriKeychainSigner` (private key NEVER reaches the JS
+  webview after import — Rust signs arbitrary bytes the JS hands it).
+  AuthPanel branches: import-once → unlock on subsequent launches in
+  Tauri; paste flow in browser-only mode.
+- **Slice 4 (next):** Rust-side background WebSocket subscription with
+  native notifications (notice arrives → desktop notification fires
+  even with webview closed), system tray, native build + distribution.
 
 ## Build / dev
 
@@ -68,6 +105,10 @@ You need:
   want the desktop window. The web side runs without Rust.
 - System WebView libs on Linux (`webkit2gtk-4.1`, etc.) — see
   https://v2.tauri.app/start/prerequisites/
+- **Linux only:** `libsecret-1-dev` for the keyring crate to compile
+  against the Secret Service API. On Debian/Ubuntu:
+  `sudo apt install libsecret-1-dev`. macOS and Windows use built-in
+  system APIs and need no extra packages.
 
 Install deps:
 

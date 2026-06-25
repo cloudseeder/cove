@@ -1,8 +1,16 @@
 <!--
-  Auth panel — hub URL + keypair (paste box or drop a .priv/.pub pair).
-  Slice 3 replaces the paste boxes with Tauri keychain custody.
+  Auth panel. Two paths:
+
+    - In Tauri:
+        first launch  → import (paste/drop) → keys stored in OS keychain.
+        subsequent     → unlock (no key handling in JS). Private key NEVER
+                         reaches the webview after import.
+    - In browser-only mode:
+        slice-2 paste flow. Private key lives in JS heap; less secure but
+        the app still works without a Tauri shell.
 -->
 <script lang="ts">
+  import { onMount } from 'svelte';
   import type { AppState } from '$lib/cove/state.svelte';
 
   interface Props {
@@ -14,6 +22,12 @@
   let priv = $state('');
   let pub = $state('');
   let thread = $state('annual-meeting');
+  let importing = $state(false);
+  let importError = $state<string | null>(null);
+
+  onMount(async () => {
+    await app.refreshKeychain();
+  });
 
   async function dropKeyfile(ev: DragEvent) {
     ev.preventDefault();
@@ -26,63 +40,159 @@
     }
   }
 
-  async function connect() {
-    await app.connect({ hubUrl, privateKey: priv.trim(), publicKey: pub.trim(), thread });
-  }
-
   function preventDefault(ev: DragEvent) {
     ev.preventDefault();
   }
 
+  async function importToKeychain() {
+    importError = null;
+    importing = true;
+    try {
+      await app.importKeysToKeychain(priv.trim(), pub.trim());
+      priv = '';   // never keep it in the JS heap after import
+    } catch (err) {
+      importError = (err as Error).message;
+    } finally {
+      importing = false;
+    }
+  }
+
+  async function connectKeychain() {
+    if (app.storedPublicKey === null) return;
+    await app.connect({
+      hubUrl, publicKey: app.storedPublicKey, thread, mode: 'keychain',
+    });
+  }
+
+  async function connectPaste() {
+    await app.connect({
+      hubUrl, privateKey: priv.trim(), publicKey: pub.trim(), thread, mode: 'paste',
+    });
+  }
+
+  async function forgetKeys() {
+    await app.clearKeychain();
+  }
+
   let connecting = $derived(app.authStatus.kind === 'connecting');
-  let failure = $derived(
+  let connectFailure = $derived(
     app.authStatus.kind === 'failed' ? app.authStatus.reason : null,
+  );
+
+  // ---- which view? ----
+  let mode = $derived<'tauri-unlock' | 'tauri-import' | 'paste'>(
+    app.inTauri
+      ? (app.storedPublicKey ? 'tauri-unlock' : 'tauri-import')
+      : 'paste',
   );
 </script>
 
-<section
-  class="auth"
-  ondrop={dropKeyfile}
-  ondragover={preventDefault}
-  aria-label="Connect to your hub"
->
-  <h1>Connect</h1>
-  <p class="muted">
-    Drop a paired <code>.priv</code> and <code>.pub</code> file anywhere in this panel,
-    or paste them. Hub URL is wherever your Cove server is running.
-  </p>
+<section class="auth" ondrop={dropKeyfile} ondragover={preventDefault}
+  aria-label="Connect to your hub">
 
-  <label>
-    <span>Hub URL</span>
-    <input type="url" bind:value={hubUrl} placeholder="http://localhost:8000" />
-  </label>
+  {#if mode === 'tauri-unlock'}
+    <!-- Returning user. Keys already in the OS keychain. -->
+    <h1>Welcome back</h1>
+    <p class="muted">
+      Your private key is in this device's keychain. Sign in to open your
+      threads — the key stays in the OS, never in the app.
+    </p>
 
-  <label>
-    <span>Private key (hex)</span>
-    <textarea bind:value={priv} rows="2" autocomplete="off" spellcheck="false"
-      placeholder="64-char hex from scripts/gen_keys.py"></textarea>
-  </label>
+    <div class="field">
+      <span class="field-label">Public key (from keychain)</span>
+      <code class="readonly">{app.storedPublicKey}</code>
+    </div>
 
-  <label>
-    <span>Public key (hex)</span>
-    <textarea bind:value={pub} rows="2" autocomplete="off" spellcheck="false"
-      placeholder="64-char hex"></textarea>
-  </label>
+    <label>
+      <span>Hub URL</span>
+      <input type="url" bind:value={hubUrl} placeholder="http://localhost:8000" />
+    </label>
 
-  <label>
-    <span>Thread</span>
-    <input type="text" bind:value={thread} placeholder="annual-meeting" />
-  </label>
+    <label>
+      <span>Thread</span>
+      <input type="text" bind:value={thread} placeholder="annual-meeting" />
+    </label>
 
-  <div class="actions">
-    <button type="button" onclick={connect}
-      disabled={connecting || !priv.trim() || !pub.trim()}>
-      {connecting ? 'Connecting…' : 'Connect'}
-    </button>
-  </div>
+    <div class="actions">
+      <button type="button" class="ghost" onclick={forgetKeys}>Forget this identity</button>
+      <button type="button" onclick={connectKeychain} disabled={connecting}>
+        {connecting ? 'Connecting…' : 'Unlock'}
+      </button>
+    </div>
 
-  {#if failure}
-    <p class="failure" role="alert">{failure}</p>
+  {:else if mode === 'tauri-import'}
+    <!-- Tauri shell, first launch. Import keys into the keychain. -->
+    <h1>Import your identity</h1>
+    <p class="muted">
+      Drop a paired <code>.priv</code> and <code>.pub</code> file
+      anywhere in this panel, or paste them. The private key goes
+      straight to your OS keychain and never returns to the app.
+    </p>
+
+    <label>
+      <span>Private key (hex)</span>
+      <textarea bind:value={priv} rows="2" autocomplete="off" spellcheck="false"
+        placeholder="64-char hex from scripts/gen_keys.py"></textarea>
+    </label>
+
+    <label>
+      <span>Public key (hex)</span>
+      <textarea bind:value={pub} rows="2" autocomplete="off" spellcheck="false"
+        placeholder="64-char hex"></textarea>
+    </label>
+
+    <div class="actions">
+      <button type="button" onclick={importToKeychain}
+        disabled={importing || !priv.trim() || !pub.trim()}>
+        {importing ? 'Importing…' : 'Import to keychain'}
+      </button>
+    </div>
+
+    {#if importError}
+      <p class="failure" role="alert">{importError}</p>
+    {/if}
+
+  {:else}
+    <!-- Browser-only mode. Slice-2 paste flow. -->
+    <h1>Connect</h1>
+    <p class="muted">
+      Drop a paired <code>.priv</code> and <code>.pub</code> file anywhere
+      in this panel, or paste them. For OS-keychain key custody, run this
+      app via Tauri instead of a plain browser.
+    </p>
+
+    <label>
+      <span>Hub URL</span>
+      <input type="url" bind:value={hubUrl} placeholder="http://localhost:8000" />
+    </label>
+
+    <label>
+      <span>Private key (hex)</span>
+      <textarea bind:value={priv} rows="2" autocomplete="off" spellcheck="false"
+        placeholder="64-char hex"></textarea>
+    </label>
+
+    <label>
+      <span>Public key (hex)</span>
+      <textarea bind:value={pub} rows="2" autocomplete="off" spellcheck="false"
+        placeholder="64-char hex"></textarea>
+    </label>
+
+    <label>
+      <span>Thread</span>
+      <input type="text" bind:value={thread} placeholder="annual-meeting" />
+    </label>
+
+    <div class="actions">
+      <button type="button" onclick={connectPaste}
+        disabled={connecting || !priv.trim() || !pub.trim()}>
+        {connecting ? 'Connecting…' : 'Connect'}
+      </button>
+    </div>
+  {/if}
+
+  {#if connectFailure}
+    <p class="failure" role="alert">{connectFailure}</p>
   {/if}
 </section>
 
@@ -105,11 +215,11 @@
     margin: 0 0 1.6rem;
     font-size: 0.95rem;
   }
-  label {
+  label, .field {
     display: block;
     margin: 0.9rem 0;
   }
-  label > span {
+  label > span, .field-label {
     display: block;
     font-size: 0.85rem;
     color: var(--muted);
@@ -135,9 +245,22 @@
     resize: vertical;
     min-height: 2.4rem;
   }
+  .readonly {
+    display: block;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.82rem;
+    word-break: break-all;
+  }
   .actions {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
+    gap: 0.6rem;
     margin-top: 1.5rem;
   }
   button {
@@ -159,6 +282,16 @@
     background: var(--border);
     color: var(--muted);
     cursor: not-allowed;
+  }
+  button.ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  button.ghost:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.06);
+    border-color: rgba(220, 38, 38, 0.4);
+    color: #fca5a5;
   }
   .failure {
     margin-top: 1rem;

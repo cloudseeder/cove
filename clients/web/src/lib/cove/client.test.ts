@@ -17,7 +17,7 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import fixtures from './fixtures.json';
-import { Client, sigSummary } from './client';
+import { Client, InJSSigner, sigSummary, type Signer } from './client';
 import { AuthenticationError, VerificationError } from './errors';
 import type { DirectoryManifest, Entry, InclusionProof, STH } from './types';
 
@@ -245,6 +245,50 @@ describe('subscribe', () => {
 });
 
 // ---- post + receipt -------------------------------------------------
+
+// ---- Signer abstraction (slice 3) -----------------------------------
+
+describe('Signer abstraction', () => {
+  test('Client routes auth + entry signing through the provided Signer', async () => {
+    // A spy signer wraps the in-JS signer so we can assert call counts +
+    // ensure the canonical bytes that flow to sign() are what verifyEntry
+    // accepts on the way back.
+    const inner = new InJSSigner(alice.priv);
+    const calls: Array<{ bytes: Uint8Array }> = [];
+    const spy: Signer = {
+      async sign(message) {
+        calls.push({ bytes: message });
+        return inner.sign(message);
+      },
+    };
+    const fetchMock = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const u = new URL(url.toString());
+      if (u.pathname === '/auth/challenge') {
+        return jsonResp({ nonce: 'd'.repeat(64), expires_at: 9_999_999_999 });
+      }
+      if (u.pathname === '/auth/verify') {
+        return jsonResp({ token: 'a'.repeat(64), pubkey: alice.pub, expires_at: 9_999_999_999 });
+      }
+      if (u.pathname === '/entries') {
+        const body = JSON.parse(init!.body as string);
+        return jsonResp({ id: body.id, seq: 0 });
+      }
+      return jsonResp({ error: 'not_found' }, 404);
+    });
+    const c = new Client({
+      hubUrl: HUB, publicKey: alice.pub, signer: spy, fetch: fetchMock,
+    });
+    await c.authenticate();
+    expect(calls.length).toBe(1);   // signed the auth nonce
+    await c.post({
+      thread: 't1', author: alice.pub, kind: 'post',
+      created_at: '2026-06-15T18:00:00Z',
+      parents: [], body: 'via signer', blobs: [], supersedes: null, receipt: null,
+      id: null, sig: null,
+    });
+    expect(calls.length).toBe(2);   // signed the entry's canonical content
+  });
+});
 
 describe('post', () => {
   test('signs an unsigned entry and the wire form matches what verifyEntry accepts', async () => {

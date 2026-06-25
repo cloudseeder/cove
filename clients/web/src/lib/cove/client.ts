@@ -18,12 +18,40 @@ import { sha256 } from '@noble/hashes/sha256';
 
 import { AuthenticationError, ClientError, VerificationError } from './errors';
 import { canonicalize, sign } from './crypto';
+import { keychain } from './tauri';
 import {
   verifyDirectoryManifest, verifyEntry, verifyInclusion, verifySth,
 } from './verify';
 import type {
   Attestation, DirectoryManifest, Entry, InclusionProof, STH,
 } from './types';
+
+/**
+ * Signer abstraction — the surface the Client uses to produce
+ * signatures. Two implementations:
+ *
+ *   InJSSigner       — private key in the JS heap (browser-only mode,
+ *                      tests). Convenient; not OS-keychain protected.
+ *   TauriKeychainSigner — private key in the OS keychain via the Rust
+ *                      shell. The private key NEVER reaches the JS
+ *                      webview after import. Slice 3.
+ */
+export interface Signer {
+  sign(message: Uint8Array): Promise<string>;
+}
+
+export class InJSSigner implements Signer {
+  constructor(private privateKeyHex: string) {}
+  async sign(message: Uint8Array): Promise<string> {
+    return sign(this.privateKeyHex, message);
+  }
+}
+
+export class TauriKeychainSigner implements Signer {
+  async sign(message: Uint8Array): Promise<string> {
+    return keychain.signMessage(message);
+  }
+}
 
 export interface VerifiedEntry {
   entry: Entry;
@@ -45,8 +73,10 @@ export function sigSummary(ve: VerifiedEntry): string {
 
 export interface ClientOptions {
   hubUrl: string;
-  privateKey: string;
   publicKey: string;
+  /** One of: a Signer instance, or a privateKey hex string (wrapped as InJSSigner). */
+  signer?: Signer;
+  privateKey?: string;
   /** Override for tests; defaults to globalThis.fetch. */
   fetch?: typeof fetch;
   /** Override for tests; defaults to globalThis.WebSocket. */
@@ -56,7 +86,7 @@ export interface ClientOptions {
 export class Client {
   readonly hubUrl: string;
   readonly publicKey: string;
-  private priv: string;
+  private signer: Signer;
   private fetchImpl: typeof fetch;
   private WebSocketImpl: typeof WebSocket;
 
@@ -69,8 +99,14 @@ export class Client {
 
   constructor(opts: ClientOptions) {
     this.hubUrl = opts.hubUrl.replace(/\/+$/, '');
-    this.priv = opts.privateKey;
     this.publicKey = opts.publicKey;
+    if (opts.signer) {
+      this.signer = opts.signer;
+    } else if (opts.privateKey) {
+      this.signer = new InJSSigner(opts.privateKey);
+    } else {
+      throw new Error('Client requires either signer or privateKey');
+    }
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.WebSocketImpl = opts.WebSocket ?? globalThis.WebSocket;
   }
@@ -90,7 +126,7 @@ export class Client {
   // ---- auth (§5) -----------------------------------------------------
   async authenticate(): Promise<string> {
     const ch = await this.requestJson('POST', '/auth/challenge');
-    const sig = sign(this.priv, utf8ToBytes(ch.nonce));
+    const sig = await this.signer.sign(utf8ToBytes(ch.nonce));
     const resp = await this.fetchImpl(this.hubUrl + '/auth/verify', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -188,7 +224,7 @@ export class Client {
   // ---- post (§3) -----------------------------------------------------
   async post(entry: Entry): Promise<number> {
     this.requireAuth();
-    const signed = entry.id && entry.sig ? entry : this.signEntry(entry);
+    const signed = entry.id && entry.sig ? entry : await this.signEntry(entry);
     const resp = await this.requestJson('POST', '/entries', signed);
     return resp.seq as number;
   }
@@ -274,14 +310,17 @@ export class Client {
     }
   }
 
-  private signEntry(entry: Entry): Entry {
+  private async signEntry(entry: Entry): Promise<Entry> {
     const content: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(entry)) {
       if (k !== 'id' && k !== 'sig') content[k] = v;
     }
     const canonical = canonicalize(content);
     const id = 'sha256:' + bytesToHex(sha256(canonical));
-    const sig = sign(this.priv, canonical);
+    // Signing happens via the Signer abstraction — InJSSigner for browser
+    // mode, TauriKeychainSigner for the OS-keychain path. Either way, the
+    // bytes hashed and the bytes signed are the same.
+    const sig = await this.signer.sign(canonical);
     return { ...entry, id, sig };
   }
 

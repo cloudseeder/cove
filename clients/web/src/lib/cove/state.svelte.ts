@@ -5,7 +5,8 @@
  * `state.entries`, `state.client`, etc. and re-renders when they change.
  * One mutation point per concern keeps it analyzable.
  */
-import { Client, type VerifiedEntry } from './client';
+import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
+import { isTauri, keychain } from './tauri';
 
 type AuthStatus =
   | { kind: 'unauthenticated' }
@@ -23,11 +24,41 @@ export class AppState {
   thread = $state<string>('annual-meeting');
   threadStatus = $state<ThreadStatus>({ kind: 'idle' });
   entries = $state<VerifiedEntry[]>([]);
+  /** True iff running inside the Tauri shell — drives the keychain
+   *  vs paste-box branch in the auth panel. */
+  inTauri = $state<boolean>(isTauri());
+  /** Public key stored in the OS keychain (Tauri only). When set,
+   *  AuthPanel shows 'Unlock' rather than the import form. */
+  storedPublicKey = $state<string | null>(null);
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
   client: Client | null = null;
   private teardown: (() => void) | null = null;
+
+  /** Re-read the keychain status. Call on app load so AuthPanel picks
+   *  the right branch. No-op outside Tauri. */
+  async refreshKeychain(): Promise<void> {
+    if (!this.inTauri) return;
+    const st = await keychain.status();
+    this.storedPublicKey = st.has_keys ? st.public_key : null;
+  }
+
+  /** Import a paired (priv, pub) into the OS keychain. Slice 3 — only
+   *  in Tauri. The private key goes to Rust and never comes back. */
+  async importKeysToKeychain(privateKey: string, publicKey: string): Promise<void> {
+    if (!this.inTauri) throw new Error('keychain custody requires the Tauri shell');
+    await keychain.import(privateKey, publicKey);
+    await this.refreshKeychain();
+  }
+
+  /** Wipe the keychain. Used for 'switch identity' / 'this device left
+   *  the org' cleanup. */
+  async clearKeychain(): Promise<void> {
+    if (!this.inTauri) return;
+    await keychain.clear();
+    await this.refreshKeychain();
+  }
 
   /** Reset all per-session state. Used on disconnect / re-auth. */
   reset() {
@@ -40,19 +71,30 @@ export class AppState {
     this.authStatus = { kind: 'unauthenticated' };
   }
 
+  /**
+   * Connect to a hub. Two paths:
+   *
+   *   - browser / paste mode: caller provides privateKey, wrapped as
+   *     InJSSigner inside Client. Slice-2 behaviour.
+   *   - Tauri / keychain mode: the private key is already in the OS
+   *     keychain; caller passes mode='keychain' and the publicKey
+   *     (from storedPublicKey). Signing roundtrips through Rust.
+   */
   async connect(opts: {
     hubUrl: string;
-    privateKey: string;
     publicKey: string;
     thread: string;
+    privateKey?: string;
+    mode?: 'paste' | 'keychain';
   }): Promise<void> {
     this.authStatus = { kind: 'connecting' };
     try {
       this.thread = opts.thread;
       this.client = new Client({
         hubUrl: opts.hubUrl,
-        privateKey: opts.privateKey,
         publicKey: opts.publicKey,
+        signer: opts.mode === 'keychain' ? new TauriKeychainSigner() : undefined,
+        privateKey: opts.mode === 'keychain' ? undefined : opts.privateKey,
       });
       await this.client.authenticate();
       this.authStatus = { kind: 'authenticated', pubkey: opts.publicKey };
