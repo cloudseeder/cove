@@ -24,6 +24,11 @@
   let thread = $state('annual-meeting');
   let importing = $state(false);
   let importError = $state<string | null>(null);
+  /** v0.1.3: opt out of the keychain path inside Tauri and use the JS
+   *  signer for the session instead. Useful when the OS keychain
+   *  refuses writes (e.g. unsigned macOS builds), and as an explicit
+   *  user opt-out from OS-level key storage. */
+  let useTauriPaste = $state(false);
 
   onMount(async () => {
     await app.refreshKeychain();
@@ -80,8 +85,12 @@
   );
 
   // ---- which view? ----
+  //   - In Tauri w/ keys already in keychain → unlock.
+  //   - In Tauri, no stored keys, NOT opted into paste → import (default).
+  //   - In Tauri, opted into paste → paste (uses InJSSigner this session).
+  //   - In browser → paste.
   let mode = $derived<'tauri-unlock' | 'tauri-import' | 'paste'>(
-    app.inTauri
+    app.inTauri && !useTauriPaste
       ? (app.storedPublicKey ? 'tauri-unlock' : 'tauri-import')
       : 'paste',
   );
@@ -142,6 +151,10 @@
     </label>
 
     <div class="actions">
+      <button type="button" class="ghost"
+        onclick={() => useTauriPaste = true}>
+        Use paste mode instead
+      </button>
       <button type="button" onclick={importToKeychain}
         disabled={importing || !priv.trim() || !pub.trim()}>
         {importing ? 'Importing…' : 'Import to keychain'}
@@ -150,16 +163,35 @@
 
     {#if importError}
       <p class="failure" role="alert">{importError}</p>
+      <p class="muted small">
+        Keychain unavailable? Use paste mode — the key stays in the
+        app session only. Less secure but works while OS-level signing
+        is being sorted out.
+      </p>
     {/if}
 
   {:else}
-    <!-- Browser-only mode. Slice-2 paste flow. -->
+    <!-- Paste flow.
+         - Browser: the only flow available. Private key lives in JS
+           heap; that's what running outside Tauri costs you.
+         - Tauri w/ useTauriPaste opt-in: an explicit fallback when
+           keychain custody isn't available (unsigned macOS) or the
+           user wants to opt out of OS-level storage. Same JS-heap
+           lifetime, but the choice is deliberate. -->
     <h1>Connect</h1>
-    <p class="muted">
-      Drop a paired <code>.priv</code> and <code>.pub</code> file anywhere
-      in this panel, or paste them. For OS-keychain key custody, run this
-      app via Tauri instead of a plain browser.
-    </p>
+    {#if app.inTauri && useTauriPaste}
+      <p class="muted">
+        Paste mode — your private key stays in the app's memory for
+        this session only and never touches disk or the OS keychain.
+        You'll paste it again next time you launch.
+      </p>
+    {:else}
+      <p class="muted">
+        Drop a paired <code>.priv</code> and <code>.pub</code> file anywhere
+        in this panel, or paste them. For OS-keychain key custody, run this
+        app via Tauri instead of a plain browser.
+      </p>
+    {/if}
 
     <label>
       <span>Hub URL</span>
@@ -184,6 +216,12 @@
     </label>
 
     <div class="actions">
+      {#if app.inTauri && useTauriPaste}
+        <button type="button" class="ghost"
+          onclick={() => useTauriPaste = false}>
+          Back to keychain import
+        </button>
+      {/if}
       <button type="button" onclick={connectPaste}
         disabled={connecting || !priv.trim() || !pub.trim()}>
         {connecting ? 'Connecting…' : 'Connect'}
@@ -301,5 +339,9 @@
     border: 1px solid rgba(220, 38, 38, 0.4);
     color: #fca5a5;
     font-size: 0.9rem;
+  }
+  .muted.small {
+    font-size: 0.82rem;
+    margin: 0.6rem 0 0;
   }
 </style>
