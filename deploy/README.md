@@ -90,22 +90,31 @@ cloudflared tunnel route dns cove-pilot cove.oap.dev
 
 ```bash
 cp deploy/cloudflared-config.yml.example ~/.cloudflared/config.yml
-# Edit ~/.cloudflared/config.yml — replace the two TUNNEL_UUID
-# occurrences with the UUID from the create step.
+# Edit ~/.cloudflared/config.yml — replace BOTH TUNNEL_UUID
+# occurrences with the UUID from the create step. The template
+# uses /etc/cloudflared/ paths because `service install` (next step)
+# runs as the `cloudflared` user which cannot read user home dirs.
 ```
 
 ### Install as a system service
 
 ```bash
 sudo cloudflared service install
+# This copies ~/.cloudflared/config.yml + cert.pem to /etc/cloudflared/
+# but does NOT copy the per-tunnel credentials JSON. Do that manually:
+sudo cp ~/.cloudflared/*.json /etc/cloudflared/
+sudo chmod 644 /etc/cloudflared/*.json
+
 sudo systemctl enable --now cloudflared
 sudo systemctl status cloudflared    # active (running)
 ```
 
-`cloudflared service install` copies your `~/.cloudflared/config.yml`
-+ credentials into `/etc/cloudflared/` and registers a systemd unit.
-The user-mode auth from `cloudflared tunnel login` is what generated
-`cert.pem`, which `service install` also copies.
+**Gotcha that bit us once already.** If you skip the credentials copy
+above, the service fails to start with `Tunnel credentials file
+'/home/<user>/.cloudflared/<uuid>.json' doesn't exist` — the
+`cloudflared` system user can't see your home directory. Symptom:
+`systemctl status cloudflared` shows `failed (exit-code)`. The fix is
+the two-line copy + chmod above.
 
 ### Verify
 

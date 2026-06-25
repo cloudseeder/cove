@@ -8,8 +8,19 @@
 # catch-all 404 so anything else hitting the tunnel is refused. The
 # catch-all is mandatory; cloudflared rejects configs without one.
 
+# Two paths to be aware of:
+#   - For interactive use (~/.cloudflared/config.yml), the credentials
+#     file lives at ~/.cloudflared/TUNNEL_UUID.json.
+#   - For `cloudflared service install`, the system unit runs as the
+#     `cloudflared` user, which cannot read user home dirs. The
+#     credentials must be copied to /etc/cloudflared/ AND this config's
+#     credentials-file path rewritten to match. See deploy/README.md §3.
+#
+# This template uses the system path because `service install` is the
+# production-shaped deployment. Adjust if you're running cloudflared
+# in user mode.
 tunnel: TUNNEL_UUID
-credentials-file: /home/brooks/.cloudflared/TUNNEL_UUID.json
+credentials-file: /etc/cloudflared/TUNNEL_UUID.json
 
 # Reach the hub on localhost:8000 — the hub binds 127.0.0.1 in the
 # systemd unit, so the tunnel is the only path in from outside.
