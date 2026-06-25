@@ -8,9 +8,17 @@ edition = "2021"
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.0", features = [] }
+# The `tray-icon` feature is what unlocks tauri::tray::* used in main.rs
+# for the system tray (Open / Quit) — slice 4. Without it the build
+# fails with `could not find tray in tauri`.
+tauri = { version = "2.0", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Used by keys.rs for the KeyError enum (#[derive(thiserror::Error)]).
+# Slice 3 introduced this without adding the dep — caught in the first
+# cross-platform CI build of slice 4b.
+thiserror = "1"
 
 # Key custody: OS keychain access via the `keyring` crate.
 #   macOS:   Keychain Services
