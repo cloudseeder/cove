@@ -226,6 +226,38 @@ describe('subscribe', () => {
     expect(ws.closed).toBe(true);
   });
 
+  test('fetches a fresh STH for every pushed entry (no stale cache)', async () => {
+    // Regression: lastSth used to be the fallback in Client.verify when
+    // sthArg wasn't passed. That caused 'inclusion proof failed under sth
+    // size=N' on every post-sync push because the tree had grown past N by
+    // the time the push arrived. The fix: drop the cache from the verify
+    // fallback chain; push gets its own fresh fetch per entry.
+    const { fetch } = mockHub();
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub,
+      fetch, WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    await c.authenticate();
+    await c.fetchDirectory();
+    await c.fetchSth();
+    // Count /sth calls observed so far — the initial fetchSth above.
+    const sthCallsBefore = fetch.mock.calls.filter(
+      ([url]) => new URL(url.toString()).pathname === '/sth',
+    ).length;
+
+    c.subscribe('annual-meeting', () => {});
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.deliver({ type: 'entry', entry: items[0].entry, seq: items[0].seq });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const sthCallsAfter = fetch.mock.calls.filter(
+      ([url]) => new URL(url.toString()).pathname === '/sth',
+    ).length;
+    // The push verify MUST have triggered a fresh /sth fetch. If this
+    // assertion regresses, the stale-cache bug is back.
+    expect(sthCallsAfter).toBeGreaterThan(sthCallsBefore);
+  });
+
   test('drops pushed entries from other threads silently', async () => {
     const { fetch } = mockHub();
     const c = new Client({

@@ -185,11 +185,22 @@ export class Client {
     return verified;
   }
 
-  /** Standalone verification — used by subscribe() to verify pushed entries. */
+  /** Standalone verification — used by subscribe() to verify pushed entries.
+   *
+   *  IMPORTANT: when no sthArg is passed, this fetches a FRESH STH rather
+   *  than reusing the cached one. The cache is stale by definition on the
+   *  push path: by the time a pushed entry arrives, the tree has grown to
+   *  include it, but the cached STH was captured BEFORE that growth.
+   *  Sync passes sthArg explicitly so its batched entries share a single
+   *  consistent STH; push gets its own fresh fetch per entry.
+   *
+   *  Bug history: omitting this caused 'inclusion proof failed under sth
+   *  size=N' on every post-sync push — proof was for size N+1 but verify
+   *  was checking against the cached size-N STH. */
   async verify(entry: Entry, seq: number, sthArg?: STH): Promise<VerifiedEntry> {
     this.requireAuth();
     if (this.directory === null) await this.fetchDirectory();
-    const sth = sthArg ?? this.lastSth ?? await this.fetchSth();
+    const sth = sthArg ?? await this.fetchSth();
 
     // 1+2. id + sig (recomputes id, verifies sig over canonical content).
     if (!verifyEntry(entry)) {
