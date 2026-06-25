@@ -6,7 +6,12 @@
 //! and asks Rust to sign them. The private key never leaves Rust after
 //! `keys_import`.
 
+use std::sync::Arc;
+
+use tauri::{AppHandle, State};
+
 use crate::keys::{self, KeyStatus};
+use crate::subscription::Subscription;
 
 #[tauri::command]
 pub fn keys_status() -> Result<KeyStatus, String> {
@@ -29,4 +34,26 @@ pub fn keys_clear() -> Result<(), String> {
 #[tauri::command]
 pub fn sign_message(message: Vec<u8>) -> Result<String, String> {
     keys::sign_message(&message).map_err(Into::into)
+}
+
+/// Start the background /stream subscriber. Replaces any prior
+/// subscription. The Rust task survives webview close; messages forward
+/// to JS as `entry_pushed` Tauri events, AND fire a native notification
+/// when the window isn't focused.
+#[tauri::command]
+pub async fn stream_start(
+    state: State<'_, Arc<Subscription>>,
+    app: AppHandle,
+    hub_url: String,
+    token: String,
+    thread: String,
+) -> Result<(), String> {
+    state.inner().clone().start(app, hub_url, token, thread).await
+}
+
+/// Stop the background subscriber. Used on logout / "switch identity".
+#[tauri::command]
+pub async fn stream_stop(state: State<'_, Arc<Subscription>>) -> Result<(), String> {
+    state.inner().stop().await;
+    Ok(())
 }

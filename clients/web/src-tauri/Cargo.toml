@@ -28,6 +28,19 @@ ed25519-dalek = { version = "2", features = ["std"] }
 # matching scripts/gen_keys.py output).
 hex = "0.4"
 
+# Native notifications. JS counterpart: @tauri-apps/plugin-notification.
+tauri-plugin-notification = "2"
+
+# Background WebSocket subscription — held by the Rust process so push
+# messages arrive even when the webview window is closed. We pin to a
+# tokio-tungstenite version that connects to ws:// and wss:// without
+# requiring a TLS feature for dev (rustls becomes a follow-up for
+# distribution where wss:// is non-optional).
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect"] }
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+url = "2"
+
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]

@@ -59,3 +59,54 @@ export const keychain = {
     return invoke<string>('sign_message', { message: Array.from(message) });
   },
 };
+
+/**
+ * Background subscription control. The Rust task survives webview close;
+ * onPush is called with the raw JSON-stringified push payload exactly
+ * as it came off the WebSocket — verification is the caller's job.
+ * Returns a teardown function that both stops the Rust subscription AND
+ * unregisters the event listener.
+ */
+export const stream = {
+  async start(
+    opts: { hubUrl: string; token: string; thread: string },
+    onPush: (rawPayload: string) => void,
+  ): Promise<() => Promise<void>> {
+    if (!isTauri()) {
+      throw new Error('stream.start() requires the Tauri shell');
+    }
+    // Subscribe to the entry_pushed event BEFORE we ask Rust to start
+    // — the first push could land within microseconds of start().
+    const { listen } = await import('@tauri-apps/api/event');
+    const unlisten = await listen<string>('entry_pushed', (event) => {
+      onPush(event.payload);
+    });
+    await invoke<void>('stream_start', {
+      hubUrl: opts.hubUrl,
+      token: opts.token,
+      thread: opts.thread,
+    });
+    return async () => {
+      unlisten();
+      try {
+        await invoke<void>('stream_stop');
+      } catch {
+        // already stopped; ignore
+      }
+    };
+  },
+};
+
+/**
+ * Request notification permission. macOS in particular only prompts on
+ * first call. Calling this at first-auth time means the prompt fires
+ * before any actual notification would, so the user grants permission
+ * with context.
+ */
+export async function ensureNotificationPermission(): Promise<boolean> {
+  if (!isTauri()) return false;
+  const plugin = await import('@tauri-apps/plugin-notification');
+  if (await plugin.isPermissionGranted()) return true;
+  const result = await plugin.requestPermission();
+  return result === 'granted';
+}

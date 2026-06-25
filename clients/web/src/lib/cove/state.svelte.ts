@@ -6,7 +6,9 @@
  * One mutation point per concern keeps it analyzable.
  */
 import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
-import { isTauri, keychain } from './tauri';
+import {
+  ensureNotificationPermission, isTauri, keychain, stream,
+} from './tauri';
 
 type AuthStatus =
   | { kind: 'unauthenticated' }
@@ -90,14 +92,21 @@ export class AppState {
     this.authStatus = { kind: 'connecting' };
     try {
       this.thread = opts.thread;
+      this.hubUrl = opts.hubUrl;
       this.client = new Client({
         hubUrl: opts.hubUrl,
         publicKey: opts.publicKey,
         signer: opts.mode === 'keychain' ? new TauriKeychainSigner() : undefined,
         privateKey: opts.mode === 'keychain' ? undefined : opts.privateKey,
       });
-      await this.client.authenticate();
+      const sessionToken = await this.client.authenticate();
+      this.sessionToken = sessionToken;
       this.authStatus = { kind: 'authenticated', pubkey: opts.publicKey };
+      // Notifications: ask once, here — the user just authenticated, so
+      // the OS prompt arrives WITH context (they consciously connected).
+      if (this.inTauri) {
+        void ensureNotificationPermission();
+      }
       await this.syncAndSubscribe();
     } catch (err) {
       this.authStatus = { kind: 'failed', reason: (err as Error).message };
@@ -105,29 +114,67 @@ export class AppState {
     }
   }
 
+  /** Captured at connect() time so subscribe can hand them to Rust. */
+  private hubUrl = '';
+  private sessionToken = '';
+
   /**
    * client-spec §4.1: subscribe FIRST, then sync. Anything that lands in
    * the window between subscribe and sync arrives on both channels and is
    * deduped via seenIds.
+   *
+   * In the Tauri shell the subscription runs in the Rust process so
+   * notifications keep firing when the webview is closed. In a browser
+   * we fall back to the Client's in-tab WebSocket. Either way the
+   * verification path (Client.verify) is the same — we never render an
+   * entry that hasn't passed §5.
    */
   async syncAndSubscribe(): Promise<void> {
     if (this.client === null) return;
+    const client = this.client;
     this.threadStatus = { kind: 'syncing' };
     try {
-      // 1. Subscribe FIRST — register on the fan-out before asking for
-      // catch-up so we don't lose entries that land in the gap.
-      this.teardown = this.client.subscribe(
-        this.thread,
-        (ve) => this.appendIfNew(ve),
-        (err) => {
-          this.threadStatus = { kind: 'error', message: `stream: ${err.message}` };
-        },
-      );
-      // 2. Then sync from last-known seq to catch up.
-      const initial = await this.client.sync(this.thread);
+      // 1. Subscribe FIRST.
+      if (this.inTauri) {
+        const teardown = await stream.start(
+          { hubUrl: this.hubUrl, token: this.sessionToken, thread: this.thread },
+          (raw) => { void this.handlePushedRaw(raw); },
+        );
+        this.teardown = () => { void teardown(); };
+      } else {
+        this.teardown = client.subscribe(
+          this.thread,
+          (ve) => this.appendIfNew(ve),
+          (err) => {
+            this.threadStatus = { kind: 'error', message: `stream: ${err.message}` };
+          },
+        );
+      }
+      // 2. Then sync from last-known seq.
+      const initial = await client.sync(this.thread);
       for (const ve of initial) this.appendIfNew(ve);
       this.threadStatus = { kind: 'idle' };
     } catch (err) {
+      this.threadStatus = { kind: 'error', message: (err as Error).message };
+    }
+  }
+
+  /**
+   * Tauri-only: a raw push from the Rust subscriber arrived. Rust does
+   * NOT verify — it relays. We run the full §5 chain via client.verify
+   * before showing the entry, so the trust posture lives in one place.
+   */
+  private async handlePushedRaw(raw: string): Promise<void> {
+    if (this.client === null) return;
+    try {
+      const msg = JSON.parse(raw);
+      if (msg.type !== 'entry') return;
+      const ve = await this.client.verify(msg.entry, msg.seq);
+      if (ve.entry.thread !== this.thread) return;
+      this.appendIfNew(ve);
+    } catch (err) {
+      // VerificationError lands here — DO NOT render. A failed verify on
+      // a pushed entry is exactly the case the spec calls for refusing.
       this.threadStatus = { kind: 'error', message: (err as Error).message };
     }
   }

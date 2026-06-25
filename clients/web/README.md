@@ -44,13 +44,37 @@ src/
     ThreadView.svelte # live feed with the ceremony per entry
     ComposeBox.svelte # ⌘⏎ to send; no optimistic insert
     demo/+page.svelte # offline Seal showcase against fixtures.json
-src-tauri/         # Rust shell
-  src/main.rs       # registers the Tauri commands
-  src/keys.rs       # OS keychain ops (keyring crate) + ed25519 signing
-  src/commands.rs   # Tauri command handlers wrapping keys.rs
+src-tauri/                # Rust shell
+  src/main.rs              # registers plugins + tray + window events
+  src/keys.rs              # OS keychain ops + ed25519 signing
+  src/commands.rs          # Tauri command handlers
+  src/subscription.rs      # background /stream subscriber (slice 4)
+  capabilities/default.json# notification + core perms for the webview
   Cargo.toml
   tauri.conf.json
 ```
+
+## What happens when a board notice arrives
+
+After slice 4, with the Tauri shell running:
+
+1. Hub accepts the board's notice, fans out a push on /stream.
+2. The Rust subscriber receives the push (still running even with
+   the webview closed). It emits `entry_pushed` carrying the raw
+   payload, AND fires a native notification iff the window isn't
+   focused. The notification body is `"New activity in <thread>"` —
+   intentionally content-free because Rust does NOT verify; it
+   relays.
+3. If the webview is open, the JS layer's event listener picks up
+   `entry_pushed`, runs the full §5 verification chain via
+   `Client.verify`, and appends the resulting `VerifiedEntry` to
+   the feed. The Seal renders gold; the "fresh" animation pulses.
+4. If the webview is closed, the user sees the system notification
+   only. Clicking it would bring the window forward (one slice 4b
+   item: clickable notifications). The next time the window is
+   open, the missed entries arrive via `/sync` because the
+   subscriber-then-sync ordering still holds (we re-sync on
+   reconnect).
 
 ## Key custody — what slice 3 changed
 
@@ -92,9 +116,18 @@ private key in the JS heap. Less secure; the app still works.
   webview after import — Rust signs arbitrary bytes the JS hands it).
   AuthPanel branches: import-once → unlock on subsequent launches in
   Tauri; paste flow in browser-only mode.
-- **Slice 4 (next):** Rust-side background WebSocket subscription with
-  native notifications (notice arrives → desktop notification fires
-  even with webview closed), system tray, native build + distribution.
+- **Slice 4 (done):** Background /stream subscriber lives in the Rust
+  process so push messages arrive when the webview is closed.
+  `tokio-tungstenite` holds the connection; messages forward to JS
+  via the `entry_pushed` Tauri event for verification + render.
+  Native notifications via `tauri-plugin-notification` fire when the
+  window isn't focused — neutral wording ("New activity in <thread>")
+  because Rust doesn't verify and shouldn't make trust claims.
+  System tray (Open / Quit), close-to-tray on window close so the
+  subscriber keeps running. JS branches: Tauri uses Rust subscription,
+  browser uses the in-tab WebSocket — verification path identical.
+- **Slice 4b (next):** packaging (DMG / MSI / AppImage), code-signing,
+  auto-update, mobile (Tauri 2's iOS + Android targets).
 
 ## Build / dev
 
@@ -109,6 +142,10 @@ You need:
   against the Secret Service API. On Debian/Ubuntu:
   `sudo apt install libsecret-1-dev`. macOS and Windows use built-in
   system APIs and need no extra packages.
+- **Notifications:** macOS prompts on the first `requestPermission`
+  call; the AuthPanel triggers it right after a successful auth so
+  the prompt arrives with context (the user just consciously
+  connected). Linux/Windows usually grant by default.
 
 Install deps:
 
