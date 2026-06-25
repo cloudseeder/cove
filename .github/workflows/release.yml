@@ -49,6 +49,13 @@ on:
 
 jobs:
   build-tauri:
+    # tauri-action creates/updates a draft GitHub Release with the
+    # built bundles. The default GITHUB_TOKEN has only read perms on
+    # `contents`, so without this block the publish step fails with
+    # "Resource not accessible by integration". Write is the minimum
+    # needed; everything else stays at default-read.
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
