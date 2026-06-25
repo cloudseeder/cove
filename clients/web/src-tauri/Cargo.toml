@@ -1,6 +1,6 @@
 [package]
 name = "cove-web"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cove — Tauri desktop/mobile shell"
 edition = "2021"
 
@@ -11,7 +11,13 @@ tauri-build = { version = "2.0", features = [] }
 # The `tray-icon` feature is what unlocks tauri::tray::* used in main.rs
 # for the system tray (Open / Quit) — slice 4. Without it the build
 # fails with `could not find tray in tauri`.
-tauri = { version = "2.0", features = ["tray-icon"] }
+#
+# `devtools` exposes right-click → Inspect in the webview AT RELEASE time
+# (without it, devtools only ship in `tauri dev` builds). On for the
+# pilot so we can diagnose the JS↔Rust boundary directly; can be removed
+# from release builds later if a "no devtools in shipped binaries" posture
+# is wanted.
+tauri = { version = "2.0", features = ["tray-icon", "devtools"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

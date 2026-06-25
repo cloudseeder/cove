@@ -58,11 +58,27 @@ export class AppState {
   }
 
   /** Import a paired (priv, pub) into the OS keychain. Slice 3 — only
-   *  in Tauri. The private key goes to Rust and never comes back. */
+   *  in Tauri. The private key goes to Rust and never comes back.
+   *
+   *  After import we verify the keychain actually has the entry by
+   *  reading it back via refreshKeychain. If it doesn't (suspected
+   *  unsigned-macOS-app silent-no-op), throw loud — DO NOT leave the
+   *  caller thinking import succeeded when it didn't. Catches both
+   *  the unsigned-app pattern and any other case where the OS reports
+   *  store-OK but the value isn't there. */
   async importKeysToKeychain(privateKey: string, publicKey: string): Promise<void> {
     if (!this.inTauri) throw new Error('keychain custody requires the Tauri shell');
     await keychain.import(privateKey, publicKey);
     await this.refreshKeychain();
+    if (this.storedPublicKey !== publicKey) {
+      throw new Error(
+        'Keychain import did not persist. The OS keychain reports no '
+        + 'entry was stored even though the import call returned OK. '
+        + 'On unsigned macOS builds this is a known symptom of the '
+        + 'keychain refusing to trust an app without a stable code '
+        + 'identity. See terminal stderr / Console.app for details.',
+      );
+    }
   }
 
   /** Wipe the keychain. Used for 'switch identity' / 'this device left

@@ -35,6 +35,17 @@ pub enum KeyError {
     KeysMismatched,
     #[error("no key stored — import first")]
     NotImported,
+    /// set_password reported success but the value we read back doesn't
+    /// match what we wrote. Diagnostic for the suspected unsigned-macOS
+    /// silent-no-op scenario.
+    #[error("keychain readback mismatch — set_password reported Ok but \
+             stored value doesn't match (possible unsigned-app issue)")]
+    ReadbackMismatch,
+    /// set_password reported success but a subsequent read returned
+    /// NoEntry — same silent-no-op symptom from a different angle.
+    #[error("keychain readback failed — set_password reported Ok but \
+             entry isn't present afterward (possible unsigned-app issue)")]
+    ReadbackFailed,
 }
 
 // Manual From-into-String for the Tauri command boundary; serde_json's
@@ -58,7 +69,14 @@ fn entry(slot: &str) -> Result<Entry, KeyError> {
 /// Read current keychain state without exposing the private key.
 pub fn status() -> Result<KeyStatus, KeyError> {
     let pub_entry = entry(PUB_SLOT)?;
-    match pub_entry.get_password() {
+    let result = pub_entry.get_password();
+    eprintln!("[cove] keys::status() get_password({}/{}) → {:?}",
+        SERVICE, PUB_SLOT,
+        match &result {
+            Ok(_) => "Ok(<pubkey>)".to_string(),
+            Err(e) => format!("Err({:?})", e),
+        });
+    match result {
         Ok(pk) => Ok(KeyStatus {
             has_keys: true,
             public_key: Some(pk),
@@ -76,6 +94,8 @@ pub fn status() -> Result<KeyStatus, KeyError> {
 /// from the private key; that catches paste-mistakes BEFORE the user
 /// builds a session under a mismatched identity.
 pub fn import(private_key_hex: &str, public_key_hex: &str) -> Result<(), KeyError> {
+    eprintln!("[cove] keys::import() called: priv_len={} pub_len={}",
+              private_key_hex.len(), public_key_hex.len());
     let priv_bytes = hex::decode(private_key_hex)?;
     let pub_bytes = hex::decode(public_key_hex)?;
     let priv_arr: [u8; 32] = priv_bytes
@@ -87,11 +107,49 @@ pub fn import(private_key_hex: &str, public_key_hex: &str) -> Result<(), KeyErro
         .try_into()
         .map_err(|_| KeyError::InvalidPublicKey)?;
     let sk = SigningKey::from_bytes(&priv_arr);
-    if sk.verifying_key().to_bytes() != pub_arr {
+    let derived_pub = sk.verifying_key().to_bytes();
+    if derived_pub != pub_arr {
+        eprintln!("[cove] keys::import() FAIL: pubkey mismatch. \
+                   derived={} claimed={}",
+                  hex::encode(derived_pub), public_key_hex);
         return Err(KeyError::KeysMismatched);
     }
-    entry(PRIV_SLOT)?.set_password(private_key_hex)?;
-    entry(PUB_SLOT)?.set_password(public_key_hex)?;
+    eprintln!("[cove] keys::import() derived pubkey OK; storing to keychain");
+
+    let priv_result = entry(PRIV_SLOT)?.set_password(private_key_hex);
+    eprintln!("[cove] keys::import() set_password({}/{}) → {:?}",
+              SERVICE, PRIV_SLOT,
+              match &priv_result {
+                  Ok(()) => "Ok(())".to_string(),
+                  Err(e) => format!("Err({:?})", e),
+              });
+    priv_result?;
+
+    let pub_result = entry(PUB_SLOT)?.set_password(public_key_hex);
+    eprintln!("[cove] keys::import() set_password({}/{}) → {:?}",
+              SERVICE, PUB_SLOT,
+              match &pub_result {
+                  Ok(()) => "Ok(())".to_string(),
+                  Err(e) => format!("Err({:?})", e),
+              });
+    pub_result?;
+
+    // Verify by reading back immediately. If the keyring crate is
+    // silently no-op'ing (suspected on unsigned macOS builds), this
+    // catches it and raises a loud error instead of leaving the user
+    // in an inconsistent state.
+    let readback = entry(PUB_SLOT)?.get_password();
+    eprintln!("[cove] keys::import() readback get_password({}/{}) → {:?}",
+              SERVICE, PUB_SLOT,
+              match &readback {
+                  Ok(_) => "Ok(<pubkey>)".to_string(),
+                  Err(e) => format!("Err({:?})", e),
+              });
+    match readback {
+        Ok(ref s) if s == public_key_hex => {}
+        Ok(_) => return Err(KeyError::ReadbackMismatch),
+        Err(_) => return Err(KeyError::ReadbackFailed),
+    }
     Ok(())
 }
 
