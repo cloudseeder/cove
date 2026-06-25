@@ -29,7 +29,7 @@
     "active": true,
     "targets": ["dmg", "app", "msi", "nsis", "appimage", "deb"],
     "publisher": "Cove",
-    "homepage": "https://github.com/lwccoa/cove",
+    "homepage": "https://github.com/cloudseeder/cove",
     "shortDescription": "Verifiable, accountable group messaging.",
     "longDescription": "Cove is a single-organization network for accountable group messaging. Every entry is signed; delivery is provable; history is tamper-evident.",
     "category": "SocialNetworking",
@@ -59,9 +59,9 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://github.com/lwccoa/cove/releases/latest/download/latest.json"
+        "https://github.com/cloudseeder/cove/releases/latest/download/latest.json"
       ],
-      "pubkey": "REPLACE_WITH_TAURI_SIGNER_PUBLIC_KEY",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDlBRUU5QzlDOTk4NDIyNzAKUldSd0lvU1puSnp1bWt5dHpqa2d2M2k2cmo3L1I4bWpCRDRYemhmRkNFYTVKTCs4NnZLV1k3TEQK",
       "dialog": false
     }
   }
