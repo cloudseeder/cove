@@ -5,6 +5,7 @@
   to draw the eye without interrupting the read.
 -->
 <script lang="ts">
+  import { untrack } from 'svelte';
   import EntryCard from '$lib/cove/EntryCard.svelte';
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
@@ -16,16 +17,24 @@
 
   // Trail of fresh ids — anything that arrived in the last 1s gets the
   // 'fresh' CSS animation on EntryCard. Older entries render plain.
+  //
+  // CRITICAL: read freshlyArrived through untrack() inside this $effect.
+  // Without it, the read becomes a dep of the effect, the synchronous
+  // write below re-triggers the effect, and Svelte 5 reports
+  // effect_update_depth_exceeded. The dependency this effect actually
+  // wants is app.entries — that's the trigger we want.
   let freshlyArrived: Set<string> = $state(new Set<string>());
   $effect(() => {
     const latest = app.entries.at(-1);
     if (!latest?.entry.id) return;
     const id = latest.entry.id;
-    freshlyArrived = new Set(freshlyArrived).add(id);
+    freshlyArrived = untrack(() => new Set(freshlyArrived).add(id));
     const timeout = setTimeout(() => {
-      const next = new Set(freshlyArrived);
-      next.delete(id);
-      freshlyArrived = next;
+      freshlyArrived = untrack(() => {
+        const next = new Set(freshlyArrived);
+        next.delete(id);
+        return next;
+      });
     }, 1200);
     return () => clearTimeout(timeout);
   });
