@@ -7,17 +7,22 @@
   for forward-compat).
 -->
 <script lang="ts">
-  import type { VerifiedEntry } from './client';
+  import type { Client, VerifiedEntry } from './client';
   import { sigSummary } from './client';
+  import Attachment from './Attachment.svelte';
   import Seal from './Seal.svelte';
 
   interface Props {
     ve: VerifiedEntry;
     /** Optional 'just arrived' flag — drives a brief shimmer on push. */
     isNew?: boolean;
+    /** Required when the entry carries blobs — the Attachment component
+     *  asks the Client to fetch the bytes with auth. Optional only because
+     *  text-only entries don't need it. */
+    client?: Client | null;
   }
 
-  let { ve, isNew = false }: Props = $props();
+  let { ve, isNew = false, client = null }: Props = $props();
 
   let revealed = $state(false);
 
@@ -40,7 +45,17 @@
     <time>{created}</time>
   </header>
 
-  <p class="body">{ve.entry.body}</p>
+  {#if ve.entry.body}
+    <p class="body">{ve.entry.body}</p>
+  {/if}
+
+  {#if ve.entry.blobs.length > 0 && client}
+    <div class="attachments">
+      {#each ve.entry.blobs as blob (blob.hash)}
+        <Attachment {client} {blob} />
+      {/each}
+    </div>
+  {/if}
 
   {#if revealed}
     <aside class="chain">
@@ -96,6 +111,13 @@
     line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  .attachments {
+    margin-top: 0.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
   }
 
   .chain {

@@ -71,7 +71,8 @@
         <p class="empty">No entries yet. Be the first.</p>
       {:else}
         {#each app.entries as ve (ve.entry.id)}
-          <EntryCard {ve} isNew={freshlyArrived.has(ve.entry.id!)} />
+          <EntryCard {ve} isNew={freshlyArrived.has(ve.entry.id!)}
+            client={app.client} />
         {/each}
       {/if}
     </div>

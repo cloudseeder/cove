@@ -262,8 +262,15 @@ export class AppState {
     this.entries = [...this.entries, ve].sort((a, b) => a.seq - b.seq);
   }
 
-  async post(body: string): Promise<void> {
+  async post(body: string, files: File[] = []): Promise<void> {
     if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    // client-spec §3: upload blobs FIRST. The acceptance pipeline strict-
+    // checks that referenced blobs exist on the hub, so a failed upload
+    // must abort the post — we don't ship an entry that references
+    // missing bytes.
+    const blobs = files.length === 0
+      ? []
+      : await Promise.all(files.map((f) => this.client!.uploadBlob(f)));
     const ev = {
       thread: this.thread,
       author: this.authStatus.pubkey,
@@ -271,7 +278,7 @@ export class AppState {
       created_at: new Date().toISOString(),
       parents: [],
       body,
-      blobs: [],
+      blobs,
       supersedes: null,
       receipt: null,
       id: null,

@@ -23,7 +23,7 @@ import {
   verifyDirectoryManifest, verifyEntry, verifyInclusion, verifySth,
 } from './verify';
 import type {
-  Attestation, DirectoryManifest, Entry, InclusionProof, STH, ThreadSummary,
+  Attestation, BlobRef, DirectoryManifest, Entry, InclusionProof, STH, ThreadSummary,
 } from './types';
 
 /**
@@ -246,6 +246,72 @@ export class Client {
     const signed = entry.id && entry.sig ? entry : await this.signEntry(entry);
     const resp = await this.requestJson('POST', '/entries', signed);
     return resp.seq as number;
+  }
+
+  // ---- blobs (§4) ----------------------------------------------------
+  /** Upload raw bytes to /blobs and assemble a BlobRef from the server
+   *  response (which carries the content-addressed hash) plus the
+   *  caller-supplied filename + media type. The server dedups on hash
+   *  collision, so re-uploading identical bytes is cheap.
+   *
+   *  client-spec §3: blobs are uploaded BEFORE the entry that references
+   *  them. The acceptance pipeline strict-checks that referenced blobs
+   *  exist on the hub when the entry posts.  */
+  async uploadBlob(file: File): Promise<BlobRef> {
+    this.requireAuth();
+    const buf = await file.arrayBuffer();
+    const resp = await this.fetchImpl(this.hubUrl + '/blobs', {
+      method: 'POST',
+      headers: {
+        ...this.authHeaders(),
+        'content-type': file.type || 'application/octet-stream',
+      },
+      body: buf,
+    });
+    if (resp.status !== 200) {
+      const body = await safeJson(resp);
+      throw new ClientError(
+        body?.error
+          ? `blob upload ${body.error}: ${body.reason ?? resp.status}`
+          : `blob upload failed: ${resp.status}`,
+      );
+    }
+    const { hash, size } = await resp.json() as { hash: string; size: number };
+    return {
+      hash,
+      media_type: file.type || 'application/octet-stream',
+      size,
+      name: file.name,
+    };
+  }
+
+  /** Download a blob's raw bytes with the session bearer. Returns a Blob
+   *  ready to be turned into an object URL for inline preview. Bytes
+   *  are re-hashed against the BlobRef.hash on the way back — a hash
+   *  mismatch is rejected as VerificationError per client-spec §4. */
+  async fetchBlobBytes(ref: BlobRef): Promise<Blob> {
+    this.requireAuth();
+    // The path param is just the hex; the BlobRef.hash carries the
+    // "sha256:" prefix which is server-side metadata, not URL.
+    const hex = ref.hash.startsWith('sha256:') ? ref.hash.slice(7) : ref.hash;
+    const resp = await this.fetchImpl(this.hubUrl + '/blobs/' + hex, {
+      headers: this.authHeaders(),
+    });
+    if (resp.status !== 200) {
+      throw new ClientError(`blob fetch failed: ${resp.status}`);
+    }
+    const bytes = new Uint8Array(await resp.arrayBuffer());
+    // Re-hash to detect tamper between hub and client. The content-
+    // address IS the integrity check — if the hub returns different
+    // bytes than the BlobRef claims, that's a hub bug or active
+    // tampering and the user should NOT see the result.
+    const computed = 'sha256:' + bytesToHex(sha256(bytes));
+    if (computed !== ref.hash) {
+      throw new VerificationError(
+        `blob hash mismatch: ref=${ref.hash} got=${computed}`,
+      );
+    }
+    return new Blob([bytes], { type: ref.media_type });
   }
 
   /** Receipt assembly + sign + post in one call (§8 + §6.4.3). */
