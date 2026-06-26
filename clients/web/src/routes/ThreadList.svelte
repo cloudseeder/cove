@@ -14,6 +14,14 @@
 
   let newThreadName = $state('');
 
+  /** v0.1.10: file count for the active thread, derived from the
+   *  attachments across all loaded entries (top-level + replies).
+   *  Shown next to the 'Files' sub-button so the user can see at a
+   *  glance whether there's anything to browse. */
+  const fileCount = $derived(
+    app.entries.reduce((n, ve) => n + ve.entry.blobs.length, 0),
+  );
+
   async function handleSwitch(name: string) {
     await app.switchThread(name);
   }
@@ -42,11 +50,27 @@
 
   <ul>
     {#each app.threads as t (t.thread)}
-      <li class:active={t.thread === app.thread}>
+      {@const isActive = t.thread === app.thread}
+      <li class:active={isActive}>
         <button type="button" onclick={() => handleSwitch(t.thread)}>
           <span class="name">{t.thread}</span>
           <span class="count">{t.entry_count}</span>
         </button>
+        {#if isActive}
+          <ul class="sub">
+            <li class:active={app.view === 'messages'}>
+              <button type="button" onclick={() => app.setView('messages')}>
+                Messages
+              </button>
+            </li>
+            <li class:active={app.view === 'files'}>
+              <button type="button" onclick={() => app.setView('files')}>
+                <span>Files</span>
+                <span class="count">{fileCount}</span>
+              </button>
+            </li>
+          </ul>
+        {/if}
       </li>
     {/each}
     {#if !app.threads.some((t) => t.thread === app.thread)}
@@ -58,6 +82,19 @@
           <span class="name">{app.thread}</span>
           <span class="count">—</span>
         </button>
+        <ul class="sub">
+          <li class:active={app.view === 'messages'}>
+            <button type="button" onclick={() => app.setView('messages')}>
+              Messages
+            </button>
+          </li>
+          <li class:active={app.view === 'files'}>
+            <button type="button" onclick={() => app.setView('files')}>
+              <span>Files</span>
+              <span class="count">{fileCount}</span>
+            </button>
+          </li>
+        </ul>
       </li>
     {/if}
   </ul>
@@ -139,13 +176,32 @@
   li button:hover:not(:disabled) {
     background: rgba(255, 255, 255, 0.04);
   }
-  li.active button {
+  li.active > button {
     background: rgba(212, 175, 55, 0.12);
     color: #e8c96b;
   }
-  li.active.pending button {
+  li.active.pending > button {
     color: var(--muted);
     cursor: default;
+  }
+  ul.sub {
+    list-style: none;
+    margin: 0.25rem 0 0.35rem 0.6rem;
+    padding: 0;
+    border-left: 1px solid var(--border);
+    padding-left: 0.4rem;
+  }
+  ul.sub li {
+    margin: 0;
+  }
+  ul.sub button {
+    padding: 0.32rem 0.55rem;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  ul.sub li.active > button {
+    background: rgba(212, 175, 55, 0.08);
+    color: #e8c96b;
   }
   .name {
     overflow: hidden;

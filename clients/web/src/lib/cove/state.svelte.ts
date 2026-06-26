@@ -23,6 +23,11 @@ type ThreadStatus =
   | { kind: 'syncing' }
   | { kind: 'error'; message: string };
 
+/** v0.1.10: main pane has two faces per thread — chronological feed
+ *  or per-thread files list. Reset to 'messages' on every thread
+ *  switch so navigation doesn't trap the user in Files. */
+type View = 'messages' | 'files';
+
 type UpdateStatus =
   | { kind: 'idle' }
   | { kind: 'checking' }
@@ -51,6 +56,9 @@ export class AppState {
    *  Set by openReplyPanel() from the EntryCard reply button; cleared
    *  by closeReplyPanel(), switchThread(), and reset(). */
   replyOpen = $state<VerifiedEntry | null>(null);
+  /** Which face of the active thread to render — chronological feed
+   *  or files list. Reset to 'messages' on every switchThread. */
+  view = $state<View>('messages');
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
@@ -106,6 +114,10 @@ export class AppState {
 
   closeReplyPanel(): void {
     this.replyOpen = null;
+  }
+
+  setView(v: View): void {
+    this.view = v;
   }
 
   /**
@@ -341,6 +353,9 @@ export class AppState {
     this.seenIds = new Set();
     // Close any open reply panel — its parent belongs to the old thread.
     this.replyOpen = null;
+    // Reset the main pane to the chronological feed — landing in 'files'
+    // because the previous thread was on it would be disorienting.
+    this.view = 'messages';
     this.teardown?.();
     this.teardown = null;
     await this.syncAndSubscribe();

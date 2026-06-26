@@ -9,6 +9,7 @@
   import EntryCard from '$lib/cove/EntryCard.svelte';
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
+  import FilesView from './FilesView.svelte';
   import ReplyPanel from './ReplyPanel.svelte';
   import ThreadList from './ThreadList.svelte';
 
@@ -63,42 +64,46 @@
 <div class="layout">
   <ThreadList {app} />
 
-  <section class="thread">
-    <header>
-      <div>
-        <h1>{app.thread}</h1>
-        <p class="muted">
-          {app.entries.length} entr{app.entries.length === 1 ? 'y' : 'ies'}
-          · you are <code>{pubkey.slice(0, 12)}…</code>
-        </p>
+  {#if app.view === 'files'}
+    <FilesView {app} />
+  {:else}
+    <section class="thread">
+      <header>
+        <div>
+          <h1>{app.thread}</h1>
+          <p class="muted">
+            {app.entries.length} entr{app.entries.length === 1 ? 'y' : 'ies'}
+            · you are <code>{pubkey.slice(0, 12)}…</code>
+          </p>
+        </div>
+        {#if app.threadStatus.kind === 'syncing'}
+          <span class="status">Syncing…</span>
+        {:else if app.threadStatus.kind === 'error'}
+          <span class="status error">⚠ {app.threadStatus.message}</span>
+        {:else}
+          <span class="status pulse" title="History intact ✓">✓ log intact</span>
+        {/if}
+      </header>
+
+      <div class="feed">
+        {#if topLevel.length === 0}
+          <p class="empty">No entries yet. Be the first.</p>
+        {:else}
+          {#each topLevel as ve (ve.entry.id)}
+            <EntryCard
+              {ve}
+              isNew={freshlyArrived.has(ve.entry.id!)}
+              client={app.client}
+              replyCount={replyCountFor(ve.entry.id)}
+              onReply={() => app.openReplyPanel(ve)}
+            />
+          {/each}
+        {/if}
       </div>
-      {#if app.threadStatus.kind === 'syncing'}
-        <span class="status">Syncing…</span>
-      {:else if app.threadStatus.kind === 'error'}
-        <span class="status error">⚠ {app.threadStatus.message}</span>
-      {:else}
-        <span class="status pulse" title="History intact ✓">✓ log intact</span>
-      {/if}
-    </header>
 
-    <div class="feed">
-      {#if topLevel.length === 0}
-        <p class="empty">No entries yet. Be the first.</p>
-      {:else}
-        {#each topLevel as ve (ve.entry.id)}
-          <EntryCard
-            {ve}
-            isNew={freshlyArrived.has(ve.entry.id!)}
-            client={app.client}
-            replyCount={replyCountFor(ve.entry.id)}
-            onReply={() => app.openReplyPanel(ve)}
-          />
-        {/each}
-      {/if}
-    </div>
-
-    <ComposeBox {app} />
-  </section>
+      <ComposeBox {app} />
+    </section>
+  {/if}
 </div>
 
 <ReplyPanel {app} />
