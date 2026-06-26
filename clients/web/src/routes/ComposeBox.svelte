@@ -38,6 +38,41 @@
       : 'Write something. ⌘⏎ to send. Drop files to attach.',
   );
 
+  // v0.2: branch dialog
+  let branchDialogOpen = $state(false);
+  let branchName = $state('');
+  let branching = $state(false);
+  let branchError = $state<string | null>(null);
+
+  function openBranchDialog() {
+    branchError = null;
+    branchName = '';
+    branchDialogOpen = true;
+  }
+
+  function closeBranchDialog() {
+    branchDialogOpen = false;
+  }
+
+  async function submitBranch(ev: SubmitEvent) {
+    ev.preventDefault();
+    const name = branchName.trim();
+    const body = draft.trim();
+    if (!name || branching) return;
+    branching = true;
+    branchError = null;
+    try {
+      await app.branchOff(name, body || `Branched off into ${name}`);
+      draft = '';
+      pending = [];
+      branchDialogOpen = false;
+    } catch (err) {
+      branchError = (err as Error).message;
+    } finally {
+      branching = false;
+    }
+  }
+
   async function send() {
     const body = draft.trim();
     if ((!body && pending.length === 0) || sending) return;
@@ -136,6 +171,15 @@
       aria-label="Attach files">
       📎
     </button>
+    {#if !replyTo}
+      <button type="button" class="attach branch-btn"
+        onclick={openBranchDialog}
+        disabled={sending}
+        title="Branch off into a sub-thread"
+        aria-label="Branch off">
+        🌿
+      </button>
+    {/if}
     <button type="submit"
       disabled={sending || (draft.trim() === '' && pending.length === 0)}>
       {sending ? '…' : 'Send'}
@@ -146,6 +190,35 @@
     <span class="error">{error}</span>
   {/if}
 </form>
+
+{#if branchDialogOpen}
+  <div class="modal-backdrop" onclick={closeBranchDialog} role="presentation"></div>
+  <div class="modal" role="dialog" aria-label="Branch off into a sub-thread">
+    <form onsubmit={submitBranch}>
+      <h3>Branch off</h3>
+      <p class="hint">
+        Spawn a sub-thread linked from this one. The current draft
+        becomes the rationale that shows up in the parent feed.
+      </p>
+      <label>
+        <span>New thread name</span>
+        <input type="text" bind:value={branchName}
+          placeholder="e.g. budget-details"
+          maxlength="64" autofocus />
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="ghost" onclick={closeBranchDialog}
+          disabled={branching}>Cancel</button>
+        <button type="submit" disabled={branching || !branchName.trim()}>
+          {branching ? '…' : 'Branch off'}
+        </button>
+      </div>
+      {#if branchError}
+        <p class="error">{branchError}</p>
+      {/if}
+    </form>
+  </div>
+{/if}
 
 <style>
   .compose {
@@ -264,5 +337,77 @@
   .error {
     color: #fca5a5;
     font-size: 0.85rem;
+  }
+
+  /* Branch button — distinct from the paperclip via a slightly warmer
+     idle border. The 🌿 itself is enough hint when hovered. */
+  .branch-btn:hover:not(:disabled) {
+    border-color: rgba(160, 200, 130, 0.4);
+  }
+
+  /* Branch dialog */
+  .modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 60;
+  }
+  .modal {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(420px, 92vw);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 1.5rem;
+    z-index: 70;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4);
+  }
+  .modal h3 {
+    margin: 0 0 0.5rem;
+    font-size: 1.1rem;
+  }
+  .modal .hint {
+    color: var(--muted);
+    font-size: 0.85rem;
+    margin: 0 0 1.2rem;
+  }
+  .modal label {
+    display: block;
+    margin-bottom: 1rem;
+  }
+  .modal label span {
+    display: block;
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin-bottom: 0.3rem;
+  }
+  .modal input[type='text'] {
+    width: 100%;
+    box-sizing: border-box;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.5rem 0.7rem;
+    font: inherit;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .modal input[type='text']:focus {
+    outline: none;
+    border-color: rgba(160, 200, 130, 0.5);
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.6rem;
+  }
+  .modal-actions .ghost {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--muted);
+  }
+  .modal-actions .ghost:hover:not(:disabled) {
+    color: var(--fg);
   }
 </style>

@@ -14,7 +14,12 @@ from typing import Any, Optional
 from . import crypto
 
 # Reserved set of entry kinds (sign-only v1; no encryption kinds).
-KINDS = {"notice", "post", "reply", "supersede", "membership", "receipt", "revoke"}
+# 'branch' (v0.2) — declares that a sub-thread spawned off this thread.
+# Carries the new sub-thread name in `branch_thread`. The branch entry
+# itself is a regular signed log entry and lives in the PARENT thread;
+# the sub-thread is open-namespace and materializes on first post like
+# any other thread does.
+KINDS = {"notice", "post", "reply", "supersede", "membership", "receipt", "revoke", "branch"}
 
 # Fields excluded from the content that id/sig commit to.
 _NON_CONTENT = {"id", "sig"}
@@ -54,6 +59,10 @@ class Entry:
     blobs: list[BlobRef] = field(default_factory=list)
     supersedes: Optional[str] = None
     receipt: Optional[Receipt] = None   # set for kind='receipt' (§8)
+    branch_thread: Optional[str] = None # set for kind='branch' (§3.x) —
+                                        # names the spawned sub-thread.
+                                        # Part of canonical content, so
+                                        # signature covers the link.
     id: Optional[str] = None       # set by compute_id
     sig: Optional[str] = None      # set by sign
 

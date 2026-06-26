@@ -121,11 +121,12 @@ def _entry_payload(ev: Entry) -> dict:
 
 
 def _signed_post(member_priv, member_pub, *, thread="t1", body="hi",
-                 parents=None) -> Entry:
+                 parents=None, kind="post", branch_thread=None) -> Entry:
     return sign_entry(Entry(
-        thread=thread, author=member_pub, kind="post",
+        thread=thread, author=member_pub, kind=kind,
         created_at="2026-01-01T00:00:00Z", body=body,
         parents=parents or [],
+        branch_thread=branch_thread,
     ), member_priv)
 
 
@@ -1156,6 +1157,44 @@ def test_threads_lists_observed_threads_with_counts_and_latest_seq(hub):
     assert by_thread["t1"]["latest_seq"] == 1
     assert by_thread["t2"]["entry_count"] == 1
     assert by_thread["t2"]["latest_seq"] == 0
+    # parent_thread is null when no branch entry created the thread.
+    assert by_thread["t1"]["parent_thread"] is None
+    assert by_thread["t2"]["parent_thread"] is None
+
+
+def test_branch_entry_links_parent_to_sub_thread(hub):
+    # Post one entry in t1, then a branch entry in t1 declaring t1-sub.
+    # Finally, post in t1-sub. Expect: /threads shows t1-sub's parent_thread=t1.
+    a = _signed_post(hub["member_priv"], hub["member_pub"], thread="t1", body="kick")
+    hub["client"].post("/entries", json=_entry_payload(a))
+    b = _signed_post(hub["member_priv"], hub["member_pub"], thread="t1",
+                     body="splitting off into a sub-thread",
+                     kind="branch", branch_thread="t1-sub")
+    r1 = hub["client"].post("/entries", json=_entry_payload(b))
+    assert r1.status_code == 200, r1.json()
+    c = _signed_post(hub["member_priv"], hub["member_pub"], thread="t1-sub",
+                     body="sub-thread content")
+    hub["client"].post("/entries", json=_entry_payload(c))
+
+    rows = hub["client"].get("/threads").json()["threads"]
+    by_thread = {row["thread"]: row for row in rows}
+    assert by_thread["t1-sub"]["parent_thread"] == "t1"
+    assert by_thread["t1"]["parent_thread"] is None
+
+
+def test_branch_entry_rejected_when_branch_thread_missing(hub):
+    b = _signed_post(hub["member_priv"], hub["member_pub"], thread="t1",
+                     body="malformed", kind="branch")
+    r = hub["client"].post("/entries", json=_entry_payload(b))
+    assert r.status_code == 400
+    assert "branch_thread" in r.json()["reason"].lower()
+
+
+def test_branch_entry_rejected_when_target_equals_self(hub):
+    b = _signed_post(hub["member_priv"], hub["member_pub"], thread="t1",
+                     body="self-loop", kind="branch", branch_thread="t1")
+    r = hub["client"].post("/entries", json=_entry_payload(b))
+    assert r.status_code == 400
 
 
 # /threads auth gating tested via the GATED_GETS parametrization above.

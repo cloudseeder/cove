@@ -334,6 +334,7 @@ export class Client {
         observed_sth_size: opts.observedSth.tree_size,
         observed_sth_root: opts.observedSth.root_hash,
       },
+      branch_thread: null,
       id: null,
       sig: null,
     };

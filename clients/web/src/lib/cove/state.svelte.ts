@@ -290,6 +290,41 @@ export class AppState {
     this.entries = [...this.entries, ve].sort((a, b) => a.seq - b.seq);
   }
 
+  /** v0.2: branch off a sub-thread from the current thread.
+   *  Posts a kind='branch' entry in the current thread that names the
+   *  new sub-thread, then switches the active thread to it. The body
+   *  is the rationale ("Let's continue the budget here…") — it appears
+   *  in the parent thread feed as the link card. */
+  async branchOff(newThread: string, body: string,
+                  files: File[] = []): Promise<void> {
+    if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    if (!newThread.trim() || newThread === this.thread) return;
+    const blobs = files.length === 0
+      ? []
+      : await Promise.all(files.map((f) => this.client!.uploadBlob(f)));
+    const ev = {
+      thread: this.thread,
+      author: this.authStatus.pubkey,
+      kind: 'branch' as const,
+      created_at: new Date().toISOString(),
+      parents: [],
+      body,
+      blobs,
+      supersedes: null,
+      receipt: null,
+      branch_thread: newThread,
+      id: null,
+      sig: null,
+    };
+    await this.client.post(ev);
+    // Switch to the new sub-thread once the branch entry is accepted. The
+    // sub-thread materializes when its first entry posts — until then it's
+    // an empty feed pointed at by the branch link.
+    await this.switchThread(newThread);
+    // loadThreads refreshes parent_thread bookkeeping in the sidebar.
+    void this.loadThreads();
+  }
+
   async post(body: string, files: File[] = [],
              replyTo: VerifiedEntry | null = null): Promise<void> {
     if (this.client === null || this.authStatus.kind !== 'authenticated') return;
@@ -313,6 +348,7 @@ export class AppState {
       blobs,
       supersedes: null,
       receipt: null,
+      branch_thread: null,
       id: null,
       sig: null,
     };

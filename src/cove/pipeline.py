@@ -89,6 +89,17 @@ class Pipeline:
         if ev.kind == "receipt" and ev.receipt is None:
             raise AcceptanceError("receipt entry missing receipt payload")
 
+        # kind=branch structural check: must name a non-empty sub-thread
+        # that isn't the current thread (no self-loops). The branch entry
+        # is the link between parent and child — without branch_thread it
+        # is just an empty post mislabelled.
+        if ev.kind == "branch":
+            if not ev.branch_thread:
+                raise AcceptanceError("branch entry missing branch_thread")
+            if ev.branch_thread == ev.thread:
+                raise AcceptanceError(
+                    f"branch_thread {ev.branch_thread!r} cannot equal thread")
+
         # 8. Assign per-thread seq, persist, extend translog, materialize the new STH.
         # Store-before-log because the entry store is source of truth (§9); the log
         # leaf commits to (id, per-thread seq) so the hub cannot later equivocate
@@ -106,7 +117,8 @@ class Pipeline:
             self.blobs.record_references(ev.id, ev.blobs)
 
         # 9. Overview index + ledger (receipts only).
-        self.overview.add(ev.thread, ev.id, ev.parents, seq)
+        self.overview.add(ev.thread, ev.id, ev.parents, seq,
+                          branch_thread=ev.branch_thread)
         if ev.kind == "receipt":
             _apply_receipt(self.ledger, ev, sth)
 

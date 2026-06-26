@@ -96,6 +96,7 @@
               client={app.client}
               replyCount={replyCountFor(ve.entry.id)}
               onReply={() => app.openReplyPanel(ve)}
+              onFollowBranch={(sub) => app.switchThread(sub)}
             />
           {/each}
         {/if}

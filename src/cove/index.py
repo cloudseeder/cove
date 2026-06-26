@@ -23,11 +23,29 @@ class Overview:
     def __init__(self) -> None:
         self._threads: dict[str, dict[str, tuple[int, list[str]]]] = {}
         self._children: dict[str, list[str]] = {}
+        # v0.2: branch index — every kind='branch' entry records a soft
+        # pointer from parent_thread → branch_thread. Two views, both
+        # derived from the same source: parent-of-child for breadcrumbs,
+        # and children-of-parent for the nested sidebar.
+        self._parent_of: dict[str, str] = {}            # child → parent
+        self._branches_of: dict[str, list[str]] = {}    # parent → [child, ...]
 
-    def add(self, thread: str, entry_id: str, parents: list[str], seq: int) -> None:
+    def add(self, thread: str, entry_id: str, parents: list[str], seq: int,
+            branch_thread: Optional[str] = None) -> None:
         self._threads.setdefault(thread, {})[entry_id] = (seq, list(parents))
         for p in parents:
             self._children.setdefault(p, []).append(entry_id)
+        # If this is a branch entry, record the soft pointer to the spawned
+        # sub-thread. Same-name re-branches are idempotent at the parent_of
+        # level (first wins) and additive at the branches_of level (each
+        # branch entry shows up in the parent's branch list — multiple
+        # branch entries pointing at the same sub-thread is allowed but
+        # rare).
+        if branch_thread is not None:
+            self._parent_of.setdefault(branch_thread, thread)
+            children = self._branches_of.setdefault(thread, [])
+            if branch_thread not in children:
+                children.append(branch_thread)
 
     def children(self, entry_id: str) -> list[str]:
         return list(self._children.get(entry_id, []))
@@ -43,35 +61,55 @@ class Overview:
         rows.sort(key=lambda r: r[1])
         return rows
 
-    def thread_summaries(self) -> list[tuple[str, int, int]]:
-        """All known threads as (thread_name, entry_count, latest_seq).
+    def thread_summaries(self) -> list[tuple[str, int, int, Optional[str]]]:
+        """All known threads as (thread_name, entry_count, latest_seq,
+        parent_thread).
 
         Derived from the same in-memory state as thread_entries; rebuilt on
         startup from the store. Used by GET /threads for client-side
-        navigation — the client needs a list of what threads exist, not just
-        the contents of one. Sorted by latest_seq descending so 'most
-        recently active' is on top, matching what an inbox-shaped UI wants.
+        navigation. Sorted by latest_seq desc.
+
+        v0.2: parent_thread is set when this thread was spawned via a
+        kind='branch' entry in another thread. Lets the client render the
+        sidebar as a nested tree (sub-threads indented under their parent)
+        without a second round-trip.
         """
-        rows: list[tuple[str, int, int]] = []
+        rows: list[tuple[str, int, int, Optional[str]]] = []
         for thread, entries in self._threads.items():
             if not entries:
                 continue
             latest = max(seq for seq, _ in entries.values())
-            rows.append((thread, len(entries), latest))
+            rows.append((thread, len(entries), latest, self._parent_of.get(thread)))
         rows.sort(key=lambda r: r[2], reverse=True)
         return rows
 
-    def rebuild(self, entries: Iterable[tuple[str, str, list[str], int]]) -> None:
+    def parent_of(self, thread: str) -> Optional[str]:
+        """Parent thread of `thread`, or None if it's a root (or unknown)."""
+        return self._parent_of.get(thread)
+
+    def branches_of(self, thread: str) -> list[str]:
+        """Sub-threads spawned from `thread`. Empty list if none."""
+        return list(self._branches_of.get(thread, []))
+
+    def rebuild(self, entries: Iterable[tuple]) -> None:
         """Rebuild from raw entries (the integrity escape hatch). §6.
 
-        Accepts (thread, entry_id, parents, seq) tuples — what `add` takes,
-        batched. Clears prior state so a stale cache cannot contaminate the
-        rebuild.
+        Accepts tuples of either (thread, entry_id, parents, seq) — the
+        legacy 4-tuple shape — or (thread, entry_id, parents, seq,
+        branch_thread) — the v0.2 shape that carries the branch link.
+        Clears prior state so a stale cache cannot contaminate the rebuild.
         """
         self._threads.clear()
         self._children.clear()
-        for thread, entry_id, parents, seq in entries:
-            self.add(thread, entry_id, parents, seq)
+        self._parent_of.clear()
+        self._branches_of.clear()
+        for row in entries:
+            if len(row) == 4:
+                thread, entry_id, parents, seq = row
+                branch_thread = None
+            else:
+                thread, entry_id, parents, seq, branch_thread = row
+            self.add(thread, entry_id, parents, seq, branch_thread)
 
 
 class Ledger:

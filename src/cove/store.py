@@ -161,11 +161,14 @@ class EventStore:
         ).fetchall()
         return [(r[0], int(r[1])) for r in rows]
 
-    def iter_overview_seed(self) -> Iterable[tuple[str, str, list[str], int]]:
-        """(thread, entry_id, parents, seq) for every accepted entry, in
-        GLOBAL acceptance order. Drives Overview.rebuild on startup (§6
-        integrity rule). Parents are unpacked from the stored canonical
-        content so the overview doesn't need to re-validate them.
+    def iter_overview_seed(self):
+        """(thread, entry_id, parents, seq, branch_thread) for every accepted
+        entry, in GLOBAL acceptance order. Drives Overview.rebuild on startup
+        (§6 integrity rule). Parents + branch_thread are unpacked from the
+        stored canonical content so the overview doesn't need to re-validate.
+
+        branch_thread (v0.2) is present only on kind='branch' entries; None
+        for everything else.
         """
         import json
         rows = self._conn.execute(
@@ -173,8 +176,10 @@ class EventStore:
         ).fetchall()
         out = []
         for entry_id, thread, content_blob, seq in rows:
-            parents = json.loads(content_blob).get("parents", [])
-            out.append((thread, entry_id, list(parents), int(seq)))
+            content = json.loads(content_blob)
+            parents = content.get("parents", [])
+            branch_thread = content.get("branch_thread")
+            out.append((thread, entry_id, list(parents), int(seq), branch_thread))
         return out
 
 

@@ -27,10 +27,15 @@
     /** v0.1.9: fired when the user clicks 'Reply' — opens the reply
      *  panel pinned to this entry. */
     onReply?: () => void;
+    /** v0.2: fired when the user clicks a branch-card body — switches to
+     *  the sub-thread named in entry.branch_thread. */
+    onFollowBranch?: (subThread: string) => void;
   }
 
   let { ve, isNew = false, client = null, replyCount = 0,
-        onReply }: Props = $props();
+        onReply, onFollowBranch }: Props = $props();
+
+  const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
 
   let revealed = $state(false);
 
@@ -42,7 +47,7 @@
   const created = $derived(ve.entry.created_at);
 </script>
 
-<article class="card" class:board={isBoard} class:fresh={isNew}>
+<article class="card" class:board={isBoard} class:fresh={isNew} class:branch={isBranch}>
   <header>
     <Seal
       state="verified"
@@ -53,7 +58,19 @@
     <time>{created}</time>
   </header>
 
-  {#if ve.entry.body}
+  {#if isBranch && onFollowBranch}
+    <button type="button" class="branch-link"
+      onclick={() => onFollowBranch(ve.entry.branch_thread!)}>
+      <span class="branch-icon" aria-hidden="true">🌿</span>
+      <span class="branch-meta">
+        <span class="branch-label">Branched off into</span>
+        <span class="branch-target">{ve.entry.branch_thread}</span>
+      </span>
+      {#if ve.entry.body}
+        <span class="branch-why">{ve.entry.body}</span>
+      {/if}
+    </button>
+  {:else if ve.entry.body}
     <p class="body">{ve.entry.body}</p>
   {/if}
 
@@ -140,6 +157,55 @@
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
+  }
+
+  /* Branch card — distinct visual treatment so the eye sees 'this is
+     a structural pointer, not a normal message.' */
+  .card.branch {
+    background: rgba(160, 200, 130, 0.04);
+    border-color: rgba(160, 200, 130, 0.25);
+  }
+  .branch-link {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    width: 100%;
+    background: transparent;
+    border: 1px dashed rgba(160, 200, 130, 0.35);
+    border-radius: 10px;
+    padding: 0.8rem 1rem;
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .branch-link:hover {
+    background: rgba(160, 200, 130, 0.08);
+    border-style: solid;
+  }
+  .branch-icon { font-size: 1.4em; }
+  .branch-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+  }
+  .branch-label {
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+  .branch-target {
+    font-weight: 600;
+    color: #d4eb9f;
+  }
+  .branch-why {
+    margin-left: auto;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-style: italic;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 16rem;
   }
 
   footer {

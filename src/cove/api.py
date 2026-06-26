@@ -274,8 +274,9 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     def get_threads(_caller: str = Depends(require_session)) -> dict:
         return {
             "threads": [
-                {"thread": t, "entry_count": n, "latest_seq": s}
-                for t, n, s in overview.thread_summaries()
+                {"thread": t, "entry_count": n, "latest_seq": s,
+                 "parent_thread": parent}
+                for t, n, s, parent in overview.thread_summaries()
             ],
         }
 
@@ -504,7 +505,7 @@ class _AuthRequired(Exception):
 
 
 _CONTENT_FIELDS = {"thread", "author", "kind", "created_at", "parents",
-                   "body", "blobs", "supersedes", "receipt"}
+                   "body", "blobs", "supersedes", "receipt", "branch_thread"}
 
 
 def _entry_from_dict(d: dict) -> Entry:

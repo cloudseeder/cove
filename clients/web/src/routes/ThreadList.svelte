@@ -22,6 +22,36 @@
     app.entries.reduce((n, ve) => n + ve.entry.blobs.length, 0),
   );
 
+  // v0.2: sub-threads nest under their parent. A thread without a
+  // parent_thread renders at the top level; children are indented
+  // under it. We build the tree at render time from the flat list
+  // returned by /threads — parent_thread on each row is enough.
+  type ThreadNode = {
+    thread: string;
+    entry_count: number;
+    latest_seq: number;
+    children: ThreadNode[];
+  };
+  const tree = $derived.by(() => {
+    const byName = new Map<string, ThreadNode>();
+    for (const t of app.threads) {
+      byName.set(t.thread, {
+        thread: t.thread,
+        entry_count: t.entry_count,
+        latest_seq: t.latest_seq,
+        children: [],
+      });
+    }
+    const roots: ThreadNode[] = [];
+    for (const t of app.threads) {
+      const node = byName.get(t.thread)!;
+      const parent = t.parent_thread ? byName.get(t.parent_thread) : null;
+      if (parent) parent.children.push(node);
+      else roots.push(node);
+    }
+    return roots;
+  });
+
   async function handleSwitch(name: string) {
     await app.switchThread(name);
   }
@@ -48,30 +78,45 @@
     </button>
   </header>
 
-  <ul>
-    {#each app.threads as t (t.thread)}
-      {@const isActive = t.thread === app.thread}
-      <li class:active={isActive}>
-        <button type="button" onclick={() => handleSwitch(t.thread)}>
-          <span class="name">{t.thread}</span>
-          <span class="count">{t.entry_count}</span>
+  {#snippet activeSubNav()}
+    <ul class="sub">
+      <li class:active={app.view === 'messages'}>
+        <button type="button" onclick={() => app.setView('messages')}>
+          Messages
         </button>
-        {#if isActive}
-          <ul class="sub">
-            <li class:active={app.view === 'messages'}>
-              <button type="button" onclick={() => app.setView('messages')}>
-                Messages
-              </button>
-            </li>
-            <li class:active={app.view === 'files'}>
-              <button type="button" onclick={() => app.setView('files')}>
-                <span>Files</span>
-                <span class="count">{fileCount}</span>
-              </button>
-            </li>
-          </ul>
-        {/if}
       </li>
+      <li class:active={app.view === 'files'}>
+        <button type="button" onclick={() => app.setView('files')}>
+          <span>Files</span>
+          <span class="count">{fileCount}</span>
+        </button>
+      </li>
+    </ul>
+  {/snippet}
+
+  {#snippet threadNode(node: ThreadNode)}
+    {@const isActive = node.thread === app.thread}
+    <li class:active={isActive}>
+      <button type="button" onclick={() => handleSwitch(node.thread)}>
+        <span class="name">{node.thread}</span>
+        <span class="count">{node.entry_count}</span>
+      </button>
+      {#if isActive}
+        {@render activeSubNav()}
+      {/if}
+      {#if node.children.length > 0}
+        <ul class="children">
+          {#each node.children as child (child.thread)}
+            {@render threadNode(child)}
+          {/each}
+        </ul>
+      {/if}
+    </li>
+  {/snippet}
+
+  <ul>
+    {#each tree as node (node.thread)}
+      {@render threadNode(node)}
     {/each}
     {#if !app.threads.some((t) => t.thread === app.thread)}
       <!-- Current thread isn't in the hub list yet (empty / just-typed
@@ -82,19 +127,7 @@
           <span class="name">{app.thread}</span>
           <span class="count">—</span>
         </button>
-        <ul class="sub">
-          <li class:active={app.view === 'messages'}>
-            <button type="button" onclick={() => app.setView('messages')}>
-              Messages
-            </button>
-          </li>
-          <li class:active={app.view === 'files'}>
-            <button type="button" onclick={() => app.setView('files')}>
-              <span>Files</span>
-              <span class="count">{fileCount}</span>
-            </button>
-          </li>
-        </ul>
+        {@render activeSubNav()}
       </li>
     {/if}
   </ul>
@@ -202,6 +235,15 @@
   ul.sub li.active > button {
     background: rgba(212, 175, 55, 0.08);
     color: #e8c96b;
+  }
+  /* v0.2: sub-thread nesting. Each level indents under its parent and
+     marks the relationship with a thin left rule. Tinted to distinguish
+     from the gold Messages/Files sub-list above. */
+  ul.children {
+    list-style: none;
+    margin: 0.1rem 0 0.25rem 0.85rem;
+    padding-left: 0.4rem;
+    border-left: 2px solid rgba(160, 200, 130, 0.35);
   }
   .name {
     overflow: hidden;
