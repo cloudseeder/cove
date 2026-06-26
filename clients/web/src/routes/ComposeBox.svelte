@@ -13,11 +13,16 @@
 -->
 <script lang="ts">
   import type { AppState } from '$lib/cove/state.svelte';
+  import type { VerifiedEntry } from '$lib/cove/client';
 
   interface Props {
     app: AppState;
+    /** v0.1.9: when set, this compose is for a reply — post() routes
+     *  through with parents=[replyTo.entry.id]. The placeholder text
+     *  also shifts. */
+    replyTo?: VerifiedEntry | null;
   }
-  let { app }: Props = $props();
+  let { app, replyTo = null }: Props = $props();
 
   let draft = $state('');
   let sending = $state(false);
@@ -27,13 +32,19 @@
   let dragHover = $state(false);
   let fileInput: HTMLInputElement | undefined = $state();
 
+  const placeholder = $derived(
+    replyTo
+      ? 'Reply… ⌘⏎ to send.'
+      : 'Write something. ⌘⏎ to send. Drop files to attach.',
+  );
+
   async function send() {
     const body = draft.trim();
     if ((!body && pending.length === 0) || sending) return;
     sending = true;
     error = null;
     try {
-      await app.post(body, pending);
+      await app.post(body, pending, replyTo);
       draft = '';
       pending = [];
     } catch (err) {
@@ -96,7 +107,7 @@
   <textarea
     bind:value={draft}
     onkeydown={onKey}
-    placeholder="Write something. ⌘⏎ to send. Drop files to attach."
+    {placeholder}
     rows="2"
     disabled={sending}
   ></textarea>

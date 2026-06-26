@@ -20,9 +20,17 @@
      *  asks the Client to fetch the bytes with auth. Optional only because
      *  text-only entries don't need it. */
     client?: Client | null;
+    /** v0.1.9: number of replies (entries whose parents include this id).
+     *  Computed by ThreadView from app.entries; passed in rather than
+     *  derived locally so the card stays cheap to render. */
+    replyCount?: number;
+    /** v0.1.9: fired when the user clicks 'Reply' — opens the reply
+     *  panel pinned to this entry. */
+    onReply?: () => void;
   }
 
-  let { ve, isNew = false, client = null }: Props = $props();
+  let { ve, isNew = false, client = null, replyCount = 0,
+        onReply }: Props = $props();
 
   let revealed = $state(false);
 
@@ -55,6 +63,20 @@
         <Attachment {client} {blob} />
       {/each}
     </div>
+  {/if}
+
+  {#if onReply}
+    <footer>
+      <button type="button" class="reply" onclick={onReply}>
+        {#if replyCount === 0}
+          Reply
+        {:else if replyCount === 1}
+          1 reply
+        {:else}
+          {replyCount} replies
+        {/if}
+      </button>
+    </footer>
   {/if}
 
   {#if revealed}
@@ -118,6 +140,28 @@
     display: flex;
     flex-direction: column;
     gap: 0.2rem;
+  }
+
+  footer {
+    margin-top: 0.7rem;
+    display: flex;
+    justify-content: flex-start;
+  }
+  .reply {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 0.82rem;
+    padding: 0.25rem 0.7rem;
+    border-radius: 999px;
+    cursor: pointer;
+    transition: border-color 120ms, color 120ms, background 120ms;
+  }
+  .reply:hover {
+    color: #e8c96b;
+    background: rgba(212, 175, 55, 0.06);
+    border-color: rgba(212, 175, 55, 0.25);
   }
 
   .chain {

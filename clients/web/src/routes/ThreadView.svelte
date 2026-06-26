@@ -9,6 +9,7 @@
   import EntryCard from '$lib/cove/EntryCard.svelte';
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
+  import ReplyPanel from './ReplyPanel.svelte';
   import ThreadList from './ThreadList.svelte';
 
   interface Props {
@@ -43,6 +44,20 @@
   let pubkey = $derived(
     app.authStatus.kind === 'authenticated' ? app.authStatus.pubkey : '',
   );
+
+  // v0.1.9 — Slack-style sub-threads:
+  //   - main feed shows ONLY top-level entries (parents.length === 0)
+  //   - replies are pulled into the ReplyPanel keyed off entry.id
+  //   - reply count per top-level entry is just a filter+count
+  const topLevel = $derived(app.entries.filter((ve) => ve.entry.parents.length === 0));
+  function replyCountFor(parentId: string | null): number {
+    if (!parentId) return 0;
+    let n = 0;
+    for (const ve of app.entries) {
+      if (ve.entry.parents.includes(parentId)) n++;
+    }
+    return n;
+  }
 </script>
 
 <div class="layout">
@@ -67,12 +82,17 @@
     </header>
 
     <div class="feed">
-      {#if app.entries.length === 0}
+      {#if topLevel.length === 0}
         <p class="empty">No entries yet. Be the first.</p>
       {:else}
-        {#each app.entries as ve (ve.entry.id)}
-          <EntryCard {ve} isNew={freshlyArrived.has(ve.entry.id!)}
-            client={app.client} />
+        {#each topLevel as ve (ve.entry.id)}
+          <EntryCard
+            {ve}
+            isNew={freshlyArrived.has(ve.entry.id!)}
+            client={app.client}
+            replyCount={replyCountFor(ve.entry.id)}
+            onReply={() => app.openReplyPanel(ve)}
+          />
         {/each}
       {/if}
     </div>
@@ -80,6 +100,8 @@
     <ComposeBox {app} />
   </section>
 </div>
+
+<ReplyPanel {app} />
 
 <style>
   .layout {

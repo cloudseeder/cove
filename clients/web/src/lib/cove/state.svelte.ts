@@ -47,6 +47,10 @@ export class AppState {
   /** Updater status — drives the quiet 'Update available' affordance.
    *  Set by checkForUpdate(); resolution by installUpdate(). */
   updateStatus = $state<UpdateStatus>({ kind: 'idle' });
+  /** When non-null, the reply panel is open and pinned to this entry.
+   *  Set by openReplyPanel() from the EntryCard reply button; cleared
+   *  by closeReplyPanel(), switchThread(), and reset(). */
+  replyOpen = $state<VerifiedEntry | null>(null);
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
@@ -91,6 +95,17 @@ export class AppState {
     if (!this.inTauri) return;
     await keychain.clear();
     await this.refreshKeychain();
+  }
+
+  /** Slide the reply panel open, pinned to the given entry. The panel
+   *  shows that entry + all entries whose parents include its id, plus
+   *  a ComposeBox configured to post as a reply. */
+  openReplyPanel(ve: VerifiedEntry): void {
+    this.replyOpen = ve;
+  }
+
+  closeReplyPanel(): void {
+    this.replyOpen = null;
   }
 
   /**
@@ -141,6 +156,7 @@ export class AppState {
     this.entries = [];
     this.seenIds = new Set();
     this.threadStatus = { kind: 'idle' };
+    this.replyOpen = null;
     this.teardown?.();
     this.teardown = null;
     this.client = null;
@@ -262,7 +278,8 @@ export class AppState {
     this.entries = [...this.entries, ve].sort((a, b) => a.seq - b.seq);
   }
 
-  async post(body: string, files: File[] = []): Promise<void> {
+  async post(body: string, files: File[] = [],
+             replyTo: VerifiedEntry | null = null): Promise<void> {
     if (this.client === null || this.authStatus.kind !== 'authenticated') return;
     // client-spec §3: upload blobs FIRST. The acceptance pipeline strict-
     // checks that referenced blobs exist on the hub, so a failed upload
@@ -271,12 +288,15 @@ export class AppState {
     const blobs = files.length === 0
       ? []
       : await Promise.all(files.map((f) => this.client!.uploadBlob(f)));
+    // Replies set parents = [parent.id]; top-level entries have parents=[].
+    // The hub validates parents exist (§7.1) but doesn't enforce that
+    // replies stay within the same thread — that's a client convention.
     const ev = {
       thread: this.thread,
       author: this.authStatus.pubkey,
       kind: 'post' as const,
       created_at: new Date().toISOString(),
-      parents: [],
+      parents: replyTo ? [replyTo.entry.id!] : [],
       body,
       blobs,
       supersedes: null,
@@ -319,6 +339,8 @@ export class AppState {
     this.thread = name;
     this.entries = [];
     this.seenIds = new Set();
+    // Close any open reply panel — its parent belongs to the old thread.
+    this.replyOpen = null;
     this.teardown?.();
     this.teardown = null;
     await this.syncAndSubscribe();
