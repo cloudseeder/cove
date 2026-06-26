@@ -43,6 +43,24 @@ class Overview:
         rows.sort(key=lambda r: r[1])
         return rows
 
+    def thread_summaries(self) -> list[tuple[str, int, int]]:
+        """All known threads as (thread_name, entry_count, latest_seq).
+
+        Derived from the same in-memory state as thread_entries; rebuilt on
+        startup from the store. Used by GET /threads for client-side
+        navigation — the client needs a list of what threads exist, not just
+        the contents of one. Sorted by latest_seq descending so 'most
+        recently active' is on top, matching what an inbox-shaped UI wants.
+        """
+        rows: list[tuple[str, int, int]] = []
+        for thread, entries in self._threads.items():
+            if not entries:
+                continue
+            latest = max(seq for seq, _ in entries.values())
+            rows.append((thread, len(entries), latest))
+        rows.sort(key=lambda r: r[2], reverse=True)
+        return rows
+
     def rebuild(self, entries: Iterable[tuple[str, str, list[str], int]]) -> None:
         """Rebuild from raw entries (the integrity escape hatch). §6.
 

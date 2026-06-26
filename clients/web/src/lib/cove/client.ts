@@ -23,7 +23,7 @@ import {
   verifyDirectoryManifest, verifyEntry, verifyInclusion, verifySth,
 } from './verify';
 import type {
-  Attestation, DirectoryManifest, Entry, InclusionProof, STH,
+  Attestation, DirectoryManifest, Entry, InclusionProof, STH, ThreadSummary,
 } from './types';
 
 /**
@@ -160,6 +160,14 @@ export class Client {
     }
     this.lastSth = sth;
     return sth;
+  }
+
+  /** GET /threads — used by client-side thread navigation. Returns the
+   *  list of observed threads with entry_count + latest_seq, sorted by
+   *  latest_seq desc (most recent activity first). */
+  async fetchThreads(): Promise<ThreadSummary[]> {
+    const data = await this.requestJson('GET', '/threads');
+    return data.threads as ThreadSummary[];
   }
 
   // ---- sync (§7 + client-spec §4.1 + §5) ----------------------------

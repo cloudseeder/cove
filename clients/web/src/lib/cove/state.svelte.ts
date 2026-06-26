@@ -10,6 +10,7 @@ import {
   ensureNotificationPermission, isTauri, keychain, stream, updater,
   type AvailableUpdate,
 } from './tauri';
+import type { ThreadSummary } from './types';
 
 type AuthStatus =
   | { kind: 'unauthenticated' }
@@ -34,6 +35,9 @@ export class AppState {
   thread = $state<string>('annual-meeting');
   threadStatus = $state<ThreadStatus>({ kind: 'idle' });
   entries = $state<VerifiedEntry[]>([]);
+  /** All observed threads on the hub. Populated by loadThreads();
+   *  refreshed after post and on subscribe push. Used by ThreadList. */
+  threads = $state<ThreadSummary[]>([]);
   /** True iff running inside the Tauri shell — drives the keychain
    *  vs paste-box branch in the auth panel. */
   inTauri = $state<boolean>(isTauri());
@@ -178,6 +182,9 @@ export class AppState {
         void ensureNotificationPermission();
       }
       await this.syncAndSubscribe();
+      // Load the thread list once we're connected. Non-blocking so a
+      // hub that's slow to respond on /threads doesn't gate the feed.
+      void this.loadThreads();
     } catch (err) {
       this.authStatus = { kind: 'failed', reason: (err as Error).message };
       this.client = null;
@@ -271,8 +278,42 @@ export class AppState {
       sig: null,
     };
     await this.client.post(ev);
-    // The /stream subscription will push the entry back; that's where the
+    // Refresh the thread list so the latest_seq + entry_count update
+    // optimistically reflect the post we just made. The /stream
+    // subscription will push the entry back; that's where the
     // ceremony render happens. No optimistic insert — the ceremony is
     // 'verified, with proof,' not 'sent.'
+    void this.loadThreads();
+  }
+
+  /** Refresh the thread list from the hub. Called on connect and after
+   *  every post; can also be called from the UI as a manual refresh. */
+  async loadThreads(): Promise<void> {
+    if (this.client === null) return;
+    try {
+      this.threads = await this.client.fetchThreads();
+    } catch (_err) {
+      // Non-fatal — thread list staying stale is preferable to throwing
+      // the connection away. The next refresh will heal it.
+    }
+  }
+
+  /** Switch the active thread. Resets per-thread state, re-syncs, and
+   *  re-subscribes. /stream is a global broadcast, so the actual
+   *  WebSocket is torn down and re-opened to pick up the new
+   *  thread-filter closure (per Client.subscribe semantics).
+   *
+   *  Threads are open-namespace — calling switchThread with a name no
+   *  one has posted to yet just gives you an empty feed, and posting
+   *  there will materialize the thread on the hub. That's by design. */
+  async switchThread(name: string): Promise<void> {
+    if (this.client === null) return;
+    if (name === this.thread) return;
+    this.thread = name;
+    this.entries = [];
+    this.seenIds = new Set();
+    this.teardown?.();
+    this.teardown = null;
+    await this.syncAndSubscribe();
   }
 }

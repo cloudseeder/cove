@@ -215,6 +215,7 @@ def test_auth_verify_missing_fields_returns_400(hub):
 # ---- gating: data routes require a valid session ---------------------
 
 GATED_GETS = ["/sync?thread=t1&since=-1", "/overview?thread=t1",
+              "/threads",
               "/directory", "/ledger?entry=anything"]
 
 
@@ -1128,6 +1129,36 @@ def test_overview_returns_child_map_and_seq_order(hub):
     assert sorted(by_id[a.id]["children"]) == sorted([b.id, c.id])
     assert by_id[b.id]["parents"] == [a.id]
     assert by_id[c.id]["children"] == []
+
+
+# ---- GET /threads ---------------------------------------------------
+
+def test_threads_returns_empty_list_on_fresh_hub(hub):
+    r = hub["client"].get("/threads")
+    assert r.status_code == 200
+    assert r.json() == {"threads": []}
+
+
+def test_threads_lists_observed_threads_with_counts_and_latest_seq(hub):
+    # Two entries in thread t1, one in t2 — three entries, two threads.
+    a = _signed_post(hub["member_priv"], hub["member_pub"], thread="t1", body="a")
+    hub["client"].post("/entries", json=_entry_payload(a))
+    b = _signed_post(hub["member_priv"], hub["member_pub"], thread="t1", body="b")
+    hub["client"].post("/entries", json=_entry_payload(b))
+    c = _signed_post(hub["member_priv"], hub["member_pub"], thread="t2", body="c")
+    hub["client"].post("/entries", json=_entry_payload(c))
+
+    r = hub["client"].get("/threads")
+    assert r.status_code == 200
+    rows = r.json()["threads"]
+    by_thread = {row["thread"]: row for row in rows}
+    assert by_thread["t1"]["entry_count"] == 2
+    assert by_thread["t1"]["latest_seq"] == 1
+    assert by_thread["t2"]["entry_count"] == 1
+    assert by_thread["t2"]["latest_seq"] == 0
+
+
+# /threads auth gating tested via the GATED_GETS parametrization above.
 
 
 # ---- GET /directory -------------------------------------------------

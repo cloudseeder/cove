@@ -9,6 +9,7 @@
   import EntryCard from '$lib/cove/EntryCard.svelte';
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
+  import ThreadList from './ThreadList.svelte';
 
   interface Props {
     app: AppState;
@@ -44,42 +45,58 @@
   );
 </script>
 
-<section class="thread">
-  <header>
-    <div>
-      <h1>{app.thread}</h1>
-      <p class="muted">
-        {app.entries.length} entr{app.entries.length === 1 ? 'y' : 'ies'}
-        · you are <code>{pubkey.slice(0, 12)}…</code>
-      </p>
+<div class="layout">
+  <ThreadList {app} />
+
+  <section class="thread">
+    <header>
+      <div>
+        <h1>{app.thread}</h1>
+        <p class="muted">
+          {app.entries.length} entr{app.entries.length === 1 ? 'y' : 'ies'}
+          · you are <code>{pubkey.slice(0, 12)}…</code>
+        </p>
+      </div>
+      {#if app.threadStatus.kind === 'syncing'}
+        <span class="status">Syncing…</span>
+      {:else if app.threadStatus.kind === 'error'}
+        <span class="status error">⚠ {app.threadStatus.message}</span>
+      {:else}
+        <span class="status pulse" title="History intact ✓">✓ log intact</span>
+      {/if}
+    </header>
+
+    <div class="feed">
+      {#if app.entries.length === 0}
+        <p class="empty">No entries yet. Be the first.</p>
+      {:else}
+        {#each app.entries as ve (ve.entry.id)}
+          <EntryCard {ve} isNew={freshlyArrived.has(ve.entry.id!)} />
+        {/each}
+      {/if}
     </div>
-    {#if app.threadStatus.kind === 'syncing'}
-      <span class="status">Syncing…</span>
-    {:else if app.threadStatus.kind === 'error'}
-      <span class="status error">⚠ {app.threadStatus.message}</span>
-    {:else}
-      <span class="status pulse" title="History intact ✓">✓ log intact</span>
-    {/if}
-  </header>
 
-  <div class="feed">
-    {#if app.entries.length === 0}
-      <p class="empty">No entries yet. Be the first.</p>
-    {:else}
-      {#each app.entries as ve (ve.entry.id)}
-        <EntryCard {ve} isNew={freshlyArrived.has(ve.entry.id!)} />
-      {/each}
-    {/if}
-  </div>
-
-  <ComposeBox {app} />
-</section>
+    <ComposeBox {app} />
+  </section>
+</div>
 
 <style>
+  .layout {
+    display: flex;
+    height: 100vh;
+    overflow: hidden;
+  }
   .thread {
+    flex: 1;
+    overflow-y: auto;
+    padding: 1.5rem;
+    /* The .feed + compose box are the centered column; the
+       scrollable region itself stretches to fill the pane. */
+  }
+  .thread > :global(*) {
     max-width: 720px;
-    margin: 0 auto;
-    padding: 1.5rem 1.5rem 6rem;
+    margin-left: auto;
+    margin-right: auto;
   }
   header {
     display: flex;

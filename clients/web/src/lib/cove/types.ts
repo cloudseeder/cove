@@ -35,6 +35,14 @@ export interface Entry {
   sig: string | null;
 }
 
+/** Returned by GET /threads — one row per observed thread. Sorted
+ *  by latest_seq descending. Used by the client-side thread navigation. */
+export interface ThreadSummary {
+  thread: string;
+  entry_count: number;
+  latest_seq: number;
+}
+
 /** Mirrors cove.translog.STH. */
 export interface STH {
   tree_size: number;

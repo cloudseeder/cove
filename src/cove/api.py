@@ -264,6 +264,21 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         ]
         return {"thread": thread, "since": since, "entries": entries}
 
+    # ---- GET /threads ---------------------------------------------------
+    # Client-side navigation needs a list of what threads exist. Returns
+    # [(thread_name, entry_count, latest_seq)] sorted by latest_seq desc.
+    # Auth-gated like /sync; the directory authoritatively names members
+    # but threads are open-namespace so this list reflects observed state,
+    # not a registry.
+    @api.get("/threads")
+    def get_threads(_caller: str = Depends(require_session)) -> dict:
+        return {
+            "threads": [
+                {"thread": t, "entry_count": n, "latest_seq": s}
+                for t, n, s in overview.thread_summaries()
+            ],
+        }
+
     # ---- GET /overview (§6) --------------------------------------------
     @api.get("/overview")
     def get_overview(thread: str = Query(...),
