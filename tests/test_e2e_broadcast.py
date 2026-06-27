@@ -693,7 +693,9 @@ def test_revocation_mid_session_immediately_cuts_off_revoked_member(
     assert admin_resp.status_code == 200, admin_resp.text
 
     # === Invariant 1: bob's existing session is dead immediately ===
-    r = bob_client.get("/directory")
+    # /directory is public as of v0.4.0; use a gated route to observe
+    # the session-invalidation effect.
+    r = bob_client.get("/threads")
     assert r.status_code == 401
     assert r.json()["error"] == "auth_required"
 

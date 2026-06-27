@@ -48,6 +48,14 @@ def sign(private_hex: str, message: bytes) -> str:
     return sk.sign(message).signature.hex()
 
 
+def derive_pubkey(private_hex: str) -> str:
+    """Derive the Ed25519 public key from a private key hex. Used by the
+    admin CLI to sanity-check that a root.priv on disk matches the org
+    pubkey the hub advertises BEFORE attempting to sign a manifest with
+    it — catches "wrong root key" before the hub rejects the bad sig."""
+    return signing.SigningKey(bytes.fromhex(private_hex)).verify_key.encode().hex()
+
+
 def verify(public_hex: str, signature_hex: str, message: bytes) -> bool:
     try:
         signing.VerifyKey(bytes.fromhex(public_hex)).verify(

@@ -148,7 +148,10 @@ def test_auth_verify_missing_fields_returns_400(hub):
 
 GATED_GETS = ["/sync?thread=t1&since=-1", "/overview?thread=t1",
               "/threads",
-              "/directory", "/ledger?entry=anything"]
+              "/ledger?entry=anything"]
+# /directory is public as of v0.4.0 — the manifest is root-signed, and
+# the gate was blocking the admin CLI + on-device-keygen onboarding flow
+# that need to fetch it before they hold any session.
 
 
 @pytest.mark.parametrize("path", GATED_GETS)
@@ -443,7 +446,8 @@ def test_admin_revoke_propagates_through_to_session_gate(hub):
     gated request on the previously-valid session is denied. Backs the
     'revocation has immediate effect on the running system' invariant
     from the auth slice."""
-    assert hub["client"].get("/directory").status_code == 200
+    # /threads is gated; works while the member is attested.
+    assert hub["client"].get("/threads").status_code == 200
 
     current = hub["directory"].manifest
     rev = Revocation(pubkey=hub["member_pub"],
@@ -457,8 +461,8 @@ def test_admin_revoke_propagates_through_to_session_gate(hub):
     )
     r = hub["client"].post("/admin/revoke", json={"manifest": _manifest_dict(new_manifest)})
     assert r.status_code == 200
-    # Same client, same token — now denied.
-    assert hub["client"].get("/directory").status_code == 401
+    # Same client, same token — now denied on any gated route.
+    assert hub["client"].get("/threads").status_code == 401
 
 
 def test_admin_attest_missing_payload_returns_400(hub):
@@ -886,15 +890,15 @@ def test_stream_does_not_replay_history_only_pushes_post_subscribe(hub):
 def test_session_invalidated_when_member_revoked(hub):
     """§5 invariant: the session is bound to a *non-revoked* attested key.
     Revoke the member mid-session; the next gated request must fail."""
-    # Confirm the pre-auth client works first.
-    assert hub["client"].get("/directory").status_code == 200
+    # Confirm the pre-auth client works on a gated route first.
+    assert hub["client"].get("/threads").status_code == 200
     # Mutate the directory to revoke the member.
     hub["directory"]._revoked[hub["member_pub"]] = Revocation(
         pubkey=hub["member_pub"],
         revoked_at="2026-02-01T00:00:00+00:00", reason="key compromise",
     )
     # Same client, same token — now denied.
-    r = hub["client"].get("/directory")
+    r = hub["client"].get("/threads")
     assert r.status_code == 401
 
 

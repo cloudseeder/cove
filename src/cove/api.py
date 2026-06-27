@@ -337,8 +337,17 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             return _err(400, error="bad_sizes", detail=str(e))
 
     # ---- GET /directory (§2.3) ------------------------------------------
+    # v0.4.0: dropped the auth gate. The manifest is root-signed; the
+    # gate was only hiding the roster (no secrets) and blocked two
+    # legitimate flows that have no session yet:
+    #   - admin CLI (scripts/attest_member.py) building a new manifest
+    #   - on-device-keygen onboarding verifying the signed manifest the
+    #     /pending/watch push pointed it at, before authenticating
+    # Acceptable for a closed-org pilot. If hiding the roster becomes
+    # a requirement later, the right answer is a per-tenant view, not
+    # re-gating this endpoint.
     @api.get("/directory")
-    def get_directory(_caller: str = Depends(require_session)):
+    def get_directory():
         m = directory.manifest if directory is not None else None
         if m is None:
             return _err(503, error="no_directory")
