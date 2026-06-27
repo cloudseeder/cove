@@ -44,6 +44,33 @@ pub fn sign_message(message: Vec<u8>) -> Result<String, String> {
     keys::sign_message(&message).map_err(Into::into)
 }
 
+// ---- v0.4.0: root keychain slot (keymaster-only admin signing) ---------
+
+#[tauri::command]
+pub fn root_status() -> Result<keys::KeyStatus, String> {
+    keys::root_status().map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn root_import(private_key: String, public_key: String) -> Result<(), String> {
+    keys::root_import(&private_key, &public_key).map_err(Into::into)
+}
+
+#[tauri::command]
+pub fn root_clear() -> Result<(), String> {
+    keys::root_clear().map_err(Into::into)
+}
+
+/// Sign canonical-content bytes (attestation OR manifest) with the
+/// stored root key. Used twice per admin attestation: once for the
+/// new Attestation, once for the new DirectoryManifest. The JS layer
+/// owns canonicalization (RFC 8785) so this command is just a
+/// signature surface.
+#[tauri::command]
+pub fn root_sign_message(message: Vec<u8>) -> Result<String, String> {
+    keys::root_sign_message(&message).map_err(Into::into)
+}
+
 /// Start the background /stream subscriber. Replaces any prior
 /// subscription. The Rust task survives webview close; messages forward
 /// to JS as `entry_pushed` Tauri events, AND fire a native notification

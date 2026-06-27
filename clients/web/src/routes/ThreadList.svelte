@@ -115,6 +115,16 @@
   {/snippet}
 
   <ul>
+    {#if app.isBoardMember}
+      <li class:active={app.view === 'admin'} class="admin-tab">
+        <button type="button" onclick={() => app.setView('admin')}>
+          <span class="name">Admin</span>
+          {#if app.pendingQueue.length > 0}
+            <span class="count badge">{app.pendingQueue.length}</span>
+          {/if}
+        </button>
+      </li>
+    {/if}
     {#each tree as node (node.thread)}
       {@render threadNode(node)}
     {/each}
@@ -244,6 +254,15 @@
     margin: 0.1rem 0 0.25rem 0.85rem;
     padding-left: 0.4rem;
     border-left: 2px solid rgba(160, 200, 130, 0.35);
+  }
+  .admin-tab > button {
+    color: #e8c96b;
+  }
+  .badge {
+    background: #d4af37; color: #0a0a0a;
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+    font-weight: 600;
   }
   .name {
     overflow: hidden;

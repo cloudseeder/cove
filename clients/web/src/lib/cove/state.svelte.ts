@@ -6,12 +6,14 @@
  * One mutation point per concern keeps it analyzable.
  */
 import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
+import { issueAttestation, issueDirectory, type RootSigner } from './identity';
 import { encodePairingLink, fingerprint as fingerprintOf } from './pairing';
 import {
-  ensureNotificationPermission, isTauri, keychain, stream, updater,
+  ensureNotificationPermission, isTauri, keychain, rootKeychain, stream, updater,
   type AvailableUpdate,
 } from './tauri';
-import type { ThreadSummary } from './types';
+import type { Attestation, ThreadSummary } from './types';
+import { hashManifest } from './verify';
 
 type AuthStatus =
   | { kind: 'unauthenticated' }
@@ -38,10 +40,14 @@ type OnboardStatus =
   | { kind: 'attested'; pubkey: string }
   | { kind: 'error'; message: string };
 
-/** v0.1.10: main pane has two faces per thread — chronological feed
- *  or per-thread files list. Reset to 'messages' on every thread
- *  switch so navigation doesn't trap the user in Files. */
-type View = 'messages' | 'files';
+/** v0.1.10: main pane faces per thread — chronological feed or
+ *  per-thread files list. Reset to 'messages' on every thread switch
+ *  so navigation doesn't trap the user in Files.
+ *
+ *  v0.4.0: 'admin' — global view (not per-thread) for the keymaster's
+ *  pending-queue UI. Visible only to board-role members. Setting this
+ *  doesn't change app.thread; switching threads resets back to 'messages'. */
+type View = 'messages' | 'files' | 'admin';
 
 type UpdateStatus =
   | { kind: 'idle' }
@@ -82,6 +88,22 @@ export class AppState {
    *  socket down without rejecting (used when the user clicks "back"
    *  from the waiting screen). */
   private watchCancel: (() => void) | null = null;
+  /** v0.4.0: keymaster mode. True when the second keychain slot
+   *  (ROOT_PRIV_SLOT) has a root key — gates the in-app admin UI. */
+  rootKeysPresent = $state<boolean>(false);
+  /** v0.4.0: cached pending queue for AdminPanel. Refreshed by
+   *  loadPendingQueue() — also re-fetched after every approve/reject. */
+  pendingQueue = $state<Array<{
+    pubkey: string; name_hint: string; requested_at: string;
+  }>>([]);
+  /** v0.4.0: status of an in-flight approve action — drives the
+   *  spinner + error display in the admin form. */
+  adminStatus = $state<{ kind: 'idle' } | { kind: 'submitting' }
+    | { kind: 'error'; message: string }>({ kind: 'idle' });
+  /** v0.4.0: caller's own attestation, resolved at connect-time.
+   *  Drives AdminPanel visibility (role==='board'). Null until
+   *  fetchDirectory has run, which happens during connect(). */
+  myAttestation = $state<Attestation | null>(null);
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
@@ -141,6 +163,125 @@ export class AppState {
 
   setView(v: View): void {
     this.view = v;
+  }
+
+  // ---- v0.4.0: admin (keymaster) flow ----------------------------------
+
+  /** Re-read the root keychain slot. Call when AdminPanel mounts. */
+  async refreshRootKeychain(): Promise<void> {
+    if (!this.inTauri) { this.rootKeysPresent = false; return; }
+    const st = await rootKeychain.status();
+    this.rootKeysPresent = st.has_keys;
+  }
+
+  /** Import the org root keypair into the dedicated keychain slot.
+   *  One-time setup for the keymaster station. */
+  async importRootKeys(privateKey: string, publicKey: string): Promise<void> {
+    if (!this.inTauri) throw new Error('root key custody requires the Tauri shell');
+    await rootKeychain.import(privateKey, publicKey);
+    await this.refreshRootKeychain();
+    if (!this.rootKeysPresent) {
+      throw new Error(
+        'Root key import did not persist. The OS keychain returned OK '
+        + 'but a subsequent read returned no entry. Check Console.app '
+        + '(macOS) or the keyring logs for details.',
+      );
+    }
+  }
+
+  /** Wipe the root slot. */
+  async clearRootKeys(): Promise<void> {
+    if (!this.inTauri) return;
+    await rootKeychain.clear();
+    await this.refreshRootKeychain();
+  }
+
+  /** Refresh the pending-queue snapshot. Board-auth required; if the
+   *  caller isn't board-tier the hub returns 403 and we surface an
+   *  empty queue so the UI just shows "nothing pending." */
+  async loadPendingQueue(): Promise<void> {
+    if (this.client === null) return;
+    try {
+      this.pendingQueue = await this.client.listPending();
+    } catch {
+      this.pendingQueue = [];
+    }
+  }
+
+  /** Reject a pending registration (typo, suspected impostor, dup).
+   *  Idempotent on the hub; we still refresh after for the UI. */
+  async rejectPending(pubkey: string): Promise<void> {
+    if (this.client === null) return;
+    try { await this.client.clearPending(pubkey); } catch { /* tolerate */ }
+    await this.loadPendingQueue();
+  }
+
+  /** Approve a pending registration: issue an Attestation root-signed
+   *  via the keychain, build a fresh DirectoryManifest chained off the
+   *  current head, POST to /admin/attest. The hub's attest hook fires
+   *  the WS /pending/watch for this pubkey, so the member's device
+   *  unlocks within the same tick. */
+  async approvePending(opts: {
+    pubkey: string;
+    displayName: string;
+    affiliation: string;
+    role: 'member' | 'officer' | 'board' | string;
+    title?: string | null;
+  }): Promise<void> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      return;
+    }
+    if (!this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before approving.',
+      };
+      return;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    const signer: RootSigner = {
+      sign: (m) => rootKeychain.signMessage(m),
+      pubkey: async () => (await rootKeychain.status()).public_key!,
+    };
+    try {
+      const current = await this.client.fetchDirectory();
+      // Sanity: the root key on this device must derive to the
+      // hub's org pubkey, otherwise the sig fails the hub's check.
+      const rootPub = await signer.pubkey();
+      if (rootPub !== current.org) {
+        throw new Error(
+          'Root key on this device does not match the hub org pubkey.',
+        );
+      }
+      const newAtt = await issueAttestation(signer, {
+        memberPubkey: opts.pubkey,
+        displayName: opts.displayName,
+        affiliation: opts.affiliation,
+        role: opts.role,
+        title: opts.title ?? null,
+      });
+      const newManifest = await issueDirectory(signer, {
+        org: current.org,
+        attestations: [...current.attestations, newAtt],
+        revocations: [...current.revocations],
+        prevManifestHash: hashManifest(current),
+      });
+      await this.client.submitAttestation(newManifest);
+      this.adminStatus = { kind: 'idle' };
+      await this.loadPendingQueue();
+    } catch (err) {
+      this.adminStatus = {
+        kind: 'error', message: (err as Error).message,
+      };
+    }
+  }
+
+  /** Helper: is the caller in board tier on this hub? Drives the
+   *  AdminPanel tab visibility. The hub enforces actual access via
+   *  the require_board gate on /pending — this is purely a UI hint. */
+  get isBoardMember(): boolean {
+    return this.myAttestation?.role === 'board';
   }
 
   /**
@@ -340,6 +481,13 @@ export class AppState {
       // Load the thread list once we're connected. Non-blocking so a
       // hub that's slow to respond on /threads doesn't gate the feed.
       void this.loadThreads();
+      // Cache the caller's attestation so AdminPanel knows whether
+      // to show. syncAndSubscribe → sync → fetchDirectory has
+      // already populated the client's directoryView by here.
+      this.myAttestation = this.client?.myAttestation() ?? null;
+      // And on Tauri keymaster stations, surface the root keychain
+      // state so AdminPanel can show "import root keys" if absent.
+      if (this.inTauri) void this.refreshRootKeychain();
     } catch (err) {
       this.authStatus = { kind: 'failed', reason: (err as Error).message };
       this.client = null;

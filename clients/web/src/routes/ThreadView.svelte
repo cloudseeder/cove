@@ -6,6 +6,7 @@
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
+  import AdminPanel from './AdminPanel.svelte';
   import EntryCard from '$lib/cove/EntryCard.svelte';
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
@@ -64,7 +65,9 @@
 <div class="layout">
   <ThreadList {app} />
 
-  {#if app.view === 'files'}
+  {#if app.view === 'admin'}
+    <AdminPanel {app} />
+  {:else if app.view === 'files'}
     <FilesView {app} />
   {:else}
     <section class="thread">

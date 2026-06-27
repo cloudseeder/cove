@@ -70,6 +70,30 @@ export const keychain = {
 };
 
 /**
+ * v0.4.0: root keychain slot (keymaster-only). Separate from `keychain`
+ * so the surface for "is root present?" is distinct from "is member
+ * present?". A device that's both keymaster and member sees two
+ * independent states. The hub never holds root.priv (CLAUDE.md
+ * non-negotiable #1); this is on the admin's device only.
+ */
+export const rootKeychain = {
+  status(): Promise<KeyStatus> {
+    return invoke<KeyStatus>('root_status');
+  },
+  import(privateKey: string, publicKey: string): Promise<void> {
+    return invoke<void>('root_import', { privateKey, publicKey });
+  },
+  clear(): Promise<void> {
+    return invoke<void>('root_clear');
+  },
+  /** Sign canonical-content bytes (Attestation or DirectoryManifest)
+   *  with the root private key. Bytes in, hex string out. */
+  signMessage(message: Uint8Array): Promise<string> {
+    return invoke<string>('root_sign_message', { message: Array.from(message) });
+  },
+};
+
+/**
  * Background subscription control. The Rust task survives webview close;
  * onPush is called with the raw JSON-stringified push payload exactly
  * as it came off the WebSocket — verification is the caller's job.

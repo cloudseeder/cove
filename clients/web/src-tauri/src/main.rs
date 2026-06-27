@@ -49,6 +49,10 @@ fn main() {
             commands::keys_generate,
             commands::keys_clear,
             commands::sign_message,
+            commands::root_status,
+            commands::root_import,
+            commands::root_clear,
+            commands::root_sign_message,
             commands::stream_start,
             commands::stream_stop,
         ])

@@ -123,6 +123,15 @@ export class Client {
     return this.highWater.get(thread) ?? -1;
   }
 
+  /** v0.4.0: my own attestation, resolved against the directory I
+   *  most recently fetched. Returns null when the directory hasn't
+   *  been loaded yet — caller must fetchDirectory first.
+   *  Used by AppState to decide whether to show the admin tab. */
+  myAttestation(): Attestation | null {
+    if (this.directoryView === null) return null;
+    return this.directoryView.resolve(this.publicKey);
+  }
+
   /** Forget the per-thread delta-sync cursor so the next sync(thread)
    *  replays from the start. The UI calls this when it clears its
    *  in-memory entries (e.g. switching threads in/out of view) — the

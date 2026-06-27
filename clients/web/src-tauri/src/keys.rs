@@ -21,6 +21,14 @@ use serde::Serialize;
 const SERVICE: &str = "com.cove.web";
 const PRIV_SLOT: &str = "private_key";
 const PUB_SLOT: &str = "public_key";
+// v0.4.0: second keychain slot for the org root private key, used ONLY
+// by the keymaster's Cove client to sign attestation + directory
+// manifests inside the admin UI. CLAUDE.md non-negotiable #1 is about
+// the HUB never holding root.priv; the keymaster's client legitimately
+// holds it (their device IS the trust anchor). Slot names are distinct
+// so a keymaster who's also a member has both keys cleanly separated.
+const ROOT_PRIV_SLOT: &str = "root_private_key";
+const ROOT_PUB_SLOT: &str = "root_public_key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -204,7 +212,11 @@ pub fn clear() -> Result<(), KeyError> {
 /// signature on every entry. The bytes the caller passes are exactly
 /// what gets signed — no double-hashing, no implicit transformation.
 pub fn sign_message(message: &[u8]) -> Result<String, KeyError> {
-    let priv_hex = match entry(PRIV_SLOT)?.get_password() {
+    sign_with_slot(PRIV_SLOT, message)
+}
+
+fn sign_with_slot(slot: &str, message: &[u8]) -> Result<String, KeyError> {
+    let priv_hex = match entry(slot)?.get_password() {
         Ok(s) => s,
         Err(keyring::Error::NoEntry) => return Err(KeyError::NotImported),
         Err(e) => return Err(e.into()),
@@ -217,6 +229,64 @@ pub fn sign_message(message: &[u8]) -> Result<String, KeyError> {
     let sk = SigningKey::from_bytes(&priv_arr);
     let sig = sk.sign(message);
     Ok(hex::encode(sig.to_bytes()))
+}
+
+// ---- v0.4.0: root keychain slot (keymaster-only) -----------------------
+
+/// Status of the keymaster's root.priv slot. Distinct from the member
+/// status so a keymaster who's also a member sees both clearly.
+pub fn root_status() -> Result<KeyStatus, KeyError> {
+    let pub_entry = entry(ROOT_PUB_SLOT)?;
+    match pub_entry.get_password() {
+        Ok(pk) => Ok(KeyStatus { has_keys: true, public_key: Some(pk) }),
+        Err(keyring::Error::NoEntry) => Ok(KeyStatus { has_keys: false, public_key: None }),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Import a paired root (priv, pub) into the dedicated root slot. Same
+/// derivation check as import() — if the claimed pub doesn't derive
+/// from priv we refuse, so a paste-typo doesn't end up storing a
+/// useless key. Same readback verification too.
+pub fn root_import(private_key_hex: &str, public_key_hex: &str) -> Result<(), KeyError> {
+    let priv_bytes = hex::decode(private_key_hex)?;
+    let pub_bytes = hex::decode(public_key_hex)?;
+    let priv_arr: [u8; 32] = priv_bytes.as_slice().try_into()
+        .map_err(|_| KeyError::InvalidPrivateKey)?;
+    let pub_arr: [u8; 32] = pub_bytes.as_slice().try_into()
+        .map_err(|_| KeyError::InvalidPublicKey)?;
+    let sk = SigningKey::from_bytes(&priv_arr);
+    if sk.verifying_key().to_bytes() != pub_arr {
+        return Err(KeyError::KeysMismatched);
+    }
+    entry(ROOT_PRIV_SLOT)?.set_password(private_key_hex)?;
+    entry(ROOT_PUB_SLOT)?.set_password(public_key_hex)?;
+    match entry(ROOT_PUB_SLOT)?.get_password() {
+        Ok(ref s) if s == public_key_hex => {}
+        Ok(_) => return Err(KeyError::ReadbackMismatch),
+        Err(_) => return Err(KeyError::ReadbackFailed),
+    }
+    Ok(())
+}
+
+/// Wipe the root slot. Used when retiring a device that was previously
+/// the keymaster station.
+pub fn root_clear() -> Result<(), KeyError> {
+    for slot in [ROOT_PRIV_SLOT, ROOT_PUB_SLOT] {
+        match entry(slot)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Ok(())
+}
+
+/// Sign arbitrary bytes with the root private key. Used by the admin
+/// UI to sign attestations (canonical-content bytes) and directory
+/// manifests (canonical-content bytes) — same two-step sign-once-per-
+/// piece pattern the Python admin tool uses. Returns 64-byte hex sig.
+pub fn root_sign_message(message: &[u8]) -> Result<String, KeyError> {
+    sign_with_slot(ROOT_PRIV_SLOT, message)
 }
 
 #[cfg(test)]
