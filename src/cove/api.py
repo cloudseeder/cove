@@ -34,6 +34,7 @@ from .identity import (
     manifest_from_dict, manifest_to_dict,
 )
 from .index import Ledger, Overview
+from .pending import PendingRegistry
 from .pipeline import AcceptanceError, Pipeline
 from .store import EventStore
 from .throttle import ThrottleError, Throttler
@@ -104,6 +105,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                throttler: Optional[Throttler] = None,
                fanout: Optional[FanOut] = None,
                blobs: Optional[BlobStore] = None,
+               pending: Optional[PendingRegistry] = None,
                config: HubConfig = DEFAULT) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
@@ -120,6 +122,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     """
     if fanout is None:
         fanout = FanOut()
+    if pending is None:
+        pending = PendingRegistry()
     # /admin/limits applies overrides to the same Throttler the pipeline uses;
     # default to pipeline.throttler so existing callers don't need to pass it.
     if throttler is None:
@@ -192,9 +196,26 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             raise _AuthRequired("invalid or expired token")
         return pubkey
 
+    def require_board(caller: str = Depends(require_session)) -> str:
+        """Auth + role gate for admin-UI surfaces (pending queue, etc.).
+        Root-sig protection on mutation paths (/admin/attest, /admin/revoke,
+        /admin/limits) remains: this gate just keeps in-app admin views
+        scoped to board-role members. Member-role and officer-role tokens
+        get 403, not 401 — they're authenticated, just not authorized."""
+        if directory is None:
+            raise _Forbidden("no_directory")
+        att = directory.resolve(caller)
+        if att is None or att.role != "board":
+            raise _Forbidden("board role required")
+        return caller
+
     @api.exception_handler(_AuthRequired)
     async def _auth_required_handler(_request, exc: "_AuthRequired"):
         return _err(401, error="auth_required", reason=exc.reason)
+
+    @api.exception_handler(_Forbidden)
+    async def _forbidden_handler(_request, exc: "_Forbidden"):
+        return _err(403, error="forbidden", reason=exc.reason)
 
     @api.get("/healthz")
     def healthz() -> dict:
@@ -415,6 +436,101 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                         media_type="application/octet-stream",
                         headers={"ETag": f'"sha256:{blob_hash}"'})
 
+    # ---- /pending — v0.4.0 on-device keygen + push approval ------------
+    # A device that just generated its keypair POSTs /pending to surface
+    # itself in the keymaster's queue, then holds WS /pending/watch open.
+    # The keymaster reviews + attests via /admin/attest; the manifest hook
+    # above wakes any matching watcher.
+
+    @api.post("/pending")
+    def post_pending(body: dict = Body(...)):
+        if directory is None:
+            return _err(503, error="no_directory")
+        pubkey = body.get("pubkey")
+        name_hint = body.get("name_hint")
+        requested_at = body.get("requested_at")
+        if not (isinstance(pubkey, str) and len(pubkey) == 64
+                and all(c in "0123456789abcdef" for c in pubkey)):
+            return _err(400, error="bad_request",
+                        detail="pubkey must be 64-char hex")
+        if not isinstance(name_hint, str) or not name_hint.strip():
+            return _err(400, error="bad_request",
+                        detail="name_hint required")
+        if not isinstance(requested_at, str) or not requested_at:
+            return _err(400, error="bad_request",
+                        detail="requested_at required (rfc3339)")
+        # If the pubkey is already attested, return 409 so the client
+        # transitions to the auth flow instead of waiting for a push
+        # that will never come (the /admin/attest hook only fires for
+        # NEWLY-attested keys).
+        if directory.resolve(pubkey) is not None:
+            return _err(409, error="already_attested",
+                        detail="pubkey is already in the directory")
+        pending.register(pubkey=pubkey, name_hint=name_hint.strip(),
+                         requested_at=requested_at)
+        return {"pubkey": pubkey}
+
+    @api.get("/pending")
+    def get_pending(_caller: str = Depends(require_board)):
+        return {"pending": [asdict(r) for r in pending.list()]}
+
+    @api.delete("/pending/{pubkey}")
+    def delete_pending(pubkey: str, _caller: str = Depends(require_board)):
+        # Idempotent — clearing a non-pending pubkey returns success so
+        # an admin clicking 'reject' after a concurrent attestation
+        # doesn't get a confusing error.
+        pending.clear(pubkey)
+        return {"pubkey": pubkey}
+
+    @api.websocket("/pending/watch")
+    async def pending_watch(ws: WebSocket):
+        """Held open until the queried pubkey appears in the directory.
+
+        Reconnect-safe: on handshake, if the pubkey is ALREADY attested
+        (e.g. WS dropped during attestation; client reconnected), push
+        immediately and close. Otherwise register a watcher event and
+        await. The /admin/attest hook above sets the event from the same
+        event loop, so wake-up is single-loop-tick.
+        """
+        await ws.accept()
+        pubkey = ws.query_params.get("pubkey")
+        if not pubkey or len(pubkey) != 64:
+            await ws.close(code=1008, reason="pubkey query param required")
+            return
+        if directory is None:
+            await ws.close(code=1011, reason="no directory")
+            return
+
+        async def _push_attested():
+            await ws.send_json({
+                "type": "attested",
+                "pubkey": pubkey,
+                "manifest_hash": hash_manifest(directory.manifest),
+            })
+
+        if directory.resolve(pubkey) is not None:
+            await _push_attested()
+            await ws.close()
+            return
+
+        event = pending.watcher_event(pubkey)
+        # Race-window mitigation: between the resolve() above and the
+        # event registration, /admin/attest might have fired. Re-check.
+        if directory.resolve(pubkey) is not None:
+            await _push_attested()
+            await ws.close()
+            return
+
+        try:
+            await event.wait()
+            await _push_attested()
+        except WebSocketDisconnect:
+            return
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
     # ---- /admin/* (§7, §7.2.2) -----------------------------------------
     # Self-authenticating via root signature on the payload — CLAUDE.md
     # non-negotiable #1 ('hub holds NO root private key') means the admin
@@ -429,36 +545,48 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     def _apply_manifest(body: dict):
         m = body.get("manifest")
         if not isinstance(m, dict):
-            return _err(400, error="bad_request", detail="manifest required")
+            return _err(400, error="bad_request", detail="manifest required"), set()
         try:
             new_m = _manifest_from_dict(m)
         except (TypeError, KeyError, ValueError) as e:
-            return _err(400, error="bad_manifest", detail=str(e))
+            return _err(400, error="bad_manifest", detail=str(e)), set()
         if directory is None:
-            return _err(503, error="no_directory")
+            return _err(503, error="no_directory"), set()
+        # Snapshot the attested set BEFORE the update so we can identify
+        # newly-attested pubkeys after the swap. The pending-watcher hook
+        # below uses this to push only to keys that weren't previously in
+        # the directory.
+        prior_attested = set(directory.attested_keys())
         try:
             directory.update_from(new_m)
         except InvalidManifestSignatureError as e:
-            return _err(400, error="invalid_signature", detail=str(e))
+            return _err(400, error="invalid_signature", detail=str(e)), set()
         except StaleManifestError as e:
-            # 409 Conflict — the admin tool built this on a stale base; it
-            # should re-pull /directory (head moved) and rebuild.
             return _err(409, error="stale_manifest", detail=str(e),
-                        current_head=hash_manifest(directory.manifest))
+                        current_head=hash_manifest(directory.manifest)), set()
         except RevocationDroppedError as e:
-            return _err(409, error="revocation_dropped", detail=str(e))
+            return _err(409, error="revocation_dropped", detail=str(e)), set()
+        new_attested = set(directory.attested_keys()) - prior_attested
         return {"updated_at": new_m.updated_at,
                 "attestations": len(new_m.attestations),
                 "revocations": len(new_m.revocations),
-                "manifest_hash": hash_manifest(new_m)}
+                "manifest_hash": hash_manifest(new_m)}, new_attested
 
     @api.post("/admin/attest")
-    def admin_attest(body: dict = Body(...)):
-        return _apply_manifest(body)
+    async def admin_attest(body: dict = Body(...)):
+        result, newly_attested = _apply_manifest(body)
+        # Push any pending watchers whose pubkey just became attested.
+        # Done in the same loop iteration so the WS coroutine wakes
+        # before this handler returns — turns the POST response and the
+        # WS push into a tight serialized pair from the test's POV.
+        for pk in newly_attested:
+            pending.mark_attested(pk)
+        return result
 
     @api.post("/admin/revoke")
-    def admin_revoke(body: dict = Body(...)):
-        return _apply_manifest(body)
+    async def admin_revoke(body: dict = Body(...)):
+        result, _ = _apply_manifest(body)
+        return result
 
     # POST /admin/limits — per-identity throttle override (§7.2.2)
     # Intentionally asymmetric to /admin/attest+revoke: limit overrides
@@ -500,6 +628,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 class _AuthRequired(Exception):
     """Internal exception raised by require_session; mapped to a flat-body
     401 by an exception handler registered inside create_app."""
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+
+
+class _Forbidden(Exception):
+    """Internal exception raised by require_board (and any future
+    role-gated dependency); mapped to a flat-body 403."""
     def __init__(self, reason: str) -> None:
         self.reason = reason
 

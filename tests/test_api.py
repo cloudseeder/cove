@@ -43,77 +43,8 @@ from cove.translog import (
 from starlette.websockets import WebSocketDisconnect
 
 
-# ---- fixtures: a fully-wired hub --------------------------------------
-
-@pytest.fixture
-def hub(tmp_path, root_keypair, hub_keypair, keypair):
-    root_priv, root_pub = root_keypair
-    hub_priv, hub_pub = hub_keypair
-    member_priv, member_pub = keypair
-
-    att_member = issue_attestation(
-        root_priv, member_pubkey=member_pub, display_name="Alice",
-        affiliation="U-1", role="member", issuer_pubkey=root_pub,
-        issued_at="2026-01-01T00:00:00+00:00",
-    )
-    # Revoked member: attested in Jan, revoked in Feb. The attestation stays
-    # in the manifest so the ledger can still surface them as a historical
-    # recipient (§2.3 — events signed before revocation remain valid).
-    revoked_priv, revoked_pub = crypto.generate_keypair()
-    att_revoked = issue_attestation(
-        root_priv, member_pubkey=revoked_pub, display_name="Bob (left)",
-        affiliation="U-2", role="member", issuer_pubkey=root_pub,
-        issued_at="2026-01-01T00:00:00+00:00",
-    )
-    rev = Revocation(pubkey=revoked_pub,
-                     revoked_at="2026-02-01T00:00:00+00:00", reason="left")
-    manifest = issue_directory(root_priv, org=root_pub,
-                               attestations=[att_member, att_revoked],
-                               revocations=[rev],
-                               updated_at="2026-06-01T00:00:00+00:00")
-
-    store = EventStore(str(tmp_path / "hub.db"))
-    translog = TamperEvidentLog(hub_priv, hub_pub)
-    overview = Overview()
-    ledger = Ledger()
-    directory = Directory.from_manifest(manifest)
-    throttler = Throttler()
-    pipeline = Pipeline(store=store, directory=directory, translog=translog,
-                        overview=overview, ledger=ledger, throttler=throttler)
-    auth = AuthService(directory=directory)
-    blobs = BlobStore(str(tmp_path / "blobs"))
-
-    app = create_app(pipeline=pipeline, store=store, translog=translog,
-                     overview=overview, ledger=ledger,
-                     directory=directory, directory_manifest=manifest,
-                     auth=auth, blobs=blobs)
-
-    client = TestClient(app)
-    # Pre-auth the test client so existing tests of gated routes Just Work.
-    # An unauth'd client is constructed inline in the dedicated 401 tests.
-    ch = client.post("/auth/challenge").json()
-    sig = crypto.sign(member_priv, ch["nonce"].encode())
-    sess = client.post("/auth/verify", json={
-        "pubkey": member_pub, "nonce": ch["nonce"], "sig": sig,
-    }).json()
-    client.headers["Authorization"] = f"Bearer {sess['token']}"
-
-    return {
-        "client": client,
-        "app": app,
-        "member_priv": member_priv, "member_pub": member_pub,
-        "root_priv": root_priv, "root_pub": root_pub,
-        "revoked_pub": revoked_pub,
-        "hub_pub": hub_pub,
-        "store": store, "translog": translog,
-        "overview": overview, "ledger": ledger,
-        "auth": auth, "directory": directory,
-        "throttler": throttler,
-        "blobs": blobs,
-        "att_member": att_member,
-        "session_token": sess["token"],
-    }
-
+# `hub` fixture lives in conftest.py — reused by test_pending_api and
+# future slices. Local helpers below.
 
 def _entry_payload(ev: Entry) -> dict:
     """Wire format: everything on the Entry, blobs already as dicts."""
