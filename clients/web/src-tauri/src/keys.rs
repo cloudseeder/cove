@@ -15,6 +15,7 @@
 
 use ed25519_dalek::{Signer, SigningKey};
 use keyring::Entry;
+use rand_core::OsRng;
 use serde::Serialize;
 
 const SERVICE: &str = "com.cove.web";
@@ -153,6 +154,39 @@ pub fn import(private_key_hex: &str, public_key_hex: &str) -> Result<(), KeyErro
     Ok(())
 }
 
+/// v0.4.0: generate a fresh Ed25519 keypair on-device using the OS CSPRNG
+/// and store it to the keychain. The private key is written and IMMEDIATELY
+/// dropped from the Rust stack — only the OS keychain retains it. Returns
+/// the public-key hex so the JS side can build the pairing payload (QR +
+/// deep link) for admin approval.
+///
+/// Refuses to overwrite an existing keypair — caller must `clear()` first.
+/// Otherwise a misclick on the onboarding pane would silently rotate a
+/// member's identity and lose any in-flight session that was tied to the
+/// prior key.
+pub fn generate() -> Result<String, KeyError> {
+    if status()?.has_keys {
+        // Surfacing this as ReadbackMismatch reuses an existing variant
+        // for "keychain state isn't what we expect"; the JS layer maps
+        // it to a clear "already onboarded" message.
+        return Err(KeyError::ReadbackMismatch);
+    }
+    let sk = SigningKey::generate(&mut OsRng);
+    let priv_hex = hex::encode(sk.to_bytes());
+    let pub_hex = hex::encode(sk.verifying_key().to_bytes());
+    eprintln!("[cove] keys::generate() generated fresh keypair, storing");
+    entry(PRIV_SLOT)?.set_password(&priv_hex)?;
+    entry(PUB_SLOT)?.set_password(&pub_hex)?;
+    // Readback verification — same defense as import() against the
+    // suspected unsigned-macOS silent-no-op pattern.
+    match entry(PUB_SLOT)?.get_password() {
+        Ok(ref s) if s == &pub_hex => {}
+        Ok(_) => return Err(KeyError::ReadbackMismatch),
+        Err(_) => return Err(KeyError::ReadbackFailed),
+    }
+    Ok(pub_hex)
+}
+
 /// Wipe both slots. Used for "switch identity" / "this device left the
 /// org" cleanup. Tolerant of missing entries — already-cleared is success.
 pub fn clear() -> Result<(), KeyError> {
@@ -249,5 +283,47 @@ mod tests {
         };
         let err = import(&priv_hex, &wrong_pub).unwrap_err();
         assert!(matches!(err, KeyError::KeysMismatched));
+    }
+
+    #[test]
+    fn generate_creates_keypair_and_signs() {
+        if !enabled() {
+            return;
+        }
+        clear().unwrap();
+        let pub_hex = generate().unwrap();
+        let st = status().unwrap();
+        assert!(st.has_keys);
+        assert_eq!(st.public_key.as_deref(), Some(pub_hex.as_str()));
+
+        // Newly-generated key signs and verifies. This is the same surface
+        // the auth/verify path will use immediately after attestation lands.
+        let sig_hex = sign_message(b"hello cove").unwrap();
+        let sig_bytes = hex::decode(&sig_hex).unwrap();
+        let sig = ed25519_dalek::Signature::from_slice(&sig_bytes).unwrap();
+        let pub_bytes = hex::decode(&pub_hex).unwrap();
+        let vk = ed25519_dalek::VerifyingKey::from_bytes(
+            pub_bytes.as_slice().try_into().unwrap(),
+        )
+        .unwrap();
+        assert!(vk.verify(b"hello cove", &sig).is_ok());
+        clear().unwrap();
+    }
+
+    #[test]
+    fn generate_refuses_overwriting_existing_keys() {
+        if !enabled() {
+            return;
+        }
+        clear().unwrap();
+        let (priv_hex, pub_hex) = fresh_keypair();
+        import(&priv_hex, &pub_hex).unwrap();
+        // Onboarding should not blow away an already-imported identity.
+        let err = generate().unwrap_err();
+        assert!(matches!(err, KeyError::ReadbackMismatch));
+        // And the original pubkey is still in place.
+        let st = status().unwrap();
+        assert_eq!(st.public_key.as_deref(), Some(pub_hex.as_str()));
+        clear().unwrap();
     }
 }

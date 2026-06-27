@@ -46,6 +46,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::keys_status,
             commands::keys_import,
+            commands::keys_generate,
             commands::keys_clear,
             commands::sign_message,
             commands::stream_start,

@@ -23,6 +23,14 @@ pub fn keys_import(private_key: String, public_key: String) -> Result<(), String
     keys::import(&private_key, &public_key).map_err(Into::into)
 }
 
+/// v0.4.0: generate a fresh Ed25519 keypair on-device. The private key
+/// goes straight to the OS keychain; only the public-key hex is returned
+/// to JS so the UI can build the pairing payload (QR + deep link).
+#[tauri::command]
+pub fn keys_generate() -> Result<String, String> {
+    keys::generate().map_err(Into::into)
+}
+
 #[tauri::command]
 pub fn keys_clear() -> Result<(), String> {
     keys::clear().map_err(Into::into)

@@ -44,6 +44,15 @@ export const keychain = {
   import(privateKey: string, publicKey: string): Promise<void> {
     return invoke<void>('keys_import', { privateKey, publicKey });
   },
+  /**
+   * v0.4.0: generate a fresh Ed25519 keypair on-device. Private key
+   * stays in the OS keychain; the returned hex IS the public key the
+   * UI hands to the pairing payload. Throws if a keypair is already
+   * stored — caller must `clear()` first to deliberately rotate.
+   */
+  generate(): Promise<string> {
+    return invoke<string>('keys_generate');
+  },
   clear(): Promise<void> {
     return invoke<void>('keys_clear');
   },

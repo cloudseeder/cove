@@ -35,8 +35,14 @@ keyring = "3"
 
 # Ed25519 signing — performed Rust-side so the private key never crosses
 # the JS↔Rust boundary after import. ed25519-dalek is the same algorithm
-# the hub uses (Python PyNaCl); signatures interoperate.
-ed25519-dalek = { version = "2", features = ["std"] }
+# the hub uses (Python PyNaCl); signatures interoperate. The `rand_core`
+# feature enables SigningKey::generate(&mut OsRng) for v0.4.0 on-device
+# keypair creation.
+ed25519-dalek = { version = "2", features = ["std", "rand_core"] }
+
+# OS CSPRNG for keypair generation. ed25519-dalek's SigningKey::generate
+# requires a RngCore + CryptoRng; OsRng is the platform's secure source.
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 # Hex encode/decode for the wire (priv/pub keys are 64-char hex strings
 # matching scripts/gen_keys.py output).
