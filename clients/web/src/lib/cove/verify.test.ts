@@ -14,7 +14,9 @@ import {
   verifyAttestation, verifyDirectoryManifest,
   verifyEntry, verifyInclusion, verifySth,
 } from './verify';
-import { canonicalize, sha256Hex } from './crypto';
+import { canonicalize, contentId, sha256Hex, sign } from './crypto';
+import { ed25519 } from '@noble/curves/ed25519';
+import { bytesToHex } from '@noble/hashes/utils';
 import type {
   Attestation, DirectoryManifest, Entry, InclusionProof, STH,
 } from './types';
@@ -73,6 +75,30 @@ describe('verifyEntry (intrinsic id + sig)', () => {
   test('rejects an entry missing id', () => {
     const ev = { ...items[0].entry, id: null } as Entry;
     expect(verifyEntry(ev)).toBe(false);
+  });
+
+  // Regression: every wire kind in types.ts must be accepted by KINDS.
+  // v0.2 shipped kind='branch' on the Python side and in types.ts, but the
+  // TS KINDS Set was left at the v0.1 list — so the moment a branch entry
+  // arrived via /sync or /stream, verifyEntry returned false and the UI
+  // surfaced 'id/sig invalid' for the parent thread's feed.
+  test.each([
+    'notice', 'post', 'reply', 'supersede', 'membership', 'receipt', 'revoke', 'branch',
+  ] as const)('accepts a well-formed kind=%s entry', (kind) => {
+    const privBytes = ed25519.utils.randomPrivateKey();
+    const priv = bytesToHex(privBytes);
+    const pub = bytesToHex(ed25519.getPublicKey(privBytes));
+    const content = {
+      thread: 't1', author: pub, kind,
+      created_at: '2026-06-27T00:00:00Z',
+      parents: [], body: 'hi', blobs: [],
+      supersedes: null, receipt: null,
+      branch_thread: kind === 'branch' ? 'sub-1' : null,
+    };
+    const id = contentId(content);
+    const sig = sign(priv, canonicalize(content));
+    const ev = { ...content, id, sig } as unknown as Entry;
+    expect(verifyEntry(ev)).toBe(true);
   });
 });
 

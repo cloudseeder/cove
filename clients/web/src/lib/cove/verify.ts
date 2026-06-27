@@ -21,7 +21,7 @@ import { sha256 } from '@noble/hashes/sha256';
 
 // ---- entry (§3) -------------------------------------------------------
 const KINDS = new Set([
-  'notice', 'post', 'reply', 'supersede', 'membership', 'receipt', 'revoke',
+  'notice', 'post', 'reply', 'supersede', 'membership', 'receipt', 'revoke', 'branch',
 ]);
 
 const NON_CONTENT = new Set(['id', 'sig']);
