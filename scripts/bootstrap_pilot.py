@@ -37,8 +37,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +50,67 @@ from cove import crypto                                                # noqa: E
 from cove.identity import (                                            # noqa: E402
     issue_attestation, issue_directory, manifest_to_dict,
 )
+
+
+_VALID_ROLES = {"member", "officer", "board"}
+
+
+def _slug(name: str) -> str:
+    """Turn 'Kevin Smith' into 'kevin-smith' for the keyfile name. Stable,
+    case-insensitive, no surprises. Operators can override per row with
+    a key_name column if they want shorter names or disambiguation."""
+    s = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return s or "member"
+
+
+def _load_roster(path: Path) -> list[dict]:
+    """Parse a CSV roster.
+
+    Required columns: display_name, unit, role.
+    Optional column:  key_name (defaults to slugified display_name).
+
+    Role must be one of member|officer|board (matches HubConfig tier
+    table in cove/config.py). Anything else is rejected loudly rather
+    than silently demoted to 'member', because role affects throttle
+    tier and quota — a typo silently downgrading the board would be
+    a quietly broken attestation.
+    """
+    if not path.exists():
+        raise SystemExit(f"roster file not found: {path}")
+    rows: list[dict] = []
+    seen_slugs: set[str] = set()
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        required = {"display_name", "unit", "role"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise SystemExit(
+                f"roster missing required columns: {sorted(missing)} "
+                f"(saw {reader.fieldnames})")
+        for i, raw in enumerate(reader, start=2):  # row 1 = header
+            display_name = (raw.get("display_name") or "").strip()
+            unit = (raw.get("unit") or "").strip()
+            role = (raw.get("role") or "").strip().lower()
+            key_name = (raw.get("key_name") or "").strip() or _slug(display_name)
+            if not display_name:
+                raise SystemExit(f"roster row {i}: display_name is required")
+            if role not in _VALID_ROLES:
+                raise SystemExit(
+                    f"roster row {i}: role {role!r} not in {sorted(_VALID_ROLES)}")
+            if key_name in seen_slugs:
+                raise SystemExit(
+                    f"roster row {i}: key_name {key_name!r} is duplicated "
+                    "(add a key_name column to disambiguate)")
+            seen_slugs.add(key_name)
+            rows.append({
+                "display_name": display_name,
+                "unit": unit,
+                "role": role,
+                "key_name": key_name,
+            })
+    if not rows:
+        raise SystemExit(f"roster {path} has no member rows")
+    return rows
 
 
 def _now_iso() -> str:
@@ -67,12 +130,21 @@ def main() -> int:
                    help="where the hub keeps its state (default: ~/cove-state)")
     p.add_argument("--org-name", default="Cove pilot",
                    help="display name carried on the root attestation set")
-    p.add_argument("--members", default="alice",
-                   help="comma-separated member names to bootstrap "
-                        "(default: alice)")
+    group = p.add_mutually_exclusive_group()
+    group.add_argument("--members", default=None,
+                       help="comma-separated member names — quick path for "
+                            "test fixtures. Real names live in a roster file.")
+    group.add_argument("--roster", type=Path, default=None,
+                       help="CSV roster. Columns: display_name, unit, role "
+                            "(member|officer|board), key_name (optional, "
+                            "defaults to slugified display_name). Each row "
+                            "becomes a root-signed attestation with the real "
+                            "name the UI renders.")
     p.add_argument("--force", action="store_true",
                    help="overwrite an existing state dir (DESTRUCTIVE)")
     args = p.parse_args()
+    if args.roster is None and args.members is None:
+        args.members = "alice"  # back-compat default for the test path
 
     state = args.state_dir.expanduser()
     if state.exists() and any(state.iterdir()) and not args.force:
@@ -100,15 +172,26 @@ def main() -> int:
 
     # 3. Member keypairs + root-signed attestations.
     issued_at = _now_iso()
-    member_names = [n.strip() for n in args.members.split(",") if n.strip()]
+    if args.roster is not None:
+        roster = _load_roster(args.roster)
+    else:
+        # Legacy --members path: every member gets role='member' and the
+        # org name as their 'unit' (no real unit/lot info to put there).
+        roster = [
+            {"display_name": n.strip(), "unit": args.org_name,
+             "role": "member", "key_name": _slug(n.strip())}
+            for n in args.members.split(",") if n.strip()
+        ]
     attestations = []
-    for name in member_names:
+    for r in roster:
         m_priv, m_pub = crypto.generate_keypair()
-        _write(members_dir / f"{name}.priv", m_priv + "\n", mode=0o600)
-        _write(members_dir / f"{name}.pub", m_pub + "\n", mode=0o644)
+        key_name = r["key_name"]
+        _write(members_dir / f"{key_name}.priv", m_priv + "\n", mode=0o600)
+        _write(members_dir / f"{key_name}.pub", m_pub + "\n", mode=0o644)
         att = issue_attestation(
-            root_priv, member_pubkey=m_pub, display_name=name,
-            unit=args.org_name, role="member",
+            root_priv, member_pubkey=m_pub,
+            display_name=r["display_name"],
+            unit=r["unit"], role=r["role"],
             issuer_pubkey=root_pub, issued_at=issued_at,
         )
         attestations.append(att)
@@ -137,7 +220,10 @@ def main() -> int:
     print(f" State directory : {state}")
     print(f" Root pubkey     : {root_pub}")
     print(f" Hub pubkey      : {hub_pub}")
-    print(f" Members         : {', '.join(member_names)}")
+    print(f" Members         :")
+    for r in roster:
+        print(f"   - {r['display_name']:<24}  unit={r['unit']:<12} "
+              f"role={r['role']:<8} key={r['key_name']}")
     print()
     print(" Custody non-negotiable (CLAUDE.md #1) — DO THIS NOW:")
     print(f"   1. Move {keys_dir/'root.priv'}")
