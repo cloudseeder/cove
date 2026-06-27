@@ -53,7 +53,7 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
 
     att_member = issue_attestation(
         root_priv, member_pubkey=member_pub, display_name="Alice",
-        unit="U-1", role="member", issuer_pubkey=root_pub,
+        affiliation="U-1", role="member", issuer_pubkey=root_pub,
         issued_at="2026-01-01T00:00:00+00:00",
     )
     # Revoked member: attested in Jan, revoked in Feb. The attestation stays
@@ -62,7 +62,7 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
     revoked_priv, revoked_pub = crypto.generate_keypair()
     att_revoked = issue_attestation(
         root_priv, member_pubkey=revoked_pub, display_name="Bob (left)",
-        unit="U-2", role="member", issuer_pubkey=root_pub,
+        affiliation="U-2", role="member", issuer_pubkey=root_pub,
         issued_at="2026-01-01T00:00:00+00:00",
     )
     rev = Revocation(pubkey=revoked_pub,
@@ -318,7 +318,7 @@ def test_post_blob_oversized_returns_structured_throttle(hub, tmp_path, root_key
 
     att = issue_attestation(
         root_priv, member_pubkey=apub, display_name="Alice",
-        unit="U-1", role="member", issuer_pubkey=root_pub,
+        affiliation="U-1", role="member", issuer_pubkey=root_pub,
         issued_at="2026-01-01T00:00:00+00:00",
     )
     manifest = issue_directory(root_priv, org=root_pub,
@@ -470,7 +470,7 @@ def test_admin_attest_replaces_directory_with_new_signed_manifest(hub):
     new_priv, new_pub = crypto.generate_keypair()
     att_new = issue_attestation(
         hub["root_priv"], member_pubkey=new_pub, display_name="Carol",
-        unit="U-3", role="member", issuer_pubkey=hub["root_pub"],
+        affiliation="U-3", role="member", issuer_pubkey=hub["root_pub"],
         issued_at="2026-06-01T00:00:00+00:00",
     )
     new_manifest = _chained(
@@ -549,13 +549,13 @@ def test_admin_rejects_stale_manifest_so_concurrent_updates_do_not_silently_lose
     carol_priv, carol_pub = crypto.generate_keypair()
     att_carol = issue_attestation(
         hub["root_priv"], member_pubkey=carol_pub, display_name="Carol",
-        unit="U-3", role="member", issuer_pubkey=hub["root_pub"],
+        affiliation="U-3", role="member", issuer_pubkey=hub["root_pub"],
         issued_at="2026-06-01T00:00:00+00:00",
     )
     dave_priv, dave_pub = crypto.generate_keypair()
     att_dave = issue_attestation(
         hub["root_priv"], member_pubkey=dave_pub, display_name="Dave",
-        unit="U-4", role="member", issuer_pubkey=hub["root_pub"],
+        affiliation="U-4", role="member", issuer_pubkey=hub["root_pub"],
         issued_at="2026-06-01T00:00:01+00:00",
     )
     m_carol = _chained(
@@ -630,7 +630,7 @@ def test_directory_manifest_history_is_walkable_and_chains(hub):
         new_priv, new_pub = crypto.generate_keypair()
         att_new = issue_attestation(
             hub["root_priv"], member_pubkey=new_pub, display_name=f"M{i}",
-            unit=f"U-{i}", role="member", issuer_pubkey=hub["root_pub"],
+            affiliation=f"U-{i}", role="member", issuer_pubkey=hub["root_pub"],
             issued_at=f"2026-06-1{i}T00:00:00+00:00",
         )
         current = hub["directory"].manifest
@@ -1312,7 +1312,7 @@ def test_startup_reconciles_in_memory_translog_with_on_disk_store(
 
     att = issue_attestation(
         root_priv, member_pubkey=member_pub, display_name="Alice",
-        unit="U-1", role="member", issuer_pubkey=root_pub,
+        affiliation="U-1", role="member", issuer_pubkey=root_pub,
         issued_at="2026-01-01T00:00:00+00:00",
     )
     directory = Directory(attestations=[att])

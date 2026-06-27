@@ -76,13 +76,17 @@ export interface ConsistencyProof {
   path: string[];
 }
 
-/** Mirrors cove.identity.Attestation. */
+/** Mirrors cove.identity.Attestation.
+ *  v0.3 rename: `unit` → `affiliation` (generic org sub-grouping);
+ *  add optional `title` (human-readable job title). Role stays as the
+ *  protocol-level trust tier. */
 export interface Attestation {
   member_pubkey: string;
   enc_pubkey: string | null;
   display_name: string;
-  unit: string;
+  affiliation: string;
   role: 'member' | 'board' | 'officer' | string;
+  title: string | null;
   issued_at: string;
   expires_at: string | null;
   issuer: string;

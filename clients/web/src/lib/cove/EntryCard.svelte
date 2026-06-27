@@ -40,8 +40,14 @@
   let revealed = $state(false);
 
   const isBoard = $derived(ve.attestation.role === 'board');
-  const title = $derived(
-    `Verified from ${ve.attestation.display_name} (${ve.attestation.role})`,
+  /** Title is the human-readable office; surfaces in the byline next to
+   *  the name. Role is the trust tier and is conveyed ambiently by the
+   *  gold seal styling on board-tier entries. */
+  const personTitle = $derived(ve.attestation.title);
+  const tooltipTitle = $derived(
+    personTitle
+      ? `Verified from ${ve.attestation.display_name}, ${personTitle}`
+      : `Verified from ${ve.attestation.display_name}`,
   );
   const summary = $derived(sigSummary(ve));
   const created = $derived(ve.entry.created_at);
@@ -51,10 +57,16 @@
   <header>
     <Seal
       state="verified"
-      title={title}
+      title={tooltipTitle}
       summary={ve.attestation.role}
       onReveal={() => (revealed = !revealed)}
     />
+    <div class="byline">
+      <span class="name">{ve.attestation.display_name}</span>
+      {#if personTitle}
+        <span class="title">{personTitle}</span>
+      {/if}
+    </div>
     <time>{created}</time>
   </header>
 
@@ -101,6 +113,13 @@
       <h4>Verification chain</h4>
       <dl>
         <dt>Author</dt>
+        <dd>
+          {ve.attestation.display_name}{#if personTitle}, {personTitle}{/if}
+          {#if ve.attestation.affiliation}
+            <span class="affiliation">· {ve.attestation.affiliation}</span>
+          {/if}
+        </dd>
+        <dt>Pubkey</dt>
         <dd><code>{ve.entry.author.slice(0, 24)}…</code></dd>
         <dt>Content hash</dt>
         <dd><code>{ve.entry.id}</code></dd>
@@ -135,14 +154,34 @@
   header {
     display: flex;
     align-items: center;
-    justify-content: space-between;
     gap: 1rem;
     margin-bottom: 0.6rem;
+  }
+  .byline {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    line-height: 1.2;
+    min-width: 0;
+  }
+  .byline .name {
+    font-weight: 600;
+    font-size: 0.96rem;
+  }
+  .byline .title {
+    color: var(--muted);
+    font-size: 0.78rem;
   }
   time {
     color: var(--muted);
     font-size: 0.82rem;
     font-feature-settings: 'tnum';
+    white-space: nowrap;
+  }
+  .affiliation {
+    color: var(--muted);
+    font-weight: normal;
   }
 
   .body {

@@ -80,7 +80,8 @@ class StubOverview:
     def __init__(self) -> None:
         self.added: list[tuple[str, str, list[str], int]] = []
 
-    def add(self, thread: str, entry_id: str, parents: list[str], seq: int) -> None:
+    def add(self, thread: str, entry_id: str, parents: list[str], seq: int,
+            branch_thread=None) -> None:
         self.added.append((thread, entry_id, list(parents), seq))
 
 

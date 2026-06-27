@@ -37,7 +37,7 @@ def _directory_with(member_pub: str, root_priv: str, root_pub: str,
                     *, revoked: bool = False) -> Directory:
     att = issue_attestation(
         root_priv, member_pubkey=member_pub, display_name="Alice",
-        unit="U-1", role="member", issuer_pubkey=root_pub,
+        affiliation="U-1", role="member", issuer_pubkey=root_pub,
         issued_at="2026-01-01T00:00:00+00:00",
     )
     revs = [Revocation(pubkey=member_pub,

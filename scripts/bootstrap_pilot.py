@@ -66,14 +66,19 @@ def _slug(name: str) -> str:
 def _load_roster(path: Path) -> list[dict]:
     """Parse a CSV roster.
 
-    Required columns: display_name, unit, role.
-    Optional column:  key_name (defaults to slugified display_name).
+    Required columns: display_name, affiliation, role.
+    Optional columns: title, key_name (defaults to slugified display_name).
 
     Role must be one of member|officer|board (matches HubConfig tier
     table in cove/config.py). Anything else is rejected loudly rather
     than silently demoted to 'member', because role affects throttle
     tier and quota — a typo silently downgrading the board would be
     a quietly broken attestation.
+
+    Affiliation is a freeform org sub-grouping (lot/dept/team/chapter/
+    class). Empty string is fine. Title is the human-readable role
+    title ('President', 'VP Engineering') and is independent of `role`
+    (which is the protocol trust tier).
     """
     if not path.exists():
         raise SystemExit(f"roster file not found: {path}")
@@ -81,7 +86,7 @@ def _load_roster(path: Path) -> list[dict]:
     seen_slugs: set[str] = set()
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
-        required = {"display_name", "unit", "role"}
+        required = {"display_name", "affiliation", "role"}
         missing = required - set(reader.fieldnames or [])
         if missing:
             raise SystemExit(
@@ -89,8 +94,9 @@ def _load_roster(path: Path) -> list[dict]:
                 f"(saw {reader.fieldnames})")
         for i, raw in enumerate(reader, start=2):  # row 1 = header
             display_name = (raw.get("display_name") or "").strip()
-            unit = (raw.get("unit") or "").strip()
+            affiliation = (raw.get("affiliation") or "").strip()
             role = (raw.get("role") or "").strip().lower()
+            title = (raw.get("title") or "").strip() or None
             key_name = (raw.get("key_name") or "").strip() or _slug(display_name)
             if not display_name:
                 raise SystemExit(f"roster row {i}: display_name is required")
@@ -104,8 +110,9 @@ def _load_roster(path: Path) -> list[dict]:
             seen_slugs.add(key_name)
             rows.append({
                 "display_name": display_name,
-                "unit": unit,
+                "affiliation": affiliation,
                 "role": role,
+                "title": title,
                 "key_name": key_name,
             })
     if not rows:
@@ -176,10 +183,10 @@ def main() -> int:
         roster = _load_roster(args.roster)
     else:
         # Legacy --members path: every member gets role='member' and the
-        # org name as their 'unit' (no real unit/lot info to put there).
+        # org name as their affiliation (no real per-member info to put).
         roster = [
-            {"display_name": n.strip(), "unit": args.org_name,
-             "role": "member", "key_name": _slug(n.strip())}
+            {"display_name": n.strip(), "affiliation": args.org_name,
+             "role": "member", "title": None, "key_name": _slug(n.strip())}
             for n in args.members.split(",") if n.strip()
         ]
     attestations = []
@@ -191,7 +198,8 @@ def main() -> int:
         att = issue_attestation(
             root_priv, member_pubkey=m_pub,
             display_name=r["display_name"],
-            unit=r["unit"], role=r["role"],
+            affiliation=r["affiliation"], role=r["role"],
+            title=r["title"],
             issuer_pubkey=root_pub, issued_at=issued_at,
         )
         attestations.append(att)
@@ -222,7 +230,9 @@ def main() -> int:
     print(f" Hub pubkey      : {hub_pub}")
     print(f" Members         :")
     for r in roster:
-        print(f"   - {r['display_name']:<24}  unit={r['unit']:<12} "
+        title_str = f" ({r['title']})" if r['title'] else ""
+        print(f"   - {r['display_name']}{title_str}")
+        print(f"       affiliation={r['affiliation']!r:<18} "
               f"role={r['role']:<8} key={r['key_name']}")
     print()
     print(" Custody non-negotiable (CLAUDE.md #1) — DO THIS NOW:")

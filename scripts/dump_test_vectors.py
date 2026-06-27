@@ -35,12 +35,12 @@ def main() -> None:
     # Attestations + manifest
     att_board = issue_attestation(
         root_priv, member_pubkey=board_pub, display_name="Board",
-        unit="B-1", role="board", issuer_pubkey=root_pub,
+        affiliation="B-1", role="board", issuer_pubkey=root_pub,
         issued_at="2026-01-01T00:00:00+00:00",
     )
     att_alice = issue_attestation(
         root_priv, member_pubkey=alice_pub, display_name="Alice",
-        unit="U-1", role="member", issuer_pubkey=root_pub,
+        affiliation="U-1", role="member", issuer_pubkey=root_pub,
         issued_at="2026-01-01T00:00:00+00:00",
     )
     manifest = issue_directory(

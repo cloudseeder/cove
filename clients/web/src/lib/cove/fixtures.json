@@ -1,46 +1,48 @@
 {
   "keypairs": {
     "root": {
-      "priv": "263326118221f7319a20ad0729e5043ad41794af4189549f88bb30ae2ab18558",
-      "pub": "d199451eaa0daec91d7162ab2e99e76939801690df72bb19786f09616b38f625"
+      "priv": "28e80cbfc38a41be1229aa91f7618559566a08167d4b74e7e192561344e212bb",
+      "pub": "e1733574e198f83a669c43acba4e2cfaf49e787379fb9d910e714ce75d356407"
     },
     "hub": {
-      "priv": "400d43f15e4706231dac8174b2cba893e85a0cf69d1376eff377e2c005ad30a5",
-      "pub": "20433edb944964ea3cb3de0996d758358419a8f199b97dece7d85ea72cec74f1"
+      "priv": "66009de16548ab37d5d3eadb2ec4b2e8efc0a79cf6dd5e9e49d5fceb7b9756e8",
+      "pub": "427c277ef90c48effada61ac19e80993ba9ee4c9d1acddfdc7e9f675ba525913"
     },
     "board": {
-      "priv": "d4bf0647cfa5c8d7ebbf7c0cee2389288308fa6158486d34b895b69871e2de7d",
-      "pub": "7350b0277898ce715be0210bb94b07a724463b3526a084d7a9bb066db1965f1e"
+      "priv": "078e992f2e93c17fb477d8032f876964454caa3c92eec3b07bf08516e010aef1",
+      "pub": "cf59d6ca26145e42c3f5477bfe799efd948ac7384cbaca68663bf9740581a16a"
     },
     "alice": {
-      "priv": "f7918fd8a761f74740d62083860cc205ad68ef2836b135086a56a9f7a8d14f3a",
-      "pub": "a513d061568da11520453819e273355a82c8af3271602167d345b7e4da62efbc"
+      "priv": "febf12bb3b90e713a9b5ef74d19af28158abf5c2750847d511df6eec4b01bcb6",
+      "pub": "2ea77ad625b42d48bdabdfdad77a6077892f1f32c2b047a24896a839c6135347"
     }
   },
   "manifest": {
-    "org": "d199451eaa0daec91d7162ab2e99e76939801690df72bb19786f09616b38f625",
+    "org": "e1733574e198f83a669c43acba4e2cfaf49e787379fb9d910e714ce75d356407",
     "attestations": [
       {
-        "member_pubkey": "7350b0277898ce715be0210bb94b07a724463b3526a084d7a9bb066db1965f1e",
+        "member_pubkey": "cf59d6ca26145e42c3f5477bfe799efd948ac7384cbaca68663bf9740581a16a",
         "enc_pubkey": null,
         "display_name": "Board",
-        "unit": "B-1",
+        "affiliation": "B-1",
         "role": "board",
+        "title": null,
         "issued_at": "2026-01-01T00:00:00+00:00",
         "expires_at": null,
-        "issuer": "d199451eaa0daec91d7162ab2e99e76939801690df72bb19786f09616b38f625",
-        "sig": "1ad964645d39551c5d9120386247c0bc7ae56f0ecc19d1c1f182d0da3e520389c2d449936c31cd7214ee54298285b941c399f06d625db3eb042d790f9410a209"
+        "issuer": "e1733574e198f83a669c43acba4e2cfaf49e787379fb9d910e714ce75d356407",
+        "sig": "3f840f177175d08191e97fb5b58fdb7232beb430d54a28c48699dd2fb623a3fc857f07d33481c2684fac4cc4e43deca26e8c036345746a1693548abc90dac409"
       },
       {
-        "member_pubkey": "a513d061568da11520453819e273355a82c8af3271602167d345b7e4da62efbc",
+        "member_pubkey": "2ea77ad625b42d48bdabdfdad77a6077892f1f32c2b047a24896a839c6135347",
         "enc_pubkey": null,
         "display_name": "Alice",
-        "unit": "U-1",
+        "affiliation": "U-1",
         "role": "member",
+        "title": null,
         "issued_at": "2026-01-01T00:00:00+00:00",
         "expires_at": null,
-        "issuer": "d199451eaa0daec91d7162ab2e99e76939801690df72bb19786f09616b38f625",
-        "sig": "bfc8164db5cf58954ee47b0a84a881fb079689c06a89f067b2c34a7400fa0b66906a7eb32b36272a7e708449540e081c48a71023d94196391198627f13180f07"
+        "issuer": "e1733574e198f83a669c43acba4e2cfaf49e787379fb9d910e714ce75d356407",
+        "sig": "51e77c75d937adde9bf375974394a1686dfe44164b49dbf3ace43c54e7816e4cf48a5617b6a5a3888876ed44cff75736f1d9f2324bb4e085d0f44a673c72f903"
       }
     ],
     "revocations": [
@@ -52,14 +54,14 @@
     ],
     "updated_at": "2026-06-01T00:00:00+00:00",
     "prev_manifest_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "sig": "3b4dd20ac5d3f5524d56aed5b2ec8398f9157320e36774003e179906c7d14086ec1ac5ee0eab9e13b033b8aa577d29b21d08a6724fb4ba19506717831a14ff09"
+    "sig": "fdff5071b38371e197c376f48133e7fd27ac2a272fb242b520f51e9b350aba0b3ee9b36c50333b8f7623fd4b869c6b55ba99094218745cc408177afbbfd4e50f"
   },
-  "manifest_hash": "sha256:fe30ff5595d167dd711cf8e4f91c44d6e0dd6ac78fe5fd0d2fd4fa5530103afa",
+  "manifest_hash": "sha256:d38b4f00c71ce993ea0c4822271b8a4314b0224ef959476b2fab1ef6baac0c2f",
   "entries": [
     {
       "entry": {
         "thread": "annual-meeting",
-        "author": "7350b0277898ce715be0210bb94b07a724463b3526a084d7a9bb066db1965f1e",
+        "author": "cf59d6ca26145e42c3f5477bfe799efd948ac7384cbaca68663bf9740581a16a",
         "kind": "notice",
         "created_at": "2026-06-15T18:00:00Z",
         "parents": [],
@@ -68,23 +70,23 @@
         "supersedes": null,
         "receipt": null,
         "branch_thread": null,
-        "id": "sha256:8f22ed946bbbe49d5375c38c15a68766f722835f786a26e5420c4a80d4c5b3b9",
-        "sig": "13b197788d92a5d9b967e1146b5dc21a64592df99a21dfd1967532495bb1161af67d7f837c58646414241f6388137cc56c3dc01769b9046982b1d31da8cea407"
+        "id": "sha256:30abf27508c0f99fb9777793d19fa34957cf6a9002ee14fb0a69e41b4546de5d",
+        "sig": "f3ba39e15014e9c77a65d55162aff0010bcb3705c05833563864739d1f41a2eb5779f8d62c5a3321cd576b787a9d38968986228b3e83552aa36230e9f6773b0c"
       },
       "seq": 0,
       "proof": {
         "leaf_index": 0,
         "tree_size": 3,
         "audit_path": [
-          "2294ae13d88de809fa0fc95a3ce22b8ed05978a7ad59c35300a3a515753dbb3f",
-          "56a2590aa5ce5ff2fadda16030dd2aaf31261179b16a52e8e478655d16a24ed5"
+          "5b85a837ad64d65e5635e5008a3f54da91444f115ac82d12b8a3aed613c1829e",
+          "0a28a62d31b1ecc7c98e1f87134000a0c4e5129e54cf5dd70b184e5ed2e94d0a"
         ]
       }
     },
     {
       "entry": {
         "thread": "annual-meeting",
-        "author": "7350b0277898ce715be0210bb94b07a724463b3526a084d7a9bb066db1965f1e",
+        "author": "cf59d6ca26145e42c3f5477bfe799efd948ac7384cbaca68663bf9740581a16a",
         "kind": "notice",
         "created_at": "2026-06-15T18:01:00Z",
         "parents": [],
@@ -93,23 +95,23 @@
         "supersedes": null,
         "receipt": null,
         "branch_thread": null,
-        "id": "sha256:e4a43753f28cecf5c8a366d44346cb13b7675d09557ef52f1b01af859447a37e",
-        "sig": "b77eb6e4419ce1168786dc6b562fa5fe03e3af81b130151ca47ca5caa4154e33a1d8cedf6a2d63bae7861acf372b5e6089375d16aac76ef0e8f53ee6eba01803"
+        "id": "sha256:c49c7b54fe89712c0d933afa834da08d798fd1259dcf81e6b4527699c1950e69",
+        "sig": "8fea7e120647e14324537423963ec5bbb67151754c2f5fcfd83695bbd66763fa4f58d5663fd5b1977ffe8ccf37a290179dc553944df0d1b93f6659a189713e0d"
       },
       "seq": 1,
       "proof": {
         "leaf_index": 1,
         "tree_size": 3,
         "audit_path": [
-          "dbda9c3007118b903b3e3d070124c44c426273580a79f9a479de0ef3cde9dd7c",
-          "56a2590aa5ce5ff2fadda16030dd2aaf31261179b16a52e8e478655d16a24ed5"
+          "de1eb1a6975fa5f7727d6332729ac4f6ec67f97547cd9ea5e63435dc97bc42c9",
+          "0a28a62d31b1ecc7c98e1f87134000a0c4e5129e54cf5dd70b184e5ed2e94d0a"
         ]
       }
     },
     {
       "entry": {
         "thread": "annual-meeting",
-        "author": "7350b0277898ce715be0210bb94b07a724463b3526a084d7a9bb066db1965f1e",
+        "author": "cf59d6ca26145e42c3f5477bfe799efd948ac7384cbaca68663bf9740581a16a",
         "kind": "notice",
         "created_at": "2026-06-15T18:02:00Z",
         "parents": [],
@@ -118,25 +120,25 @@
         "supersedes": null,
         "receipt": null,
         "branch_thread": null,
-        "id": "sha256:2463a03b4afcb51570347001d9e89f631260c09ee07227c46e87eb7cc8b3e374",
-        "sig": "de71f83aeb4506d0b1a9d51b85a81b84ef93bece02db029d006f3bf4e81861a2611f475be7f6c860e0b7612cfeef4c013304762cc05d0555ff5434ac853db804"
+        "id": "sha256:dbed0d272d9ed1f6e6f71ee907f0fcb4dd59f3fd6af58d71eea1649b0b4794d0",
+        "sig": "64c7b476e6de3f7bf34006275bb506690497b24e1f1006f7d510b1f9a42b5bf584a6ca5b45b472ade74d5f0d590408f7f176425b07d9cfcfed9ac37a8a1ca40c"
       },
       "seq": 2,
       "proof": {
         "leaf_index": 2,
         "tree_size": 3,
         "audit_path": [
-          "489cc77abec6af7f80dbec577174bf556c985cc5ca1905f7b7533eddae640f59"
+          "8e503afae11cb538d4388c3f2f12c016b8fbf1ac497bcf01daf21006b13692aa"
         ]
       }
     }
   ],
   "sth": {
     "tree_size": 3,
-    "root_hash": "4c3d3248f0c54cb91a48d7c88aaecadebbe67b4ec8253e4732d1e0672fb5aa37",
+    "root_hash": "a6eaea98deed850c71c951508121d0b9a210c9f0bcf2d51e68743dc548680637",
     "prev_sth_hash": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-    "timestamp": "2026-06-26T16:58:08.963009+00:00",
-    "hub_key": "20433edb944964ea3cb3de0996d758358419a8f199b97dece7d85ea72cec74f1",
-    "sig": "d4908f2b96742c9de8e158fa72cb50b437612eb7f9fa8407cdc356391bbdb57407004da6f2a4a9ff2198ef1928d607f160bb7d94d80560c157440f537316730b"
+    "timestamp": "2026-06-27T02:03:38.066867+00:00",
+    "hub_key": "427c277ef90c48effada61ac19e80993ba9ee4c9d1acddfdc7e9f675ba525913",
+    "sig": "295b144a931235fd3ac2843984235fe8aff2f8ddea1a6752b83180fa1147573fb6eafbeca1aa67dad3aa503994431f0de47a15583a91ee0ddaced5fa33f1ea00"
   }
 }

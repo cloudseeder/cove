@@ -25,9 +25,16 @@ _ZERO_PREV_MANIFEST = "sha256:" + "0" * 64
 class Attestation:
     member_pubkey: str
     enc_pubkey: Optional[str]      # null in v1 (sign-only)
-    display_name: str
-    unit: str
-    role: str                      # "member" | "board" | "officer"
+    display_name: str              # real name shown in the UI
+    affiliation: str               # freeform org sub-grouping: lot, dept, team,
+                                   # chapter, class, etc. Empty string is fine.
+                                   # v0.3 rename from the HOA-shaped 'unit'.
+    role: str                      # tier: "member" | "officer" | "board"
+                                   # Drives throttle/quota (config.py TIERS),
+                                   # NOT a job title — see `title` for that.
+    title: Optional[str]           # human-readable role title — "President",
+                                   # "VP Engineering", "Treasurer", null when
+                                   # the person doesn't carry one.
     issued_at: str
     expires_at: Optional[str]
     issuer: str                    # root pubkey — keep this; it is the cross-org seam
@@ -132,7 +139,8 @@ def _now() -> str:
 
 # ---- attestation -------------------------------------------------------
 def issue_attestation(root_private_hex: str, *, member_pubkey: str, display_name: str,
-                      unit: str, role: str, issuer_pubkey: str,
+                      affiliation: str, role: str, issuer_pubkey: str,
+                      title: Optional[str] = None,
                       issued_at: Optional[str] = None,
                       expires_at: Optional[str] = None,
                       enc_pubkey: Optional[str] = None) -> Attestation:
@@ -146,8 +154,9 @@ def issue_attestation(root_private_hex: str, *, member_pubkey: str, display_name
         member_pubkey=member_pubkey,
         enc_pubkey=enc_pubkey,
         display_name=display_name,
-        unit=unit,
+        affiliation=affiliation,
         role=role,
+        title=title,
         issued_at=issued_at or _now(),
         expires_at=expires_at,
         issuer=issuer_pubkey,

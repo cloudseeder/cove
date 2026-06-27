@@ -92,7 +92,7 @@ def _bootstrap_hub_at(*, paths: dict, root_keypair, hub_keypair, members):
     attestations = [
         issue_attestation(
             root_priv, member_pubkey=pub, display_name=name,
-            unit=unit, role=role, issuer_pubkey=root_pub,
+            affiliation=unit, role=role, issuer_pubkey=root_pub,
             issued_at="2026-01-01T00:00:00+00:00",
         )
         for pub, name, unit, role in members
@@ -149,7 +149,7 @@ def _bootstrap_hub(tmp_path, root_keypair, hub_keypair, members):
     attestations = [
         issue_attestation(
             root_priv, member_pubkey=pub, display_name=name,
-            unit=unit, role=role, issuer_pubkey=root_pub,
+            affiliation=unit, role=role, issuer_pubkey=root_pub,
             issued_at="2026-01-01T00:00:00+00:00",
         )
         for pub, name, unit, role in members
@@ -843,7 +843,7 @@ def test_hub_state_survives_full_restart(tmp_path, root_keypair, hub_keypair):
     pre_restart_manifest = hub_a["directory"].manifest
     att_extra = issue_attestation(
         root_priv, member_pubkey=extra_pub, display_name="Dana",
-        unit="U-4", role="member", issuer_pubkey=root_pub,
+        affiliation="U-4", role="member", issuer_pubkey=root_pub,
         issued_at="2026-06-15T18:05:00+00:00",
     )
     next_m = issue_directory(

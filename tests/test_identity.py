@@ -24,12 +24,12 @@ from cove.identity import (
 
 def _issue(root_priv, root_pub, member_pub, *, role="member",
            issued_at="2026-01-01T00:00:00+00:00", expires_at=None,
-           display_name="Jane", unit="U-1") -> Attestation:
+           display_name="Jane", affiliation="U-1") -> Attestation:
     return issue_attestation(
         root_priv,
         member_pubkey=member_pub,
         display_name=display_name,
-        unit=unit,
+        affiliation=affiliation,
         role=role,
         issuer_pubkey=root_pub,
         issued_at=issued_at,
@@ -67,7 +67,7 @@ def test_attestation_signed_by_non_root_fails_verify(root_keypair, keypair):
     att = issue_attestation(
         impostor_priv,                     # not the real root
         member_pubkey=member_pub,
-        display_name="x", unit="x", role="board",
+        display_name="x", affiliation="x", role="board",
         issuer_pubkey=root_pub,            # claims to be from root anyway
     )
     assert verify_attestation(att) is False
@@ -86,7 +86,7 @@ def test_attestations_use_issuer_field_not_a_hardcoded_root(root_keypair, keypai
     a = _issue(root_a_priv, root_a_pub, member_pub)
     b = issue_attestation(root_b_priv,
                           member_pubkey=member_pub,
-                          display_name="x", unit="x", role="member",
+                          display_name="x", affiliation="x", role="member",
                           issuer_pubkey=root_b_pub)
     assert verify_attestation(a) is True
     assert verify_attestation(b) is True
@@ -189,7 +189,7 @@ def test_tampered_manifest_fails_verify(root_keypair, keypair):
     # Sneak in a forged attestation post-sign.
     m.attestations.append(Attestation(
         member_pubkey=forged_pub, enc_pubkey=None,
-        display_name="Intruder", unit="x", role="board",
+        display_name="Intruder", affiliation="x", role="board", title=None,
         issued_at="2026-06-02T00:00:00+00:00", expires_at=None,
         issuer=root_pub, sig="0" * 128,
     ))
