@@ -163,11 +163,12 @@ jobs:
           releaseBody: |
             See CHANGELOG for details.
 
-            ### Install notes (unsigned builds)
-            - **macOS:** right-click the app → Open the first time.
-              Gatekeeper warns once, then never again.
-            - **Windows:** SmartScreen → "More info" → "Run anyway"
-              the first time.
+            ### Install notes
+            - **macOS:** open the .dmg, drag Cove to Applications, launch.
+              The build is signed with a Developer ID certificate and
+              notarized — no Gatekeeper detour required.
+            - **Windows:** unsigned in this release — SmartScreen → "More
+              info" → "Run anyway" the first time. (Signing cert TBD.)
             - **Linux:** AppImage runs as-is (`chmod +x` if needed).
 
             Updates are cryptographically verified by the updater
