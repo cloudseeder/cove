@@ -148,6 +148,27 @@ describe('sync', () => {
     expect(c.highWaterFor('annual-meeting')).toBe(maxSeq);
   });
 
+  test('resetHighWater replays a thread from scratch', async () => {
+    // Regression: switching parent → branch → parent rendered an empty
+    // feed because /sync?since=<high-water> returned zero new entries
+    // even though the UI had cleared its in-memory entries. The fix
+    // pairs entry-clearing with cursor-clearing.
+    const { fetch } = mockHub();
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub, fetch,
+    });
+    await c.authenticate();
+    const first = await c.sync('annual-meeting');
+    expect(first.length).toBe(items.length);
+    // Without reset: second sync is empty (delta-sync semantics).
+    expect(await c.sync('annual-meeting')).toEqual([]);
+    // With reset: the same entries come back, ready to render fresh.
+    c.resetHighWater('annual-meeting');
+    expect(c.highWaterFor('annual-meeting')).toBe(-1);
+    const replay = await c.sync('annual-meeting');
+    expect(replay.length).toBe(items.length);
+  });
+
   test('throws VerificationError on tampered entry, high-water stays put', async () => {
     const { fetch } = mockHub();
     // Wrap the mock to tamper a body field on the wire — sig will no longer match.

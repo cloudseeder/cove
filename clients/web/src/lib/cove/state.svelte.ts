@@ -387,6 +387,13 @@ export class AppState {
     this.thread = name;
     this.entries = [];
     this.seenIds = new Set();
+    // The Client's per-thread delta-sync cursor is paired with our
+    // in-memory entries: clearing the entries means the next sync must
+    // replay from the start, not from the high-water we set last time
+    // we were on this thread. Without this, switching parent→branch→
+    // parent comes back to an empty feed because /sync?since=N returns
+    // nothing new.
+    this.client.resetHighWater(name);
     // Close any open reply panel — its parent belongs to the old thread.
     this.replyOpen = null;
     // Reset the main pane to the chronological feed — landing in 'files'

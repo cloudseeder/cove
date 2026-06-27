@@ -123,6 +123,18 @@ export class Client {
     return this.highWater.get(thread) ?? -1;
   }
 
+  /** Forget the per-thread delta-sync cursor so the next sync(thread)
+   *  replays from the start. The UI calls this when it clears its
+   *  in-memory entries (e.g. switching threads in/out of view) — the
+   *  cursor's purpose is to avoid re-shipping already-rendered entries,
+   *  so resetting it when those entries are gone is the correct pairing.
+   *  Without this pairing, sync after a thread-switch round-trip returns
+   *  zero entries and the feed renders empty even though the hub has
+   *  entries for the thread. */
+  resetHighWater(thread: string): void {
+    this.highWater.delete(thread);
+  }
+
   // ---- auth (§5) -----------------------------------------------------
   async authenticate(): Promise<string> {
     const ch = await this.requestJson('POST', '/auth/challenge');
