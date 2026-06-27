@@ -6,6 +6,7 @@
  * One mutation point per concern keeps it analyzable.
  */
 import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
+import { encodePairingLink, fingerprint as fingerprintOf } from './pairing';
 import {
   ensureNotificationPermission, isTauri, keychain, stream, updater,
   type AvailableUpdate,
@@ -21,6 +22,20 @@ type AuthStatus =
 type ThreadStatus =
   | { kind: 'idle' }
   | { kind: 'syncing' }
+  | { kind: 'error'; message: string };
+
+/** v0.4.0 onboarding state machine — drives OnboardingPanel.svelte.
+ *
+ *   idle      → user hasn't started yet
+ *   generating → calling keys_generate / hashing
+ *   waiting   → keys live in keychain, pending registered, WS open
+ *   attested  → push received; transitioning to authenticated flow
+ *   error     → any step blew up; show the message and offer retry */
+type OnboardStatus =
+  | { kind: 'idle' }
+  | { kind: 'generating' }
+  | { kind: 'waiting'; pubkey: string; pairingLink: string; fingerprint: string }
+  | { kind: 'attested'; pubkey: string }
   | { kind: 'error'; message: string };
 
 /** v0.1.10: main pane has two faces per thread — chronological feed
@@ -59,6 +74,14 @@ export class AppState {
   /** Which face of the active thread to render — chronological feed
    *  or files list. Reset to 'messages' on every switchThread. */
   view = $state<View>('messages');
+  /** v0.4.0: state of the on-device-keygen onboarding flow. The
+   *  OnboardingPanel reads this directly; AuthPanel uses kind !== 'idle'
+   *  to swap itself out for the onboarding view. */
+  onboardStatus = $state<OnboardStatus>({ kind: 'idle' });
+  /** Cancel handle for the WS /pending/watch — calling it tears the
+   *  socket down without rejecting (used when the user clicks "back"
+   *  from the waiting screen). */
+  private watchCancel: (() => void) | null = null;
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
@@ -173,6 +196,110 @@ export class AppState {
     this.teardown = null;
     this.client = null;
     this.authStatus = { kind: 'unauthenticated' };
+  }
+
+  /**
+   * v0.4.0 onboarding entry point. Generates a fresh keypair on-device,
+   * registers it as pending on the hub, and holds a WebSocket open
+   * until the keymaster issues the attestation. On 'attested' push,
+   * automatically transitions into the normal connect() flow.
+   *
+   * Tauri-only — the whole point is OS-keychain custody from the moment
+   * the priv exists. In browser mode the user falls back to paste.
+   */
+  async generateAndPair(opts: {
+    hubUrl: string;
+    nameHint: string;
+    thread: string;
+  }): Promise<void> {
+    if (!this.inTauri) {
+      this.onboardStatus = {
+        kind: 'error',
+        message: 'Onboarding requires the Tauri shell — use paste mode in the browser.',
+      };
+      return;
+    }
+    this.onboardStatus = { kind: 'generating' };
+    let pubkey: string;
+    try {
+      pubkey = await keychain.generate();
+    } catch (err) {
+      this.onboardStatus = {
+        kind: 'error',
+        message: `Key generation failed: ${(err as Error).message}`,
+      };
+      return;
+    }
+    await this.refreshKeychain();
+
+    // Stand up a transient Client (no auth yet — registerPending is
+    // public, watchPending is public) to talk to the hub.
+    const client = new Client({
+      hubUrl: opts.hubUrl, publicKey: pubkey,
+      signer: new TauriKeychainSigner(),
+    });
+    try {
+      await client.registerPending({ pubkey, nameHint: opts.nameHint });
+    } catch (err) {
+      // 409 already_attested → fast-forward to the normal connect flow.
+      // The pubkey is already in the directory; no waiting required.
+      if ((err as Error).message === 'already_attested') {
+        this.onboardStatus = { kind: 'attested', pubkey };
+        await this.connect({
+          hubUrl: opts.hubUrl, publicKey: pubkey,
+          thread: opts.thread, mode: 'keychain',
+        });
+        return;
+      }
+      this.onboardStatus = {
+        kind: 'error',
+        message: `Could not register with the hub: ${(err as Error).message}`,
+      };
+      return;
+    }
+
+    const pairingLink = encodePairingLink({
+      hub: opts.hubUrl, pubkey, name: opts.nameHint,
+    });
+    this.onboardStatus = {
+      kind: 'waiting', pubkey, pairingLink,
+      fingerprint: fingerprintOf(pubkey),
+    };
+
+    const { promise, cancel } = client.watchPending(pubkey);
+    this.watchCancel = cancel;
+    try {
+      await promise;
+      // The hub confirmed our pubkey is in the directory. Transition.
+      this.watchCancel = null;
+      this.onboardStatus = { kind: 'attested', pubkey };
+      await this.connect({
+        hubUrl: opts.hubUrl, publicKey: pubkey,
+        thread: opts.thread, mode: 'keychain',
+      });
+    } catch (err) {
+      // Only surface as error if not cancelled by the user.
+      if (this.watchCancel !== null) {
+        this.onboardStatus = {
+          kind: 'error',
+          message: `Watch failed: ${(err as Error).message}`,
+        };
+      }
+      this.watchCancel = null;
+    }
+  }
+
+  /** User backed out of the waiting screen. Tear down the WS and
+   *  reset the onboarding state. Keeps the generated keys in the
+   *  keychain so a re-attempt picks up where they left off (the
+   *  registered pending entry on the hub is still there too — the
+   *  same key + name_hint will just upsert idempotently). */
+  cancelOnboarding(): void {
+    if (this.watchCancel) {
+      this.watchCancel();
+      this.watchCancel = null;
+    }
+    this.onboardStatus = { kind: 'idle' };
   }
 
   /**

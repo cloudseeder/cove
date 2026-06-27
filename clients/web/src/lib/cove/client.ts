@@ -165,6 +165,123 @@ export class Client {
     return m;
   }
 
+  /** v0.4.0: POST /pending — public, no auth required. The device
+   *  surfaces itself in the keymaster's queue. Throws on 409
+   *  already_attested so the caller can short-circuit straight to
+   *  the auth flow (the pubkey is already in the directory). */
+  async registerPending(opts: {
+    pubkey: string;
+    nameHint: string;
+    requestedAt?: string;
+  }): Promise<void> {
+    const resp = await this.fetchImpl(this.hubUrl + '/pending', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        pubkey: opts.pubkey,
+        name_hint: opts.nameHint,
+        requested_at: opts.requestedAt ?? new Date().toISOString(),
+      }),
+    });
+    if (resp.status === 409) {
+      throw new ClientError('already_attested');
+    }
+    if (resp.status !== 200) {
+      const body = await safeJson(resp);
+      throw new ClientError(
+        `register pending failed: ${resp.status} ${JSON.stringify(body)}`,
+      );
+    }
+  }
+
+  /** v0.4.0: open WS /pending/watch?pubkey=X. Resolves with the
+   *  manifest_hash carried by the 'attested' push as soon as the
+   *  hub signals the pubkey is now in the directory. Reconnect-safe
+   *  by design: an already-attested key gets pushed immediately on
+   *  handshake, so a network blip mid-attest doesn't strand the
+   *  caller. */
+  watchPending(pubkey: string): {
+    promise: Promise<{ manifestHash: string }>;
+    cancel: () => void;
+  } {
+    const wsUrl = new URL(this.hubUrl.replace(/^http/, 'ws') + '/pending/watch');
+    wsUrl.searchParams.set('pubkey', pubkey);
+    const ws = new this.WebSocketImpl(wsUrl.toString());
+    let cancelled = false;
+    const promise = new Promise<{ manifestHash: string }>((resolve, reject) => {
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(typeof event.data === 'string'
+            ? event.data
+            : await new Response(event.data as Blob).text());
+          if (msg.type === 'attested' && msg.pubkey === pubkey) {
+            resolve({ manifestHash: msg.manifest_hash });
+            try { ws.close(); } catch { /* already closed */ }
+          }
+        } catch (err) {
+          reject(err as Error);
+        }
+      };
+      ws.onerror = () => {
+        if (!cancelled) reject(new ClientError('pending watch WS error'));
+      };
+      ws.onclose = () => {
+        if (!cancelled) {
+          // Server closed without sending 'attested' — surface as error
+          // so the UI can show "connection lost" instead of waiting
+          // forever. The Promise resolves first when 'attested' arrived,
+          // so this only fires on premature close.
+          reject(new ClientError('pending watch closed before attestation'));
+        }
+      };
+    });
+    return {
+      promise,
+      cancel: () => {
+        cancelled = true;
+        try { ws.close(); } catch { /* already closed */ }
+      },
+    };
+  }
+
+  /** v0.4.0: GET /pending — board-auth required. Returns the queue
+   *  for the admin UI. Caller is presumed to already be authenticated
+   *  as a board-role member; non-board members get 403. */
+  async listPending(): Promise<Array<{
+    pubkey: string;
+    name_hint: string;
+    requested_at: string;
+  }>> {
+    this.requireAuth();
+    const data = await this.requestJson('GET', '/pending');
+    return data.pending;
+  }
+
+  /** v0.4.0: DELETE /pending/{pubkey} — board-auth required. Admin
+   *  rejects a queued request (typo, suspected impostor, duplicate).
+   *  Idempotent on the server. */
+  async clearPending(pubkey: string): Promise<void> {
+    this.requireAuth();
+    const resp = await this.fetchImpl(this.hubUrl + `/pending/${pubkey}`, {
+      method: 'DELETE',
+      headers: this.authHeaders(),
+    });
+    if (resp.status !== 200) {
+      throw new ClientError(`clear pending failed: ${resp.status}`);
+    }
+  }
+
+  /** v0.4.0: POST /admin/attest — board-auth required AND the
+   *  caller must have already root-signed the manifest. This client
+   *  method is the thin POST wrapper; manifest assembly (canonical
+   *  content + root sig) is done by the admin UI before calling. */
+  async submitAttestation(manifest: DirectoryManifest): Promise<{
+    manifest_hash: string;
+  }> {
+    this.requireAuth();
+    return await this.requestJson('POST', '/admin/attest', { manifest });
+  }
+
   async fetchSth(): Promise<STH> {
     const sth = (await this.requestJson('GET', '/sth')) as STH;
     if (!verifySth(sth)) {

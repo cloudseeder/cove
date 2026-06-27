@@ -15,8 +15,10 @@
 
   interface Props {
     app: AppState;
+    /** v0.4.0: switch to the OnboardingPanel for first-time setup. */
+    onOnboard?: () => void;
   }
-  let { app }: Props = $props();
+  let { app, onOnboard }: Props = $props();
 
   let hubUrl = $state('http://localhost:8000');
   let priv = $state('');
@@ -130,8 +132,23 @@
     </div>
 
   {:else if mode === 'tauri-import'}
-    <!-- Tauri shell, first launch. Import keys into the keychain. -->
-    <h1>Import your identity</h1>
+    <!-- Tauri shell, first launch. The v0.4.0 default path is
+         on-device generation via OnboardingPanel; the import form
+         stays here as the "I already have keys" branch (members
+         who got an attestation issued out-of-band, or who are
+         re-attaching a device using an existing identity). -->
+    {#if onOnboard}
+      <h1>Welcome to Cove</h1>
+      <p class="muted">
+        First time here? Generate a key on this device — your keymaster
+        will attest it for you and the app unlocks as soon as they do.
+      </p>
+      <div class="hero-actions">
+        <button type="button" onclick={onOnboard}>Get started</button>
+      </div>
+      <p class="divider"><span>or</span></p>
+    {/if}
+    <h2>I already have a key</h2>
     <p class="muted">
       Drop a paired <code>.priv</code> and <code>.pub</code> file
       anywhere in this panel, or paste them. The private key goes
@@ -248,6 +265,37 @@
     font-weight: 600;
     letter-spacing: -0.01em;
   }
+  h2 {
+    margin: 0 0 0.5rem;
+    font-weight: 600;
+    font-size: 1.05rem;
+    color: var(--fg);
+  }
+  .hero-actions {
+    margin: 1.4rem 0 0;
+    display: flex;
+    justify-content: flex-start;
+  }
+  .divider {
+    margin: 2rem 0 1.4rem;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.16em;
+    position: relative;
+  }
+  .divider::before, .divider::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    width: 35%;
+    height: 1px;
+    background: var(--border);
+  }
+  .divider::before { left: 0; }
+  .divider::after  { right: 0; }
+  .divider span { background: var(--panel); padding: 0 0.6rem; }
   .muted {
     color: var(--muted);
     margin: 0 0 1.6rem;

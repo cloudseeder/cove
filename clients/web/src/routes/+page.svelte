@@ -10,10 +10,18 @@
   import { onMount } from 'svelte';
   import { AppState } from '$lib/cove/state.svelte';
   import AuthPanel from './AuthPanel.svelte';
+  import OnboardingPanel from './OnboardingPanel.svelte';
   import ThreadView from './ThreadView.svelte';
   import UpdateBar from './UpdateBar.svelte';
 
   const app = new AppState();
+
+  /** v0.4.0: explicit "I want to onboard" toggle. AuthPanel offers
+   *  the link; clicking it surfaces OnboardingPanel until the user
+   *  either finishes (authenticated → ThreadView) or backs out. */
+  let onboarding = $state(false);
+  function startOnboarding() { onboarding = true; }
+  function leaveOnboarding() { onboarding = false; }
 
   onMount(() => {
     // Fire-and-forget; checkForUpdate no-ops outside Tauri and never
@@ -28,6 +36,8 @@
 
 {#if app.authStatus.kind === 'authenticated'}
   <ThreadView {app} />
+{:else if onboarding}
+  <OnboardingPanel {app} onBack={leaveOnboarding} />
 {:else}
-  <AuthPanel {app} />
+  <AuthPanel {app} onOnboard={startOnboarding} />
 {/if}

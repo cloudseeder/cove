@@ -336,7 +336,7 @@ describe('Signer abstraction', () => {
     await c.post({
       thread: 't1', author: alice.pub, kind: 'post',
       created_at: '2026-06-15T18:00:00Z',
-      parents: [], body: 'via signer', blobs: [], supersedes: null, receipt: null,
+      parents: [], body: 'via signer', blobs: [], supersedes: null, receipt: null, branch_thread: null,
       id: null, sig: null,
     });
     expect(calls.length).toBe(2);   // signed the entry's canonical content
@@ -369,7 +369,7 @@ describe('post', () => {
     const ev: Entry = {
       thread: 't1', author: alice.pub, kind: 'post',
       created_at: '2026-06-15T18:00:00Z',
-      parents: [], body: 'hi', blobs: [], supersedes: null, receipt: null,
+      parents: [], body: 'hi', blobs: [], supersedes: null, receipt: null, branch_thread: null,
       id: null, sig: null,
     };
     const seq = await c.post(ev);
