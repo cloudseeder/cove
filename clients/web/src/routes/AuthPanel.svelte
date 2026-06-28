@@ -32,8 +32,32 @@
    *  user opt-out from OS-level key storage. */
   let useTauriPaste = $state(false);
 
+  // v0.4.8: remember last-used hub URL + thread across launches. Once a
+  // member is attested to a hub, they overwhelmingly use that same hub
+  // forever — defaulting back to localhost every relaunch was friction
+  // with no upside. localStorage is persistent in the Tauri webview
+  // per-origin, no plugin needed. Reads happen in onMount so SSR
+  // prerender (where localStorage is undefined) doesn't blow up.
   onMount(async () => {
+    const savedHub = localStorage.getItem('cove.hubUrl');
+    const savedThread = localStorage.getItem('cove.thread');
+    if (savedHub) hubUrl = savedHub;
+    if (savedThread) thread = savedThread;
     await app.refreshKeychain();
+  });
+
+  // Save on every change. Partial typing gets persisted too, which is
+  // fine — next launch shows whatever was last typed (good or bad), and
+  // the user fixes it once. No need to gate on connect-success.
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('cove.hubUrl', hubUrl);
+    }
+  });
+  $effect(() => {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('cove.thread', thread);
+    }
   });
 
   async function dropKeyfile(ev: DragEvent) {
