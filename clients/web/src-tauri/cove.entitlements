@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  macOS entitlements for the notarized Cove bundle.
+
+  Hardened runtime is enabled automatically when tauri-action notarizes
+  (Apple requires it for notarization). Under hardened runtime, the
+  legacy SecKeychain* APIs that the `keyring` crate uses will silently
+  no-op writes on signed/notarized apps unless the bundle declares a
+  `keychain-access-groups` entitlement scoping its keychain items.
+  That was the v0.4.2 install bug: set_password() returned Ok, the
+  immediate get_password() returned NoEntry, and our readback
+  verification (keys.rs) correctly refused to proceed.
+
+  $(AppIdentifierPrefix) is replaced with the Team ID at codesign
+  time, so the resulting group string becomes "TEAMID.com.cove.web".
+-->
+<plist version="1.0">
+<dict>
+    <key>keychain-access-groups</key>
+    <array>
+        <string>$(AppIdentifierPrefix)com.cove.web</string>
+    </array>
+</dict>
+</plist>
