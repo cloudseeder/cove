@@ -12,14 +12,18 @@
   immediate get_password() returned NoEntry, and our readback
   verification (keys.rs) correctly refused to proceed.
 
-  $(AppIdentifierPrefix) is replaced with the Team ID at codesign
-  time, so the resulting group string becomes "TEAMID.com.cove.web".
+  The team ID is hardcoded rather than using $(AppIdentifierPrefix):
+  that macro is an Xcode build-system feature, NOT substituted by
+  codesign or tauri-action — it landed as a literal "$()" string in
+  the binary's entitlements in v0.4.3 and macOS refused to launch.
+  Apple Team IDs are visible on every signed app the team ships, so
+  embedding it in source is fine.
 -->
 <plist version="1.0">
 <dict>
     <key>keychain-access-groups</key>
     <array>
-        <string>$(AppIdentifierPrefix)com.cove.web</string>
+        <string>83RF28353A.com.cove.web</string>
     </array>
 </dict>
 </plist>
