@@ -71,31 +71,69 @@ pub struct KeyStatus {
     pub public_key: Option<String>,
 }
 
-fn entry(slot: &str) -> Result<Entry, KeyError> {
-    Entry::new(SERVICE, slot).map_err(Into::into)
+// ---- Backend seam ------------------------------------------------------
+//
+// The `keyring` crate is the one single-maintainer dep in this module
+// (see docs/dependency-risks.md). If it ever needs to be replaced, the
+// swap work is concentrated here: write one new `impl KeychainBackend`
+// and update `backend()`. All call sites use the trait, not `keyring::*`
+// directly. The trait is intentionally tiny — only the four ops keys.rs
+// actually needs — so a replacement doesn't have to implement keyring's
+// full surface.
+//
+// We collapse keyring's `Err(NoEntry)` into `Ok(None)` at this seam so
+// the rest of the module's logic doesn't have to pattern-match on a
+// backend-specific error variant.
+
+trait KeychainBackend {
+    fn get(&self, slot: &str) -> Result<Option<String>, KeyError>;
+    fn set(&self, slot: &str, value: &str) -> Result<(), KeyError>;
+    fn delete(&self, slot: &str) -> Result<(), KeyError>;
+}
+
+struct KeyringBackend;
+
+impl KeychainBackend for KeyringBackend {
+    fn get(&self, slot: &str) -> Result<Option<String>, KeyError> {
+        match Entry::new(SERVICE, slot)?.get_password() {
+            Ok(s) => Ok(Some(s)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+    fn set(&self, slot: &str, value: &str) -> Result<(), KeyError> {
+        Entry::new(SERVICE, slot)?
+            .set_password(value)
+            .map_err(Into::into)
+    }
+    fn delete(&self, slot: &str) -> Result<(), KeyError> {
+        match Entry::new(SERVICE, slot)?.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+}
+
+fn backend() -> impl KeychainBackend {
+    KeyringBackend
 }
 
 /// Read current keychain state without exposing the private key.
 pub fn status() -> Result<KeyStatus, KeyError> {
-    let pub_entry = entry(PUB_SLOT)?;
-    let result = pub_entry.get_password();
-    eprintln!("[cove] keys::status() get_password({}/{}) → {:?}",
-        SERVICE, PUB_SLOT,
+    let result = backend().get(PUB_SLOT);
+    eprintln!(
+        "[cove] keys::status() backend.get({}) → {}",
+        PUB_SLOT,
         match &result {
-            Ok(_) => "Ok(<pubkey>)".to_string(),
-            Err(e) => format!("Err({:?})", e),
-        });
-    match result {
-        Ok(pk) => Ok(KeyStatus {
-            has_keys: true,
-            public_key: Some(pk),
-        }),
-        Err(keyring::Error::NoEntry) => Ok(KeyStatus {
-            has_keys: false,
-            public_key: None,
-        }),
-        Err(e) => Err(e.into()),
-    }
+            Ok(Some(_)) => "Ok(Some(<pubkey>))".to_string(),
+            Ok(None) => "Ok(None)".to_string(),
+            Err(e) => format!("Err({})", e),
+        }
+    );
+    Ok(match result? {
+        Some(pk) => KeyStatus { has_keys: true, public_key: Some(pk) },
+        None => KeyStatus { has_keys: false, public_key: None },
+    })
 }
 
 /// Import a paired (priv, pub) — both 64-char hex. We refuse to store
@@ -125,39 +163,47 @@ pub fn import(private_key_hex: &str, public_key_hex: &str) -> Result<(), KeyErro
     }
     eprintln!("[cove] keys::import() derived pubkey OK; storing to keychain");
 
-    let priv_result = entry(PRIV_SLOT)?.set_password(private_key_hex);
-    eprintln!("[cove] keys::import() set_password({}/{}) → {:?}",
-              SERVICE, PRIV_SLOT,
-              match &priv_result {
-                  Ok(()) => "Ok(())".to_string(),
-                  Err(e) => format!("Err({:?})", e),
-              });
+    let kc = backend();
+    let priv_result = kc.set(PRIV_SLOT, private_key_hex);
+    eprintln!(
+        "[cove] keys::import() backend.set({}) → {}",
+        PRIV_SLOT,
+        match &priv_result {
+            Ok(()) => "Ok(())".to_string(),
+            Err(e) => format!("Err({})", e),
+        }
+    );
     priv_result?;
 
-    let pub_result = entry(PUB_SLOT)?.set_password(public_key_hex);
-    eprintln!("[cove] keys::import() set_password({}/{}) → {:?}",
-              SERVICE, PUB_SLOT,
-              match &pub_result {
-                  Ok(()) => "Ok(())".to_string(),
-                  Err(e) => format!("Err({:?})", e),
-              });
+    let pub_result = kc.set(PUB_SLOT, public_key_hex);
+    eprintln!(
+        "[cove] keys::import() backend.set({}) → {}",
+        PUB_SLOT,
+        match &pub_result {
+            Ok(()) => "Ok(())".to_string(),
+            Err(e) => format!("Err({})", e),
+        }
+    );
     pub_result?;
 
-    // Verify by reading back immediately. If the keyring crate is
-    // silently no-op'ing (suspected on unsigned macOS builds), this
-    // catches it and raises a loud error instead of leaving the user
-    // in an inconsistent state.
-    let readback = entry(PUB_SLOT)?.get_password();
-    eprintln!("[cove] keys::import() readback get_password({}/{}) → {:?}",
-              SERVICE, PUB_SLOT,
-              match &readback {
-                  Ok(_) => "Ok(<pubkey>)".to_string(),
-                  Err(e) => format!("Err({:?})", e),
-              });
-    match readback {
-        Ok(ref s) if s == public_key_hex => {}
-        Ok(_) => return Err(KeyError::ReadbackMismatch),
-        Err(_) => return Err(KeyError::ReadbackFailed),
+    // Verify by reading back immediately. If the backend is silently
+    // no-op'ing (the v0.4.2 macOS hardened-runtime issue), this catches
+    // it and raises a loud error instead of leaving the user in an
+    // inconsistent state.
+    let readback = kc.get(PUB_SLOT);
+    eprintln!(
+        "[cove] keys::import() readback backend.get({}) → {}",
+        PUB_SLOT,
+        match &readback {
+            Ok(Some(_)) => "Ok(Some(<pubkey>))".to_string(),
+            Ok(None) => "Ok(None)".to_string(),
+            Err(e) => format!("Err({})", e),
+        }
+    );
+    match readback? {
+        Some(ref s) if s == public_key_hex => {}
+        Some(_) => return Err(KeyError::ReadbackMismatch),
+        None => return Err(KeyError::ReadbackFailed),
     }
     Ok(())
 }
@@ -183,14 +229,15 @@ pub fn generate() -> Result<String, KeyError> {
     let priv_hex = hex::encode(sk.to_bytes());
     let pub_hex = hex::encode(sk.verifying_key().to_bytes());
     eprintln!("[cove] keys::generate() generated fresh keypair, storing");
-    entry(PRIV_SLOT)?.set_password(&priv_hex)?;
-    entry(PUB_SLOT)?.set_password(&pub_hex)?;
+    let kc = backend();
+    kc.set(PRIV_SLOT, &priv_hex)?;
+    kc.set(PUB_SLOT, &pub_hex)?;
     // Readback verification — same defense as import() against the
-    // suspected unsigned-macOS silent-no-op pattern.
-    match entry(PUB_SLOT)?.get_password() {
-        Ok(ref s) if s == &pub_hex => {}
-        Ok(_) => return Err(KeyError::ReadbackMismatch),
-        Err(_) => return Err(KeyError::ReadbackFailed),
+    // v0.4.2 hardened-runtime silent-no-op pattern.
+    match kc.get(PUB_SLOT)? {
+        Some(ref s) if s == &pub_hex => {}
+        Some(_) => return Err(KeyError::ReadbackMismatch),
+        None => return Err(KeyError::ReadbackFailed),
     }
     Ok(pub_hex)
 }
@@ -198,11 +245,9 @@ pub fn generate() -> Result<String, KeyError> {
 /// Wipe both slots. Used for "switch identity" / "this device left the
 /// org" cleanup. Tolerant of missing entries — already-cleared is success.
 pub fn clear() -> Result<(), KeyError> {
+    let kc = backend();
     for slot in [PRIV_SLOT, PUB_SLOT] {
-        match entry(slot)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(e.into()),
-        }
+        kc.delete(slot)?;
     }
     Ok(())
 }
@@ -216,11 +261,7 @@ pub fn sign_message(message: &[u8]) -> Result<String, KeyError> {
 }
 
 fn sign_with_slot(slot: &str, message: &[u8]) -> Result<String, KeyError> {
-    let priv_hex = match entry(slot)?.get_password() {
-        Ok(s) => s,
-        Err(keyring::Error::NoEntry) => return Err(KeyError::NotImported),
-        Err(e) => return Err(e.into()),
-    };
+    let priv_hex = backend().get(slot)?.ok_or(KeyError::NotImported)?;
     let priv_bytes = hex::decode(&priv_hex)?;
     let priv_arr: [u8; 32] = priv_bytes
         .as_slice()
@@ -236,12 +277,10 @@ fn sign_with_slot(slot: &str, message: &[u8]) -> Result<String, KeyError> {
 /// Status of the keymaster's root.priv slot. Distinct from the member
 /// status so a keymaster who's also a member sees both clearly.
 pub fn root_status() -> Result<KeyStatus, KeyError> {
-    let pub_entry = entry(ROOT_PUB_SLOT)?;
-    match pub_entry.get_password() {
-        Ok(pk) => Ok(KeyStatus { has_keys: true, public_key: Some(pk) }),
-        Err(keyring::Error::NoEntry) => Ok(KeyStatus { has_keys: false, public_key: None }),
-        Err(e) => Err(e.into()),
-    }
+    Ok(match backend().get(ROOT_PUB_SLOT)? {
+        Some(pk) => KeyStatus { has_keys: true, public_key: Some(pk) },
+        None => KeyStatus { has_keys: false, public_key: None },
+    })
 }
 
 /// Import a paired root (priv, pub) into the dedicated root slot. Same
@@ -259,12 +298,13 @@ pub fn root_import(private_key_hex: &str, public_key_hex: &str) -> Result<(), Ke
     if sk.verifying_key().to_bytes() != pub_arr {
         return Err(KeyError::KeysMismatched);
     }
-    entry(ROOT_PRIV_SLOT)?.set_password(private_key_hex)?;
-    entry(ROOT_PUB_SLOT)?.set_password(public_key_hex)?;
-    match entry(ROOT_PUB_SLOT)?.get_password() {
-        Ok(ref s) if s == public_key_hex => {}
-        Ok(_) => return Err(KeyError::ReadbackMismatch),
-        Err(_) => return Err(KeyError::ReadbackFailed),
+    let kc = backend();
+    kc.set(ROOT_PRIV_SLOT, private_key_hex)?;
+    kc.set(ROOT_PUB_SLOT, public_key_hex)?;
+    match kc.get(ROOT_PUB_SLOT)? {
+        Some(ref s) if s == public_key_hex => {}
+        Some(_) => return Err(KeyError::ReadbackMismatch),
+        None => return Err(KeyError::ReadbackFailed),
     }
     Ok(())
 }
@@ -272,11 +312,9 @@ pub fn root_import(private_key_hex: &str, public_key_hex: &str) -> Result<(), Ke
 /// Wipe the root slot. Used when retiring a device that was previously
 /// the keymaster station.
 pub fn root_clear() -> Result<(), KeyError> {
+    let kc = backend();
     for slot in [ROOT_PRIV_SLOT, ROOT_PUB_SLOT] {
-        match entry(slot)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => {}
-            Err(e) => return Err(e.into()),
-        }
+        kc.delete(slot)?;
     }
     Ok(())
 }
