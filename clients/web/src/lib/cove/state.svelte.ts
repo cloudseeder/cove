@@ -15,6 +15,17 @@ import {
 import type { Attestation, ThreadSummary } from './types';
 import { hashManifest } from './verify';
 
+// Tauri's invoke() rejects with a raw string when the Rust side returns
+// Err(String) (which all our #[tauri::command] handlers do). Casting that
+// to Error and reading .message yields undefined — the v0.4.2–v0.4.6
+// "Key generation failed: undefined" symptom. errMsg handles all three
+// shapes: Tauri string rejection, JS Error object, anything else.
+function errMsg(e: unknown): string {
+  if (typeof e === 'string') return e;
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
+
 type AuthStatus =
   | { kind: 'unauthenticated' }
   | { kind: 'connecting' }
@@ -272,7 +283,7 @@ export class AppState {
       await this.loadPendingQueue();
     } catch (err) {
       this.adminStatus = {
-        kind: 'error', message: (err as Error).message,
+        kind: 'error', message: errMsg(err),
       };
     }
   }
@@ -300,7 +311,7 @@ export class AppState {
         ? { kind: 'idle' }
         : { kind: 'available', update: available };
     } catch (err) {
-      this.updateStatus = { kind: 'error', message: (err as Error).message };
+      this.updateStatus = { kind: 'error', message: errMsg(err) };
     }
   }
 
@@ -323,7 +334,7 @@ export class AppState {
       // status as installing so any frame painted between download
       // and restart shows the progress, not 'idle'.
     } catch (err) {
-      this.updateStatus = { kind: 'error', message: (err as Error).message };
+      this.updateStatus = { kind: 'error', message: errMsg(err) };
     }
   }
 
@@ -367,7 +378,7 @@ export class AppState {
     } catch (err) {
       this.onboardStatus = {
         kind: 'error',
-        message: `Key generation failed: ${(err as Error).message}`,
+        message: `Key generation failed: ${errMsg(err)}`,
       };
       return;
     }
@@ -384,7 +395,7 @@ export class AppState {
     } catch (err) {
       // 409 already_attested → fast-forward to the normal connect flow.
       // The pubkey is already in the directory; no waiting required.
-      if ((err as Error).message === 'already_attested') {
+      if (errMsg(err) === 'already_attested') {
         this.onboardStatus = { kind: 'attested', pubkey };
         await this.connect({
           hubUrl: opts.hubUrl, publicKey: pubkey,
@@ -394,7 +405,7 @@ export class AppState {
       }
       this.onboardStatus = {
         kind: 'error',
-        message: `Could not register with the hub: ${(err as Error).message}`,
+        message: `Could not register with the hub: ${errMsg(err)}`,
       };
       return;
     }
@@ -423,7 +434,7 @@ export class AppState {
       if (this.watchCancel !== null) {
         this.onboardStatus = {
           kind: 'error',
-          message: `Watch failed: ${(err as Error).message}`,
+          message: `Watch failed: ${errMsg(err)}`,
         };
       }
       this.watchCancel = null;
@@ -489,7 +500,7 @@ export class AppState {
       // state so AdminPanel can show "import root keys" if absent.
       if (this.inTauri) void this.refreshRootKeychain();
     } catch (err) {
-      this.authStatus = { kind: 'failed', reason: (err as Error).message };
+      this.authStatus = { kind: 'failed', reason: errMsg(err) };
       this.client = null;
     }
   }
@@ -526,7 +537,7 @@ export class AppState {
           this.thread,
           (ve) => this.appendIfNew(ve),
           (err) => {
-            this.threadStatus = { kind: 'error', message: `stream: ${err.message}` };
+            this.threadStatus = { kind: 'error', message: `stream: ${errMsg(err)}` };
           },
         );
       }
@@ -535,7 +546,7 @@ export class AppState {
       for (const ve of initial) this.appendIfNew(ve);
       this.threadStatus = { kind: 'idle' };
     } catch (err) {
-      this.threadStatus = { kind: 'error', message: (err as Error).message };
+      this.threadStatus = { kind: 'error', message: errMsg(err) };
     }
   }
 
@@ -555,7 +566,7 @@ export class AppState {
     } catch (err) {
       // VerificationError lands here — DO NOT render. A failed verify on
       // a pushed entry is exactly the case the spec calls for refusing.
-      this.threadStatus = { kind: 'error', message: (err as Error).message };
+      this.threadStatus = { kind: 'error', message: errMsg(err) };
     }
   }
 
