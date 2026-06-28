@@ -1,6 +1,6 @@
 [package]
 name = "cove-web"
-version = "0.4.5"
+version = "0.4.6"
 description = "Cove — Tauri desktop/mobile shell"
 edition = "2021"
 
@@ -81,3 +81,12 @@ url = "2"
 [features]
 default = ["custom-protocol"]
 custom-protocol = ["tauri/custom-protocol"]
+
+# macOS-only: bypass the `keyring` crate (which uses the legacy
+# SecKeychain* API and silently no-ops writes on hardened-runtime
+# notarized apps) in favor of `security-framework`'s modern SecItem*
+# path against the data-protection keychain. Items are bound to the
+# app's Developer ID code signature automatically — no entitlements
+# required. Linux and Windows continue using `keyring`.
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "3"

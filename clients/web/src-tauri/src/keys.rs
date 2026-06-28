@@ -14,6 +14,7 @@
 //! sign arbitrary bytes when it needs a signature.
 
 use ed25519_dalek::{Signer, SigningKey};
+#[cfg(not(target_os = "macos"))]
 use keyring::Entry;
 use rand_core::OsRng;
 use serde::Serialize;
@@ -32,8 +33,12 @@ const ROOT_PUB_SLOT: &str = "root_public_key";
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
+    // String-wrapped so the same variant covers all backends
+    // (keyring::Error on Linux/Windows, security_framework::base::Error
+    // on macOS). Backends format their underlying error to display form
+    // before constructing this variant.
     #[error("keychain: {0}")]
-    Keychain(#[from] keyring::Error),
+    Keychain(String),
     #[error("invalid hex: {0}")]
     Hex(#[from] hex::FromHexError),
     #[error("invalid private key (must be 32 bytes)")]
@@ -73,17 +78,25 @@ pub struct KeyStatus {
 
 // ---- Backend seam ------------------------------------------------------
 //
-// The `keyring` crate is the one single-maintainer dep in this module
-// (see docs/dependency-risks.md). If it ever needs to be replaced, the
-// swap work is concentrated here: write one new `impl KeychainBackend`
-// and update `backend()`. All call sites use the trait, not `keyring::*`
-// directly. The trait is intentionally tiny — only the four ops keys.rs
-// actually needs — so a replacement doesn't have to implement keyring's
-// full surface.
+// One trait, two backends, picked at compile time by target_os.
 //
-// We collapse keyring's `Err(NoEntry)` into `Ok(None)` at this seam so
-// the rest of the module's logic doesn't have to pattern-match on a
-// backend-specific error variant.
+//   macOS  → SecurityFrameworkBackend — calls security_framework::passwords
+//            (the SecItem* / data-protection keychain path). The `keyring`
+//            crate's legacy SecKeychain* writes silently no-op on signed,
+//            notarized, hardened-runtime apps (v0.4.2–v0.4.5 bug), so we
+//            bypass keyring on macOS entirely. SecItem* binds items to the
+//            app's Developer ID code signature automatically — no
+//            keychain-access-groups entitlement required (which is fortunate
+//            because Developer ID certs don't grant that entitlement
+//            without an embedded provisioning profile we don't have).
+//
+//   else   → KeyringBackend — the keyring crate's defaults, which work on
+//            Linux (Secret Service / libsecret) and Windows (Credential
+//            Manager) without per-platform fiddling.
+//
+// The trait is intentionally tiny — only the four ops keys.rs actually
+// needs — and Err(NoEntry) / errSecItemNotFound is collapsed to Ok(None)
+// at the seam so the rest of the module is backend-agnostic.
 
 trait KeychainBackend {
     fn get(&self, slot: &str) -> Result<Option<String>, KeyError>;
@@ -91,29 +104,86 @@ trait KeychainBackend {
     fn delete(&self, slot: &str) -> Result<(), KeyError>;
 }
 
-struct KeyringBackend;
+// errSecItemNotFound — OSStatus code returned by SecItem* when nothing
+// matches the query. Hardcoded rather than re-exported from
+// security-framework so the constant is grep-able from a Linux build.
+#[cfg(target_os = "macos")]
+const ERR_SEC_ITEM_NOT_FOUND: i32 = -25300;
 
-impl KeychainBackend for KeyringBackend {
+// ---- macOS backend -----------------------------------------------------
+
+#[cfg(target_os = "macos")]
+struct SecurityFrameworkBackend;
+
+#[cfg(target_os = "macos")]
+impl KeychainBackend for SecurityFrameworkBackend {
     fn get(&self, slot: &str) -> Result<Option<String>, KeyError> {
-        match Entry::new(SERVICE, slot)?.get_password() {
-            Ok(s) => Ok(Some(s)),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(e.into()),
+        use security_framework::passwords::get_generic_password;
+        match get_generic_password(SERVICE, slot) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(s) => Ok(Some(s)),
+                Err(e) => Err(KeyError::Keychain(format!(
+                    "non-UTF-8 password bytes: {}",
+                    e
+                ))),
+            },
+            Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(None),
+            Err(e) => Err(KeyError::Keychain(e.to_string())),
         }
     }
     fn set(&self, slot: &str, value: &str) -> Result<(), KeyError> {
-        Entry::new(SERVICE, slot)?
-            .set_password(value)
-            .map_err(Into::into)
+        use security_framework::passwords::set_generic_password;
+        set_generic_password(SERVICE, slot, value.as_bytes())
+            .map_err(|e| KeyError::Keychain(e.to_string()))
     }
     fn delete(&self, slot: &str) -> Result<(), KeyError> {
-        match Entry::new(SERVICE, slot)?.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(e.into()),
+        use security_framework::passwords::delete_generic_password;
+        match delete_generic_password(SERVICE, slot) {
+            Ok(()) => Ok(()),
+            Err(e) if e.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
+            Err(e) => Err(KeyError::Keychain(e.to_string())),
         }
     }
 }
 
+#[cfg(target_os = "macos")]
+fn backend() -> impl KeychainBackend {
+    SecurityFrameworkBackend
+}
+
+// ---- Linux/Windows backend (keyring crate) -----------------------------
+
+#[cfg(not(target_os = "macos"))]
+struct KeyringBackend;
+
+#[cfg(not(target_os = "macos"))]
+impl KeychainBackend for KeyringBackend {
+    fn get(&self, slot: &str) -> Result<Option<String>, KeyError> {
+        let entry = Entry::new(SERVICE, slot)
+            .map_err(|e| KeyError::Keychain(e.to_string()))?;
+        match entry.get_password() {
+            Ok(s) => Ok(Some(s)),
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(KeyError::Keychain(e.to_string())),
+        }
+    }
+    fn set(&self, slot: &str, value: &str) -> Result<(), KeyError> {
+        Entry::new(SERVICE, slot)
+            .map_err(|e| KeyError::Keychain(e.to_string()))?
+            .set_password(value)
+            .map_err(|e| KeyError::Keychain(e.to_string()))
+    }
+    fn delete(&self, slot: &str) -> Result<(), KeyError> {
+        let entry = Entry::new(SERVICE, slot)
+            .map_err(|e| KeyError::Keychain(e.to_string()))?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(KeyError::Keychain(e.to_string())),
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
 fn backend() -> impl KeychainBackend {
     KeyringBackend
 }
