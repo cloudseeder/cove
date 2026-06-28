@@ -671,6 +671,13 @@ export class AppState {
     if (this.client === null) return;
     if (name === this.thread) return;
     this.thread = name;
+    // v0.4.9: persist last-viewed thread so the auth panel's thread
+    // field pre-fills with where the user actually was on next launch,
+    // not the AuthPanel default. Shares the same key as the AuthPanel
+    // input — one round-tripped value, not two competing concepts.
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('cove.thread', name);
+    }
     this.entries = [];
     this.seenIds = new Set();
     // The Client's per-thread delta-sync cursor is paired with our

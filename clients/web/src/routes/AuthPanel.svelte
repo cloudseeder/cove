@@ -149,7 +149,7 @@
     </label>
 
     <div class="actions">
-      <button type="button" class="ghost" onclick={forgetKeys}>Forget this identity</button>
+      <button type="button" class="ghost" onclick={forgetKeys}>Use a different key</button>
       <button type="button" onclick={connectKeychain} disabled={connecting}>
         {connecting ? 'Connecting…' : 'Unlock'}
       </button>
