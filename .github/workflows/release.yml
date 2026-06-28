@@ -56,6 +56,14 @@ jobs:
     # needed; everything else stays at default-read.
     permissions:
       contents: write
+    env:
+      # cargo's HTTP/2 transport hits "Error in the HTTP2 framing layer"
+      # downloading crates against static.crates.io on the GH ubuntu
+      # runner — reproduced on v0.3.2 and v0.4.0 releases. Forcing
+      # HTTP/1.1 fixes the framing errors; the retry knob covers the
+      # remaining transient-network case.
+      CARGO_HTTP_MULTIPLEXING: 'false'
+      CARGO_NET_RETRY: '10'
     strategy:
       fail-fast: false
       matrix:
@@ -92,6 +100,15 @@ jobs:
             librsvg2-dev \
             patchelf \
             libsecret-1-dev
+
+      # Caches ~/.cargo/registry + the src-tauri target dir keyed on
+      # Cargo.lock. Cold runs still hit crates.io but with the framing
+      # workaround above; warm runs skip the registry fetch entirely
+      # and shave several minutes off the build.
+      - name: Cache Rust deps
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/web/src-tauri
 
       - uses: pnpm/action-setup@v3
         with:
