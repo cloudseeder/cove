@@ -11,6 +11,7 @@ does not apply to throttle state (it's operational, not authoritative).
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from collections import deque
@@ -23,6 +24,15 @@ from .entry import Entry
 
 
 _VOLUME_WINDOW_S = 86400.0     # rolling 24h, per §7.2.2 "bytes/day"
+
+# Canonical thread-name form: lowercase ASCII alphanumeric segments
+# separated by single hyphens, no leading or trailing hyphens, no empty
+# segments. Matches the client's sanitizeThreadName() output. Enforcing
+# this server-side keeps "annual-meeting" from co-existing with
+# "Annual meeting" / "annual_meeting" / "annual--meeting" as separate
+# threads addressable by the same human intent.
+_THREAD_NAME_RE = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+_THREAD_NAME_MAX = 64
 
 
 class ThrottleError(Exception):
@@ -64,6 +74,21 @@ def check_structural(ev: Entry, cfg: HubConfig = DEFAULT) -> None:
         if blob.size > b.max_blob_bytes:
             raise ThrottleError("structural", b.max_blob_bytes, None,
                                 f"blob {blob.name} size {blob.size} > max {b.max_blob_bytes}")
+    _check_thread_name(ev.thread, field="thread")
+    if ev.branch_thread is not None:
+        _check_thread_name(ev.branch_thread, field="branch_thread")
+
+
+def _check_thread_name(name: str, field: str) -> None:
+    """Raise ThrottleError(structural) if `name` isn't the canonical form."""
+    if len(name) > _THREAD_NAME_MAX:
+        raise ThrottleError("structural", _THREAD_NAME_MAX, None,
+                            f"{field} length {len(name)} > max {_THREAD_NAME_MAX}")
+    if not _THREAD_NAME_RE.match(name):
+        raise ThrottleError("structural", None, None,
+                            f"{field} {name!r} not canonical "
+                            f"(lowercase a-z0-9, hyphens separating segments, "
+                            f"no leading/trailing/double hyphens)")
 
 
 # ---- §7.2.2 per-identity state ----------------------------------------

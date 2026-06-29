@@ -68,6 +68,57 @@ def test_structural_rejects_oversized_single_blob():
     assert ei.value.limit == DEFAULT.bounds.max_blob_bytes
 
 
+# ---- thread-name canonicalization (server-side enforcement) -------------
+#
+# The client sanitizes thread names to lowercase ASCII alphanumeric
+# segments hyphen-separated before submitting (sanitizeThreadName in
+# clients/web/src/lib/cove/threadname.ts). The hub rejects anything
+# else with ThrottleError(scope='structural') so a hand-rolled API
+# caller or older client can't slip a non-canonical name through and
+# create a sibling-thread of the same intent.
+
+@pytest.mark.parametrize("name", [
+    "annual-meeting", "budget-2026", "t1", "t1-sub", "root", "a",
+    "annual-board-meeting-2026-q4",
+])
+def test_structural_accepts_canonical_thread_names(name):
+    check_structural(_post(parents=[]) if False else
+                     Entry(thread=name, author="anyone", kind="post",
+                           created_at="2026-01-01T00:00:00Z", body="hi"))
+
+
+@pytest.mark.parametrize("bad,reason", [
+    ("Annual-Meeting", "uppercase"),
+    ("annual meeting", "whitespace"),
+    ("annual_meeting", "underscore"),
+    ("annual--meeting", "double hyphen"),
+    ("-annual-meeting", "leading hyphen"),
+    ("annual-meeting-", "trailing hyphen"),
+    ("", "empty"),
+    ("café-talk", "non-ascii"),
+    ("a" * 65, "over length cap"),
+])
+def test_structural_rejects_non_canonical_thread_names(bad, reason):
+    ev = Entry(thread=bad, author="anyone", kind="post",
+               created_at="2026-01-01T00:00:00Z", body="hi")
+    with pytest.raises(ThrottleError) as ei:
+        check_structural(ev)
+    assert ei.value.scope == "structural", reason
+
+
+def test_structural_rejects_non_canonical_branch_thread():
+    # branch_thread carries the SAME canonical-form contract — a malformed
+    # one would otherwise create a non-addressable sub-thread when the
+    # parent entry is accepted.
+    ev = Entry(thread="parent", author="anyone", kind="branch",
+               created_at="2026-01-01T00:00:00Z", body="branching off",
+               branch_thread="Sub Thread")
+    with pytest.raises(ThrottleError) as ei:
+        check_structural(ev)
+    assert ei.value.scope == "structural"
+    assert "branch_thread" in ei.value.detail
+
+
 # ---- §7.2.2 token bucket (rate + burst) --------------------------------
 
 class _Clock:
