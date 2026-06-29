@@ -157,6 +157,15 @@ export class Client {
     return this.directoryView.resolve(this.publicKey);
   }
 
+  /** v0.4.23: enumerate all currently-attested, non-revoked members.
+   *  Drives the AdminPanel membership editor. Empty array (not null)
+   *  when the directory hasn't been loaded yet so callers can map
+   *  over it unconditionally. */
+  currentMembers(): Attestation[] {
+    if (this.directoryView === null) return [];
+    return this.directoryView.currentMembers();
+  }
+
   /** Forget the per-thread delta-sync cursor so the next sync(thread)
    *  replays from the start. The UI calls this when it clears its
    *  in-memory entries (e.g. switching threads in/out of view) — the
@@ -362,6 +371,19 @@ export class Client {
   }> {
     this.requireAuth();
     return await this.requestJson('POST', '/admin/attest', { manifest });
+  }
+
+  /** v0.4.23: POST /admin/revoke — sibling of submitAttestation. The
+   *  endpoint expects the same manifest shape (root-signed, chained off
+   *  the current head, full attestations + revocations); the only
+   *  semantic difference is the hub does NOT fire pending-watcher hooks
+   *  for revoke posts. Use this when the manifest's net change is a
+   *  new Revocation. */
+  async submitRevocation(manifest: DirectoryManifest): Promise<{
+    manifest_hash: string;
+  }> {
+    this.requireAuth();
+    return await this.requestJson('POST', '/admin/revoke', { manifest });
   }
 
   async fetchSth(): Promise<STH> {
@@ -729,6 +751,10 @@ export class Client {
 interface DirectoryView {
   resolve(pubkey: string): Attestation | null;
   isRevoked(pubkey: string, asOf?: string): boolean;
+  /** v0.4.23: enumerate currently-attested, non-revoked members for the
+   *  admin membership editor. Sorted by display_name (case-insensitive)
+   *  so the panel doesn't reshuffle on each refresh. */
+  currentMembers(): Attestation[];
 }
 
 function buildDirectoryView(m: DirectoryManifest): DirectoryView {
@@ -753,6 +779,17 @@ function buildDirectoryView(m: DirectoryManifest): DirectoryView {
       if (!r) return false;
       if (asOf === undefined) return true;
       return asOf >= r.revoked_at;
+    },
+    currentMembers() {
+      const out: Attestation[] = [];
+      for (const [pk, att] of attMap) {
+        if (revMap.has(pk)) continue;
+        out.push(att);
+      }
+      out.sort((a, b) =>
+        a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }),
+      );
+      return out;
     },
   };
 }

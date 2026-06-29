@@ -509,6 +509,54 @@ def test_admin_attest_replaces_directory_with_new_signed_manifest(hub):
     assert any(a["member_pubkey"] == new_pub for a in served["attestations"])
 
 
+def test_admin_attest_can_re_attest_existing_pubkey_to_update_role_or_name(hub):
+    """v0.4.23: the membership editor re-attests an existing pubkey with
+    new fields and a later issued_at. The hub's _absorb rule is latest-
+    wins per pubkey, so directory.resolve returns the new attestation —
+    that's what promotes a member to the board or fixes a typo in their
+    name without burning the pubkey or revoking it."""
+    current = hub["directory"].manifest
+    # Snapshot the original attestation for the test member (Alice,
+    # role='member'); we'll promote her to 'board' below.
+    original = hub["directory"].resolve(hub["member_pub"])
+    assert original is not None
+    assert original.role == "member"
+
+    promoted = issue_attestation(
+        hub["root_priv"], member_pubkey=hub["member_pub"],
+        display_name="Alice",
+        affiliation="U-1",
+        role="board",
+        issuer_pubkey=hub["root_pub"],
+        # Strictly later than the original (which was 2026-01-01) so the
+        # absorb rule prefers it.
+        issued_at="2026-06-29T00:00:00+00:00",
+        title="President",
+    )
+    new_manifest = _chained(
+        hub,
+        attestations=list(current.attestations) + [promoted],
+        revocations=list(current.revocations),
+        updated_at="2026-06-29T00:00:01+00:00",
+    )
+    r = hub["client"].post(
+        "/admin/attest", json={"manifest": _manifest_dict(new_manifest)},
+    )
+    assert r.status_code == 200, r.text
+
+    refreshed = hub["directory"].resolve(hub["member_pub"])
+    assert refreshed is not None
+    assert refreshed.role == "board"
+    assert refreshed.title == "President"
+    # Served /directory reflects the same view a client would see.
+    served = hub["client"].get("/directory").json()
+    served_alice = next(
+        a for a in served["attestations"]
+        if a["member_pubkey"] == hub["member_pub"] and a["issued_at"] == "2026-06-29T00:00:00+00:00"
+    )
+    assert served_alice["role"] == "board"
+
+
 def test_admin_attest_rejects_unsigned_or_forged_manifest(hub):
     """A manifest the root didn't sign must NOT update the directory.
     Otherwise an attacker hits /admin/attest with their own keys and

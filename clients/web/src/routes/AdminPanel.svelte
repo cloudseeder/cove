@@ -18,14 +18,71 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { authorColor, initials } from '$lib/cove/chat';
   import { fingerprint } from '$lib/cove/pairing';
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
+  import type { Attestation } from '$lib/cove/types';
 
   interface Props {
     app: AppState;
   }
   let { app }: Props = $props();
+
+  /** v0.4.23: per-row edit / revoke state for the membership editor.
+   *  Only one row open at a time so the form doesn't compete with
+   *  itself across rows. */
+  type RowMode = { kind: 'edit' } | { kind: 'revoke' };
+  let openRow = $state<string | null>(null);   // pubkey of the open row
+  let rowMode = $state<RowMode | null>(null);
+  let editName = $state('');
+  let editAffiliation = $state('');
+  let editRole = $state<'member' | 'officer' | 'board'>('member');
+  let editTitle = $state('');
+  let revokeReason = $state('');
+
+  function openEdit(att: Attestation) {
+    openRow = att.member_pubkey;
+    rowMode = { kind: 'edit' };
+    editName = att.display_name;
+    editAffiliation = att.affiliation;
+    editRole = (att.role as 'member' | 'officer' | 'board');
+    editTitle = att.title ?? '';
+  }
+
+  function openRevoke(att: Attestation) {
+    openRow = att.member_pubkey;
+    rowMode = { kind: 'revoke' };
+    revokeReason = '';
+  }
+
+  function closeRow() {
+    openRow = null;
+    rowMode = null;
+  }
+
+  async function submitEdit(att: Attestation) {
+    await app.updateMember({
+      pubkey: att.member_pubkey,
+      displayName: editName.trim(),
+      affiliation: editAffiliation.trim(),
+      role: editRole,
+      title: editTitle.trim() || null,
+    });
+    if (app.adminStatus.kind === 'idle') closeRow();
+  }
+
+  async function submitRevoke(att: Attestation) {
+    await app.revokeMember({
+      pubkey: att.member_pubkey,
+      reason: revokeReason.trim(),
+    });
+    if (app.adminStatus.kind === 'idle') closeRow();
+  }
+
+  function isSelf(att: Attestation): boolean {
+    return att.member_pubkey === app.myAttestation?.member_pubkey;
+  }
 
   let rootPriv = $state('');
   let rootPub = $state('');
@@ -258,6 +315,132 @@
     </ul>
   {/if}
 
+  {#if app.rootKeysPresent && app.members.length > 0}
+    <!-- v0.4.23: membership editor. Roles change over time (members
+         elected to the board, officers stepping down) and pubkeys
+         sometimes need to come out of the directory (key compromise,
+         departure). Both flows root-sign a fresh manifest and POST
+         to /admin/{attest,revoke}; from the hub's perspective they're
+         the same well-trodden admin endpoint, but the UI keeps them
+         distinct so a keymaster never confuses 'fix a name' with
+         'permanently revoke this key.' -->
+    <section class="members">
+      <h2>Members</h2>
+      <p class="muted">
+        {app.members.length} active member{app.members.length === 1 ? '' : 's'}.
+        Edit changes a member's name, role, or title — the old attestation
+        is preserved in the manifest chain. Revoke is permanent.
+      </p>
+      <ul>
+        {#each app.members as att (att.member_pubkey)}
+          {@const isOpen = openRow === att.member_pubkey}
+          {@const isBoard = att.role === 'board'}
+          <li class:open={isOpen}>
+            <div class="member-summary">
+              <div class="avatar" aria-hidden="true"
+                style="background-color: {authorColor(att.member_pubkey)};">
+                {initials(att.display_name)}
+              </div>
+              <div class="member-meta">
+                <div class="member-name-row">
+                  <span class="member-name" class:board={isBoard}>{att.display_name}</span>
+                  <span class="role-tag" class:board={isBoard}>{att.role}</span>
+                  {#if att.title}<span class="member-title">· {att.title}</span>{/if}
+                </div>
+                <div class="member-sub">
+                  {att.affiliation || '—'}
+                  {#if isSelf(att)}<span class="self-marker">· you</span>{/if}
+                </div>
+              </div>
+              {#if !isOpen}
+                <div class="row-actions">
+                  <button type="button" class="ghost" onclick={() => openEdit(att)}>Edit</button>
+                  <button type="button" class="danger"
+                    onclick={() => openRevoke(att)}
+                    disabled={isSelf(att)}
+                    title={isSelf(att) ? "You can't revoke your own key from inside the app — use an out-of-band action." : ''}>
+                    Revoke
+                  </button>
+                </div>
+              {/if}
+            </div>
+
+            {#if isOpen && rowMode?.kind === 'edit'}
+              <div class="row-form">
+                <label>
+                  <span>Display name</span>
+                  <input type="text" bind:value={editName} />
+                </label>
+                <label>
+                  <span>Affiliation</span>
+                  <input type="text" bind:value={editAffiliation} />
+                </label>
+                <div class="row-fields">
+                  <label>
+                    <span>Role</span>
+                    <select bind:value={editRole}>
+                      <option value="member">member</option>
+                      <option value="officer">officer</option>
+                      <option value="board">board</option>
+                    </select>
+                  </label>
+                  <label class="grow">
+                    <span>Title (optional)</span>
+                    <input type="text" bind:value={editTitle}
+                      placeholder="President, Treasurer, …" />
+                  </label>
+                </div>
+                {#if app.adminStatus.kind === 'error'}
+                  <p class="failure" role="alert">{app.adminStatus.message}</p>
+                {/if}
+                <p class="muted small">
+                  Pubkey <code>{fingerprint(att.member_pubkey)}</code> — immutable.
+                </p>
+                <div class="row-actions">
+                  <button type="button" class="ghost" onclick={closeRow}
+                    disabled={app.adminStatus.kind === 'submitting'}>Cancel</button>
+                  <button type="button" onclick={() => submitEdit(att)}
+                    disabled={app.adminStatus.kind === 'submitting'
+                      || !editName.trim() || !editAffiliation.trim()}>
+                    {app.adminStatus.kind === 'submitting' ? 'Signing…' : 'Save changes'}
+                  </button>
+                </div>
+              </div>
+            {/if}
+
+            {#if isOpen && rowMode?.kind === 'revoke'}
+              <div class="row-form danger-form">
+                <p class="warn">
+                  ⚠ Revocation is permanent. {att.display_name}'s key can
+                  never be un-revoked — entries they sign after this moment
+                  will be rejected by every client. Their historical entries
+                  remain valid (the as-of rule from §2.3).
+                </p>
+                <label>
+                  <span>Reason (becomes part of the audit record)</span>
+                  <textarea bind:value={revokeReason} rows="2"
+                    placeholder="Key compromise / left the org / lost device …"></textarea>
+                </label>
+                {#if app.adminStatus.kind === 'error'}
+                  <p class="failure" role="alert">{app.adminStatus.message}</p>
+                {/if}
+                <div class="row-actions">
+                  <button type="button" class="ghost" onclick={closeRow}
+                    disabled={app.adminStatus.kind === 'submitting'}>Cancel</button>
+                  <button type="button" class="danger-filled"
+                    onclick={() => submitRevoke(att)}
+                    disabled={app.adminStatus.kind === 'submitting' || !revokeReason.trim()}>
+                    {app.adminStatus.kind === 'submitting' ? 'Signing…' : `Revoke ${att.display_name}`}
+                  </button>
+                </div>
+              </div>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
   {#if app.rootKeysPresent}
     <!-- v0.4.13: org default-thread setter. Visible whenever the
          keymaster has root.priv loaded, regardless of queue state.
@@ -432,6 +615,100 @@
     border: 1px solid rgba(220, 38, 38, 0.4);
     color: #fca5a5; font-size: 0.88rem;
   }
+  /* v0.4.23: membership editor styles. Sits between the pending queue
+     and Org settings; rows are slightly tighter than queue rows so the
+     panel scales to a real org's roster without dominating the view. */
+  .members {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .members > .muted {
+    color: var(--muted); margin: 0 0 0.8rem; font-size: 0.85rem;
+  }
+  .members ul {
+    list-style: none; margin: 0; padding: 0;
+  }
+  .members > ul > li {
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); padding: 0.85rem 1rem;
+    margin: 0 0 0.6rem;
+  }
+  .members > ul > li.open {
+    border-color: rgba(212, 175, 55, 0.35);
+  }
+  .member-summary {
+    display: flex; align-items: center; gap: 0.85rem;
+  }
+  .avatar {
+    width: 2.4rem; height: 2.4rem; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    color: rgba(0,0,0,0.85); font-size: 0.82rem; font-weight: 600;
+    flex-shrink: 0;
+  }
+  .member-meta {
+    flex: 1; min-width: 0;
+  }
+  .member-name-row {
+    display: flex; align-items: baseline; gap: 0.45rem;
+    flex-wrap: wrap;
+  }
+  .member-name {
+    font-weight: 600; font-size: 0.96rem;
+  }
+  .member-name.board {
+    color: #e8c96b;
+  }
+  .role-tag {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border);
+    padding: 0.05rem 0.45rem;
+    border-radius: 999px;
+  }
+  .role-tag.board {
+    color: #e8c96b;
+    background: rgba(212, 175, 55, 0.08);
+    border-color: rgba(212, 175, 55, 0.35);
+  }
+  .member-title {
+    color: var(--muted); font-size: 0.85rem;
+  }
+  .member-sub {
+    color: var(--muted); font-size: 0.83rem; margin-top: 0.1rem;
+    overflow-wrap: anywhere;
+  }
+  .self-marker {
+    color: rgb(120, 200, 140);
+    font-weight: 500;
+  }
+  .row-form {
+    margin-top: 0.85rem;
+    padding-top: 0.85rem;
+    border-top: 1px solid var(--border);
+  }
+  .row-form .small { font-size: 0.78rem; }
+  .danger-form .warn {
+    background: rgba(220, 38, 38, 0.06);
+    border: 1px solid rgba(220, 38, 38, 0.3);
+    color: #fca5a5;
+    padding: 0.7rem 0.85rem;
+    border-radius: 8px;
+    font-size: 0.88rem;
+    margin: 0 0 0.85rem;
+    line-height: 1.45;
+  }
+  button.danger-filled {
+    background: rgba(220, 38, 38, 0.85);
+    color: #fff; border: none;
+  }
+  button.danger-filled:hover:not(:disabled) {
+    background: rgb(220, 38, 38);
+  }
+
   .org-settings {
     margin-top: 2rem;
     border-top: 1px solid var(--border);

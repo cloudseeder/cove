@@ -151,6 +151,10 @@ export class AppState {
    *  Drives AdminPanel visibility (role==='board'). Null until
    *  fetchDirectory has run, which happens during connect(). */
   myAttestation = $state<Attestation | null>(null);
+  /** v0.4.23: snapshot of currently-attested, non-revoked members
+   *  for the AdminPanel membership editor. Refreshed alongside
+   *  myAttestation on directory fetches and after admin mutations. */
+  members = $state<Attestation[]>([]);
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
@@ -326,10 +330,147 @@ export class AppState {
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
       await this.loadPendingQueue();
+      // v0.4.23: surface the freshly-attested member in the membership
+      // list immediately rather than waiting for the directory_changed
+      // push round-trip.
+      await this.client.fetchDirectory();
+      this.members = this.client.currentMembers();
     } catch (err) {
       this.adminStatus = {
         kind: 'error', message: errMsg(err),
       };
+    }
+  }
+
+  /** v0.4.23: re-attest an existing member with updated fields
+   *  (displayName / affiliation / role / title). The hub keeps the
+   *  latest issued_at per pubkey, so appending a fresh attestation
+   *  effectively replaces the old one in directory.resolve. The full
+   *  attestation history stays in the manifest chain — auditable.
+   *
+   *  pubkey is immutable (it IS the identity); to change keys, the
+   *  member onboards anew and the old pubkey is revoked. */
+  async updateMember(opts: {
+    pubkey: string;
+    displayName: string;
+    affiliation: string;
+    role: 'member' | 'officer' | 'board' | string;
+    title?: string | null;
+  }): Promise<void> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      return;
+    }
+    if (!this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before editing members.',
+      };
+      return;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    const signer: RootSigner = {
+      sign: (m) => rootKeychain.signMessage(m),
+      pubkey: async () => (await rootKeychain.status()).public_key!,
+    };
+    try {
+      const current = await this.client.fetchDirectory();
+      const rootPub = await signer.pubkey();
+      if (rootPub !== current.org) {
+        throw new Error(
+          'Root key on this device does not match the hub org pubkey.',
+        );
+      }
+      const newAtt = await issueAttestation(signer, {
+        memberPubkey: opts.pubkey,
+        displayName: opts.displayName,
+        affiliation: opts.affiliation,
+        role: opts.role,
+        title: opts.title ?? null,
+      });
+      const newManifest = await issueDirectory(signer, {
+        org: current.org,
+        attestations: [...current.attestations, newAtt],
+        revocations: [...current.revocations],
+        prevManifestHash: hashManifest(current),
+        defaultThread: current.default_thread,
+      });
+      await this.client.submitAttestation(newManifest);
+      this.adminStatus = { kind: 'idle' };
+      // The hub broadcasts directory_changed → handlePushedRaw refreshes
+      // the local snapshot for us, but explicitly refresh here too so
+      // the panel doesn't briefly show stale rows between the POST
+      // response and the WS push arrival.
+      await this.client.fetchDirectory();
+      this.myAttestation = this.client.myAttestation();
+      this.members = this.client.currentMembers();
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
+  /** v0.4.23: revoke a member's pubkey. Appends a Revocation to the
+   *  manifest and POSTs to /admin/revoke. Per spec §2.3 revocations
+   *  carry their own revoked_at and the directory enforces a
+   *  revocation-superset rule on subsequent updates — once revoked,
+   *  always revoked. The member's historical entries (signed BEFORE
+   *  revoked_at) remain valid; entries signed AFTER are rejected.
+   *
+   *  Caller is responsible for the "you can't revoke yourself"
+   *  guard (UI-side) — this method does not enforce it. */
+  async revokeMember(opts: {
+    pubkey: string;
+    reason: string;
+  }): Promise<void> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      return;
+    }
+    if (!this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before revoking.',
+      };
+      return;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    const signer: RootSigner = {
+      sign: (m) => rootKeychain.signMessage(m),
+      pubkey: async () => (await rootKeychain.status()).public_key!,
+    };
+    try {
+      const current = await this.client.fetchDirectory();
+      const rootPub = await signer.pubkey();
+      if (rootPub !== current.org) {
+        throw new Error(
+          'Root key on this device does not match the hub org pubkey.',
+        );
+      }
+      // Idempotency: if there's already a revocation for this pubkey,
+      // don't pile on another with a later timestamp — earliest wins
+      // server-side anyway, and a second entry is just noise.
+      if (current.revocations.some((r) => r.pubkey === opts.pubkey)) {
+        throw new Error('This member is already revoked.');
+      }
+      const newRev = {
+        pubkey: opts.pubkey,
+        revoked_at: new Date().toISOString(),
+        reason: opts.reason.trim() || 'revoked by keymaster',
+      };
+      const newManifest = await issueDirectory(signer, {
+        org: current.org,
+        attestations: [...current.attestations],
+        revocations: [...current.revocations, newRev],
+        prevManifestHash: hashManifest(current),
+        defaultThread: current.default_thread,
+      });
+      await this.client.submitRevocation(newManifest);
+      this.adminStatus = { kind: 'idle' };
+      await this.client.fetchDirectory();
+      this.myAttestation = this.client.myAttestation();
+      this.members = this.client.currentMembers();
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
     }
   }
 
@@ -598,6 +739,7 @@ export class AppState {
       this.route = 'inbox';
       await this.client.fetchDirectory();
       this.myAttestation = this.client.myAttestation();
+      this.members = this.client.currentMembers();
       await this.loadInbox();
       // Sidebar thread list — non-blocking so a slow /threads doesn't
       // gate the inbox render.
@@ -686,6 +828,7 @@ export class AppState {
       if (msg.type === 'directory_changed') {
         await this.client.fetchDirectory();
         this.myAttestation = this.client.myAttestation();
+        this.members = this.client.currentMembers();
         // v0.4.19: inbox row previews carry server-resolved display_name
         // + role. A directory change can rename people / promote / demote,
         // so the preview can go stale. Refetch if we're currently
