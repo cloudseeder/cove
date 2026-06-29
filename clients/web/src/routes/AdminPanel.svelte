@@ -18,6 +18,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
 
   interface Props {
@@ -30,6 +31,51 @@
   let rootImporting = $state(false);
   let rootImportError = $state<string | null>(null);
 
+  // v0.4.13: org default_thread setter.
+  // currentDefault is what the hub says the org's hint is right now —
+  // loaded from /directory on mount and after each successful update.
+  // newDefault is the textfield draft. Empty string means "clear it".
+  let currentDefault = $state<string | null>(null);
+  let newDefault = $state('');
+  let defaultLoaded = $state(false);
+  let defaultSubmitting = $state(false);
+  let defaultError = $state<string | null>(null);
+
+  async function loadDefaultThread() {
+    try {
+      const m = await app.client?.fetchDirectory();
+      currentDefault = m?.default_thread ?? null;
+      newDefault = currentDefault ?? '';
+      defaultLoaded = true;
+    } catch {
+      defaultLoaded = true;
+    }
+  }
+
+  async function submitDefaultThread() {
+    if (defaultSubmitting) return;
+    const sanitized = sanitizeThreadName(newDefault);
+    // Sanitization may yield '' even from a non-empty input (all chars
+    // stripped) — treat both as "clear it" to keep the rule simple.
+    const value = sanitized === '' ? null : sanitized;
+    if (value === currentDefault) return;  // no-op
+    defaultError = null;
+    defaultSubmitting = true;
+    try {
+      currentDefault = await app.setDefaultThread(value);
+      newDefault = currentDefault ?? '';
+    } catch (err) {
+      defaultError = (err as Error).message;
+    } finally {
+      defaultSubmitting = false;
+    }
+  }
+
+  async function clearDefaultThread() {
+    newDefault = '';
+    await submitDefaultThread();
+  }
+
   /** Approve form is per-row: when the user picks one, this holds the
    *  selected pubkey. The form fields below render based on it. */
   let approvingPubkey = $state<string | null>(null);
@@ -41,6 +87,7 @@
   onMount(async () => {
     await app.refreshRootKeychain();
     await app.loadPendingQueue();
+    await loadDefaultThread();
   });
 
   function startApprove(row: { pubkey: string; name_hint: string }) {
@@ -134,9 +181,6 @@
   {:else if app.pendingQueue.length === 0}
     <div class="empty">
       <p>No one's waiting. New requests will appear here automatically.</p>
-      <button type="button" class="ghost" onclick={clearRoot}>
-        Forget root key on this device
-      </button>
     </div>
 
   {:else}
@@ -214,6 +258,48 @@
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if app.rootKeysPresent}
+    <!-- v0.4.13: org default-thread setter. Visible whenever the
+         keymaster has root.priv loaded, regardless of queue state.
+         Sits below the queue so the day-to-day approval task stays
+         the top of the panel. -->
+    <section class="org-settings">
+      <h2>Org settings</h2>
+      <p class="muted">
+        Signed into the directory manifest. Applies to new members
+        running v0.4.13 or later — older clients fall back to their
+        local default ("general").
+      </p>
+      <label>
+        <span>Default landing thread for new members</span>
+        <input type="text" bind:value={newDefault}
+          placeholder={defaultLoaded ? (currentDefault ?? 'not set') : 'loading…'}
+          autocapitalize="off" autocorrect="off" spellcheck="false"
+          disabled={defaultSubmitting || !defaultLoaded} />
+      </label>
+      {#if defaultError}
+        <p class="failure" role="alert">{defaultError}</p>
+      {/if}
+      <div class="actions">
+        {#if currentDefault !== null}
+          <button type="button" class="ghost" onclick={clearDefaultThread}
+            disabled={defaultSubmitting}>Clear</button>
+        {/if}
+        <button type="button" onclick={submitDefaultThread}
+          disabled={defaultSubmitting || !defaultLoaded
+            || (sanitizeThreadName(newDefault) === (currentDefault ?? ''))}>
+          {defaultSubmitting ? 'Signing…' : 'Save'}
+        </button>
+      </div>
+    </section>
+
+    <section class="danger-zone">
+      <button type="button" class="ghost" onclick={clearRoot}>
+        Forget root key on this device
+      </button>
+    </section>
   {/if}
 </section>
 
@@ -341,5 +427,18 @@
     background: rgba(220, 38, 38, 0.08);
     border: 1px solid rgba(220, 38, 38, 0.4);
     color: #fca5a5; font-size: 0.88rem;
+  }
+  .org-settings {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .org-settings .muted {
+    color: var(--muted); margin: 0 0 0.8rem; font-size: 0.85rem;
+  }
+  .danger-zone {
+    margin-top: 1.6rem;
+    display: flex;
+    justify-content: flex-end;
   }
 </style>

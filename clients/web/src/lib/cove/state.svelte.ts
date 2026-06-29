@@ -302,6 +302,57 @@ export class AppState {
     }
   }
 
+  /** v0.4.13: keymaster sets (or clears) the org's default landing
+   *  thread for new members. Re-issues the directory manifest with the
+   *  same attestations + revocations but an updated default_thread,
+   *  signs via root.priv, POSTs to /admin/attest. Pass `null` to
+   *  clear the hint entirely (manifest omits the field, byte-identical
+   *  to pre-v0.4.13 manifests).
+   *
+   *  Returns the new manifest's default_thread value so the caller can
+   *  update its local UI without a re-fetch round-trip.
+   */
+  async setDefaultThread(newDefault: string | null): Promise<string | null> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      throw new Error('not connected');
+    }
+    if (!this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before changing org settings.',
+      };
+      throw new Error('root key not loaded');
+    }
+    this.adminStatus = { kind: 'submitting' };
+    const signer: RootSigner = {
+      sign: (m) => rootKeychain.signMessage(m),
+      pubkey: async () => (await rootKeychain.status()).public_key!,
+    };
+    try {
+      const current = await this.client.fetchDirectory();
+      const rootPub = await signer.pubkey();
+      if (rootPub !== current.org) {
+        throw new Error(
+          'Root key on this device does not match the hub org pubkey.',
+        );
+      }
+      const newManifest = await issueDirectory(signer, {
+        org: current.org,
+        attestations: [...current.attestations],
+        revocations: [...current.revocations],
+        prevManifestHash: hashManifest(current),
+        defaultThread: newDefault ?? undefined,
+      });
+      await this.client.submitAttestation(newManifest);
+      this.adminStatus = { kind: 'idle' };
+      return newDefault;
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+      throw err;
+    }
+  }
+
   /** Helper: is the caller in board tier on this hub? Drives the
    *  AdminPanel tab visibility. The hub enforces actual access via
    *  the require_board gate on /pending — this is purely a UI hint. */
