@@ -16,6 +16,7 @@
 <script lang="ts">
   import type { AppState } from '$lib/cove/state.svelte';
   import { qrSvg } from '$lib/cove/pairing';
+  import { sanitizeThreadName } from '$lib/cove/threadname';
 
   interface Props {
     app: AppState;
@@ -43,7 +44,7 @@
     await app.generateAndPair({
       hubUrl: hubUrl.trim(),
       nameHint: nameHint.trim(),
-      thread: thread.trim() || 'annual-meeting',
+      thread: sanitizeThreadName(thread) || 'annual-meeting',
     });
   }
 
@@ -92,7 +93,8 @@
     <label>
       <span>Thread to open after approval</span>
       <input type="text" bind:value={thread}
-        placeholder="annual-meeting" disabled={isGenerating} />
+        placeholder="annual-meeting" disabled={isGenerating}
+        autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
 
     {#if isError && status.kind === 'error'}

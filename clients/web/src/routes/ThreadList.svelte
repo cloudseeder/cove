@@ -8,6 +8,7 @@
   when the first entry is posted to it. No 'create' API to call.
 -->
 <script lang="ts">
+  import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
 
   let { app }: { app: AppState } = $props();
@@ -58,7 +59,7 @@
 
   async function handleNewThread(ev: SubmitEvent) {
     ev.preventDefault();
-    const name = newThreadName.trim();
+    const name = sanitizeThreadName(newThreadName);
     if (!name) return;
     newThreadName = '';
     await app.switchThread(name);
@@ -148,6 +149,9 @@
       bind:value={newThreadName}
       placeholder="Start a new thread…"
       maxlength="64"
+      autocapitalize="off"
+      autocorrect="off"
+      spellcheck="false"
     />
     <button type="submit" disabled={!newThreadName.trim()}>+</button>
   </form>

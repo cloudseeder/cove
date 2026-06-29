@@ -12,6 +12,7 @@
   bytes.
 -->
 <script lang="ts">
+  import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
   import type { VerifiedEntry } from '$lib/cove/client';
 
@@ -56,7 +57,7 @@
 
   async function submitBranch(ev: SubmitEvent) {
     ev.preventDefault();
-    const name = branchName.trim();
+    const name = sanitizeThreadName(branchName);
     const body = draft.trim();
     if (!name || branching) return;
     branching = true;
@@ -204,7 +205,8 @@
         <span>New thread name</span>
         <input type="text" bind:value={branchName}
           placeholder="e.g. budget-details"
-          maxlength="64" autofocus />
+          maxlength="64" autofocus
+          autocapitalize="off" autocorrect="off" spellcheck="false" />
       </label>
       <div class="modal-actions">
         <button type="button" class="ghost" onclick={closeBranchDialog}

@@ -11,6 +11,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
 
   interface Props {
@@ -91,13 +92,15 @@
   async function connectKeychain() {
     if (app.storedPublicKey === null) return;
     await app.connect({
-      hubUrl, publicKey: app.storedPublicKey, thread, mode: 'keychain',
+      hubUrl, publicKey: app.storedPublicKey,
+      thread: sanitizeThreadName(thread), mode: 'keychain',
     });
   }
 
   async function connectPaste() {
     await app.connect({
-      hubUrl, privateKey: priv.trim(), publicKey: pub.trim(), thread, mode: 'paste',
+      hubUrl, privateKey: priv.trim(), publicKey: pub.trim(),
+      thread: sanitizeThreadName(thread), mode: 'paste',
     });
   }
 
@@ -145,7 +148,8 @@
 
     <label>
       <span>Thread</span>
-      <input type="text" bind:value={thread} placeholder="annual-meeting" />
+      <input type="text" bind:value={thread} placeholder="annual-meeting"
+        autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
 
     <div class="actions">
@@ -253,7 +257,8 @@
 
     <label>
       <span>Thread</span>
-      <input type="text" bind:value={thread} placeholder="annual-meeting" />
+      <input type="text" bind:value={thread} placeholder="annual-meeting"
+        autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
 
     <div class="actions">
