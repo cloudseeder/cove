@@ -24,7 +24,6 @@
   let hubUrl = $state('http://localhost:8000');
   let priv = $state('');
   let pub = $state('');
-  let thread = $state('annual-meeting');
   let importing = $state(false);
   let importError = $state<string | null>(null);
   /** v0.1.3: opt out of the keychain path inside Tauri and use the JS
@@ -33,33 +32,37 @@
    *  user opt-out from OS-level key storage. */
   let useTauriPaste = $state(false);
 
-  // v0.4.8: remember last-used hub URL + thread across launches. Once a
-  // member is attested to a hub, they overwhelmingly use that same hub
-  // forever — defaulting back to localhost every relaunch was friction
-  // with no upside. localStorage is persistent in the Tauri webview
-  // per-origin, no plugin needed. Reads happen in onMount so SSR
-  // prerender (where localStorage is undefined) doesn't blow up.
+  // v0.4.8: remember last-used hub URL across launches. Once a member
+  // is attested to a hub, they overwhelmingly use that same hub forever.
+  // v0.4.22: the Thread input was removed from this panel — with the
+  // v0.4.19 Inbox landing view the thread default is invisible to the
+  // user. It still gets defaulted at connect-time (last-viewed, then
+  // 'general') so AppState has a value for the sidebar's current-
+  // thread highlight while the user picks from Inbox.
   onMount(async () => {
     const savedHub = localStorage.getItem('cove.hubUrl');
-    const savedThread = localStorage.getItem('cove.thread');
     if (savedHub) hubUrl = savedHub;
-    if (savedThread) thread = savedThread;
     await app.refreshKeychain();
   });
 
-  // Save on every change. Partial typing gets persisted too, which is
-  // fine — next launch shows whatever was last typed (good or bad), and
-  // the user fixes it once. No need to gate on connect-success.
+  // Save hub URL on every change — partial typing gets persisted too,
+  // which is fine: next launch shows whatever was last typed and the
+  // user fixes it once. No need to gate on connect-success.
   $effect(() => {
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('cove.hubUrl', hubUrl);
     }
   });
-  $effect(() => {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('cove.thread', thread);
-    }
-  });
+
+  /** v0.4.22: silent default thread — last-viewed (from
+   *  localStorage.cove.thread, populated by AppState.switchThread) or
+   *  'general' if the user has never opened a thread on this device.
+   *  Never surfaced as a form field; the Inbox is the entry point. */
+  function defaultThread(): string {
+    if (typeof localStorage === 'undefined') return 'general';
+    const saved = localStorage.getItem('cove.thread');
+    return sanitizeThreadName(saved ?? '') || 'general';
+  }
 
   async function dropKeyfile(ev: DragEvent) {
     ev.preventDefault();
@@ -93,14 +96,14 @@
     if (app.storedPublicKey === null) return;
     await app.connect({
       hubUrl, publicKey: app.storedPublicKey,
-      thread: sanitizeThreadName(thread), mode: 'keychain',
+      thread: defaultThread(), mode: 'keychain',
     });
   }
 
   async function connectPaste() {
     await app.connect({
       hubUrl, privateKey: priv.trim(), publicKey: pub.trim(),
-      thread: sanitizeThreadName(thread), mode: 'paste',
+      thread: defaultThread(), mode: 'paste',
     });
   }
 
@@ -144,12 +147,6 @@
     <label>
       <span>Hub URL</span>
       <input type="url" bind:value={hubUrl} placeholder="http://localhost:8000" />
-    </label>
-
-    <label>
-      <span>Thread</span>
-      <input type="text" bind:value={thread} placeholder="annual-meeting"
-        autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
 
     <div class="actions">
@@ -253,12 +250,6 @@
       <span>Public key (hex)</span>
       <textarea bind:value={pub} rows="2" autocomplete="off" spellcheck="false"
         placeholder="64-char hex"></textarea>
-    </label>
-
-    <label>
-      <span>Thread</span>
-      <input type="text" bind:value={thread} placeholder="annual-meeting"
-        autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
 
     <div class="actions">
