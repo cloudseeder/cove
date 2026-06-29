@@ -7,7 +7,9 @@
 <script lang="ts">
   import { untrack } from 'svelte';
   import AdminPanel from './AdminPanel.svelte';
+  import ChatMessage from './ChatMessage.svelte';
   import EntryCard from '$lib/cove/EntryCard.svelte';
+  import { shouldGroupWithPrevious } from '$lib/cove/chat';
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
   import FilesView from './FilesView.svelte';
@@ -79,22 +81,47 @@
             · you are <code>{pubkey.slice(0, 12)}…</code>
           </p>
         </div>
-        {#if app.threadStatus.kind === 'syncing'}
-          <span class="status">Syncing…</span>
-        {:else if app.threadStatus.kind === 'error'}
-          <span class="status error">⚠ {app.threadStatus.message}</span>
-        {:else}
-          <span class="status pulse" title="History intact ✓">✓ log intact</span>
-        {/if}
+        <div class="head-right">
+          <div class="view-toggle" role="group" aria-label="View mode">
+            <button type="button"
+              class:active={app.viewMode === 'chat'}
+              onclick={() => app.setViewMode('chat')}>Chat</button>
+            <button type="button"
+              class:active={app.viewMode === 'cards'}
+              onclick={() => app.setViewMode('cards')}>Cards</button>
+          </div>
+          {#if app.threadStatus.kind === 'syncing'}
+            <span class="status">Syncing…</span>
+          {:else if app.threadStatus.kind === 'error'}
+            <span class="status error">⚠ {app.threadStatus.message}</span>
+          {:else}
+            <span class="status pulse" title="History intact ✓">✓ log intact</span>
+          {/if}
+        </div>
       </header>
 
-      <div class="feed">
+      <div class="feed" class:chat-mode={app.viewMode === 'chat'}>
         {#if topLevel.length === 0}
           <p class="empty">No entries yet. Be the first.</p>
-        {:else}
+        {:else if app.viewMode === 'cards'}
           {#each topLevel as ve (ve.entry.id)}
             <EntryCard
               {ve}
+              isNew={freshlyArrived.has(ve.entry.id!)}
+              client={app.client}
+              replyCount={replyCountFor(ve.entry.id)}
+              onReply={() => app.openReplyPanel(ve)}
+              onFollowBranch={(sub) => app.switchThread(sub)}
+            />
+          {/each}
+        {:else}
+          {#each topLevel as ve, i (ve.entry.id)}
+            <ChatMessage
+              {ve}
+              showHeader={!shouldGroupWithPrevious(
+                i > 0 ? topLevel[i - 1].entry : null,
+                ve.entry,
+              )}
               isNew={freshlyArrived.has(ve.entry.id!)}
               client={app.client}
               replyCount={replyCountFor(ve.entry.id)}
@@ -166,9 +193,41 @@
   .feed {
     margin-bottom: 1rem;
   }
+  .feed.chat-mode {
+    /* Tighter rhythm — chat mode prefers density over breathing room. */
+    line-height: 1.4;
+  }
   .empty {
     color: var(--muted);
     text-align: center;
     padding: 2rem;
+  }
+  .head-right {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+  }
+  .view-toggle {
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    font-size: 0.78rem;
+  }
+  .view-toggle button {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0.32rem 0.65rem;
+    color: var(--muted);
+    cursor: pointer;
+    font: inherit;
+  }
+  .view-toggle button.active {
+    background: rgba(212, 175, 55, 0.18);
+    color: rgb(212, 175, 55);
+  }
+  .view-toggle button:not(.active):hover {
+    background: var(--panel);
   }
 </style>

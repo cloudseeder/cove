@@ -91,6 +91,16 @@ export class AppState {
   /** Which face of the active thread to render — chronological feed
    *  or files list. Reset to 'messages' on every switchThread. */
   view = $state<View>('messages');
+  /** v0.4.11: chronological-feed visual mode. 'cards' = EntryCard
+   *  layout, per-entry verification seal, audit feel. 'chat' =
+   *  ChatMessage layout, grouped by author, ambient verification
+   *  (thread-header indicator only), messaging feel. Persisted to
+   *  localStorage. Default 'cards' so existing installs see no
+   *  behavior change until they flip the toggle. */
+  viewMode = $state<'cards' | 'chat'>(
+    typeof localStorage !== 'undefined'
+      && localStorage.getItem('cove.viewMode') === 'chat' ? 'chat' : 'cards',
+  );
   /** v0.4.0: state of the on-device-keygen onboarding flow. The
    *  OnboardingPanel reads this directly; AuthPanel uses kind !== 'idle'
    *  to swap itself out for the onboarding view. */
@@ -667,6 +677,16 @@ export class AppState {
    *  Threads are open-namespace — calling switchThread with a name no
    *  one has posted to yet just gives you an empty feed, and posting
    *  there will materialize the thread on the hub. That's by design. */
+  /** v0.4.11: flip between Cards and Chat rendering for the
+   *  chronological feed. Persisted so the choice carries across
+   *  launches. */
+  setViewMode(mode: 'cards' | 'chat'): void {
+    this.viewMode = mode;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('cove.viewMode', mode);
+    }
+  }
+
   async switchThread(name: string): Promise<void> {
     if (this.client === null) return;
     if (name === this.thread) return;
