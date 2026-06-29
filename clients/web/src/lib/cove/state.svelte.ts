@@ -9,6 +9,7 @@ import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
 import { issueAttestation, issueDirectory, type RootSigner } from './identity';
 import { encodePairingLink, fingerprint as fingerprintOf } from './pairing';
 import {
+  appVersion,
   ensureNotificationPermission, isTauri, keychain, rootKeychain, stream, updater,
   type AvailableUpdate,
 } from './tauri';
@@ -78,6 +79,12 @@ export class AppState {
   /** True iff running inside the Tauri shell — drives the keychain
    *  vs paste-box branch in the auth panel. */
   inTauri = $state<boolean>(isTauri());
+  /** v0.4.16: bundle version exposed in the UI so users can read off
+   *  which build they're on without digging into the OS-level About
+   *  dialog. Populated asynchronously after construct because
+   *  getVersion is a Tauri IPC call; null while it's still resolving
+   *  AND in browser-only mode (no IPC at all). */
+  appVersion = $state<string | null>(null);
   /** Public key stored in the OS keychain (Tauri only). When set,
    *  AuthPanel shows 'Unlock' rather than the import form. */
   storedPublicKey = $state<string | null>(null);
@@ -112,6 +119,12 @@ export class AppState {
   /** v0.4.0: keymaster mode. True when the second keychain slot
    *  (ROOT_PRIV_SLOT) has a root key — gates the in-app admin UI. */
   rootKeysPresent = $state<boolean>(false);
+
+  constructor() {
+    // Resolve the bundle version asynchronously. The webview can render
+    // before this lands — the version line is just blank until then.
+    appVersion().then((v) => { this.appVersion = v; });
+  }
   /** v0.4.0: cached pending queue for AdminPanel. Refreshed by
    *  loadPendingQueue() — also re-fetched after every approve/reject. */
   pendingQueue = $state<Array<{

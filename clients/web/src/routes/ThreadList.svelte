@@ -155,6 +155,12 @@
     />
     <button type="submit" disabled={!newThreadName.trim()}>+</button>
   </form>
+
+  {#if app.appVersion}
+    <footer class="version" title="Cove app version">
+      v{app.appVersion}
+    </footer>
+  {/if}
 </aside>
 
 <style>
@@ -306,6 +312,15 @@
     padding: 0 0.8rem;
     font-weight: 700;
     cursor: pointer;
+  }
+  .version {
+    color: var(--muted);
+    font-size: 0.72rem;
+    padding: 0.55rem 1.25rem 0.75rem;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    user-select: none;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   form button:disabled {
     background: var(--border);

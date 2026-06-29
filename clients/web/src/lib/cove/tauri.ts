@@ -18,6 +18,15 @@ export interface KeyStatus {
   public_key: string | null;
 }
 
+/** Reads the bundle version from Tauri. Returns null in browser-only
+ *  mode (no shell to ask). Resolved lazily so the import has no
+ *  Tauri-side side-effects at module load. */
+export async function appVersion(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const { getVersion } = await import('@tauri-apps/api/app');
+  return await getVersion();
+}
+
 export function isTauri(): boolean {
   return (
     typeof window !== 'undefined'

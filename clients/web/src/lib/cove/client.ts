@@ -353,8 +353,18 @@ export class Client {
       throw new VerificationError(`entry ${entry.id} id/sig invalid`);
     }
 
-    // 3. directory resolution.
-    const att = this.directoryView!.resolve(entry.author);
+    // 3. directory resolution. If the cached directory doesn't know
+    //    the author, the keymaster may have just attested them while
+    //    this client was connected — the manifest update hasn't reached
+    //    us through any push channel yet. Re-fetch /directory once and
+    //    retry before giving up; that closes the window from "newly
+    //    attested" to "showing up as 'not attested' to existing
+    //    connected clients."
+    let att = this.directoryView!.resolve(entry.author);
+    if (att === null) {
+      await this.fetchDirectory();
+      att = this.directoryView!.resolve(entry.author);
+    }
     if (att === null) {
       throw new VerificationError(`author ${entry.author} not attested`);
     }
