@@ -465,6 +465,93 @@ def test_admin_revoke_propagates_through_to_session_gate(hub):
     assert hub["client"].get("/threads").status_code == 401
 
 
+def test_admin_attest_broadcasts_directory_changed_to_live_subscribers(hub):
+    """v0.4.18: the right fix for the v0.4.16 retry-on-miss workaround.
+    When the keymaster attests a new member, every connected client gets
+    a 'directory_changed' push on /stream and refetches /directory — so
+    the new member's first post doesn't render as 'author not attested'
+    on already-connected clients."""
+    current = hub["directory"].manifest
+    new_priv, new_pub = crypto.generate_keypair()
+    att_new = issue_attestation(
+        hub["root_priv"], member_pubkey=new_pub, display_name="Carol",
+        affiliation="U-3", role="member", issuer_pubkey=hub["root_pub"],
+        issued_at="2026-06-01T00:00:00+00:00",
+    )
+    new_manifest = _chained(
+        hub,
+        attestations=list(current.attestations) + [att_new],
+        revocations=list(current.revocations),
+        updated_at="2026-06-15T00:00:00+00:00",
+    )
+
+    with hub["client"].websocket_connect("/stream") as ws:
+        r = hub["client"].post(
+            "/admin/attest", json={"manifest": _manifest_dict(new_manifest)},
+        )
+        assert r.status_code == 200, r.text
+        push = ws.receive_json()
+        assert push["type"] == "directory_changed"
+        assert push["manifest_hash"] == hash_manifest(new_manifest)
+
+
+def test_admin_revoke_broadcasts_directory_changed_to_live_subscribers(hub):
+    """Revocation is a directory mutation just like attestation — same
+    broadcast contract. A connected member needs to know their peer was
+    revoked so future entries from that peer render as such."""
+    current = hub["directory"].manifest
+    rev = Revocation(pubkey=hub["member_pub"],
+                     revoked_at="2026-06-15T00:00:00+00:00",
+                     reason="key compromise")
+    new_manifest = _chained(
+        hub,
+        attestations=list(current.attestations),
+        revocations=list(current.revocations) + [rev],
+        updated_at="2026-06-15T00:00:00+00:00",
+    )
+
+    # The board's session also gates /stream — use it (a revoked member
+    # could not hold a /stream open through their own revocation).
+    with hub["client"].websocket_connect("/stream") as ws:
+        r = hub["client"].post(
+            "/admin/revoke", json={"manifest": _manifest_dict(new_manifest)},
+        )
+        assert r.status_code == 200, r.text
+        push = ws.receive_json()
+        assert push["type"] == "directory_changed"
+        assert push["manifest_hash"] == hash_manifest(new_manifest)
+
+
+def test_admin_attest_rejection_does_not_broadcast(hub):
+    """A failed attestation (bad sig, stale chain, etc.) must NOT
+    emit a directory_changed push — clients would refetch and find
+    the same manifest, but worse, a steady stream of failed attempts
+    becomes a noisy WS channel for the rest of the deployment."""
+    forged_priv, _ = crypto.generate_keypair()
+    bad = issue_directory(
+        forged_priv, org=hub["root_pub"],
+        attestations=[hub["att_member"]], revocations=[],
+        updated_at="2026-06-15T00:00:00+00:00",
+    )
+    with hub["client"].websocket_connect("/stream") as ws:
+        r = hub["client"].post(
+            "/admin/attest", json={"manifest": _manifest_dict(bad)},
+        )
+        assert r.status_code == 400
+        # No push must arrive. TestClient's receive_json blocks; use a
+        # post-then-close + receive to confirm the close was first.
+        # Trigger a benign push to force the channel forward: post an
+        # entry, which broadcasts {type:'entry'} — if anything got queued
+        # before, it'd arrive first.
+        ev = _signed_post(hub["member_priv"], hub["member_pub"], body="probe")
+        hub["client"].post("/entries", json=_entry_payload(ev))
+        push = ws.receive_json()
+        assert push["type"] == "entry", (
+            f"unexpected non-entry push: {push} — the rejected attest must "
+            "not have generated a directory_changed event"
+        )
+
+
 def test_admin_attest_missing_payload_returns_400(hub):
     r = hub["client"].post("/admin/attest", json={})
     assert r.status_code == 400

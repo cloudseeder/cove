@@ -581,6 +581,19 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                 "revocations": len(new_m.revocations),
                 "manifest_hash": hash_manifest(new_m)}, new_attested
 
+    async def _broadcast_directory_changed(result: dict) -> None:
+        """v0.4.18: notify all live /stream subscribers that the directory
+        has rotated. Clients refetch /directory on receipt — keeps the
+        push small (no embedded manifest) since real directory churn is
+        rare (board actions, not user actions). Closes the race where an
+        existing client renders a freshly-attested member's first post as
+        'author not attested'."""
+        if isinstance(result, dict) and "manifest_hash" in result:
+            await fanout.broadcast({
+                "type": "directory_changed",
+                "manifest_hash": result["manifest_hash"],
+            })
+
     @api.post("/admin/attest")
     async def admin_attest(body: dict = Body(...)):
         result, newly_attested = _apply_manifest(body)
@@ -590,11 +603,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         # WS push into a tight serialized pair from the test's POV.
         for pk in newly_attested:
             pending.mark_attested(pk)
+        await _broadcast_directory_changed(result)
         return result
 
     @api.post("/admin/revoke")
     async def admin_revoke(body: dict = Body(...)):
         result, _ = _apply_manifest(body)
+        await _broadcast_directory_changed(result)
         return result
 
     # POST /admin/limits — per-identity throttle override (§7.2.2)

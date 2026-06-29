@@ -583,6 +583,13 @@ export class Client {
         const msg = JSON.parse(typeof event.data === 'string'
           ? event.data
           : await new Response(event.data as Blob).text());
+        // v0.4.18: hub pushed a directory mutation. Refresh the local
+        // cache so the next verify() resolves a freshly-attested author
+        // without falling back to the retry-on-miss safety net.
+        if (msg.type === 'directory_changed') {
+          await this.fetchDirectory();
+          return;
+        }
         if (msg.type !== 'entry') return;
         const ve = await this.verify(msg.entry as Entry, msg.seq as number);
         if (ve.entry.thread !== thread) return;

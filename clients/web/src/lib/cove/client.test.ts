@@ -295,6 +295,36 @@ describe('subscribe', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(received).toEqual([]);
   });
+
+  test('v0.4.18: directory_changed push triggers a /directory refetch', async () => {
+    // The hub broadcasts directory_changed on /admin/attest + /admin/revoke
+    // so connected clients refresh their directoryView without waiting for
+    // an entry-driven retry-on-miss. Verify the client honors that contract.
+    const { fetch } = mockHub();
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub,
+      fetch, WebSocket: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    await c.authenticate();
+    await c.fetchDirectory();
+    const dirCallsBefore = fetch.mock.calls.filter(
+      ([url]) => new URL(url.toString()).pathname === '/directory',
+    ).length;
+
+    c.subscribe('annual-meeting', () => {});
+    const ws = FakeWebSocket.instances.at(-1)!;
+    ws.deliver({
+      type: 'directory_changed',
+      manifest_hash: 'sha256:' + 'b'.repeat(64),
+    });
+    // The handler calls fetchDirectory which roundtrips through fetchImpl.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const dirCallsAfter = fetch.mock.calls.filter(
+      ([url]) => new URL(url.toString()).pathname === '/directory',
+    ).length;
+    expect(dirCallsAfter).toBeGreaterThan(dirCallsBefore);
+  });
 });
 
 // ---- post + receipt -------------------------------------------------

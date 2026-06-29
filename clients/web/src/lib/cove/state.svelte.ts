@@ -658,6 +658,15 @@ export class AppState {
     if (this.client === null) return;
     try {
       const msg = JSON.parse(raw);
+      // v0.4.18: hub pushed a directory mutation (attest/revoke). Refetch
+      // /directory so the next entry from a freshly-attested member doesn't
+      // render as 'not attested', and refresh the cached own-attestation
+      // so AdminPanel visibility flips on as soon as the keymaster acts.
+      if (msg.type === 'directory_changed') {
+        await this.client.fetchDirectory();
+        this.myAttestation = this.client.myAttestation();
+        return;
+      }
       if (msg.type !== 'entry') return;
       const ve = await this.client.verify(msg.entry, msg.seq);
       if (ve.entry.thread !== this.thread) return;
