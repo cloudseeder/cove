@@ -79,3 +79,48 @@ export function shouldGroupWithPrevious(
   const currTime = new Date(curr.created_at).getTime();
   return currTime - prevTime <= gapMs;
 }
+
+/**
+ * v0.4.20: should a day-divider header appear ABOVE `curr` in the chat
+ * feed? True when there's no previous entry, or when prev and curr fall
+ * on different calendar days (in the local timezone).
+ *
+ * Note: two entries 11pm and 1am cross a day boundary even though
+ * they're only 2 hours apart — that's the right behavior (next-day
+ * matches what the user reads on the timestamp).
+ */
+export function shouldShowDayDivider(
+  prev: { created_at: string } | null,
+  curr: { created_at: string },
+): boolean {
+  if (prev === null) return true;
+  const p = new Date(prev.created_at);
+  const c = new Date(curr.created_at);
+  return p.toDateString() !== c.toDateString();
+}
+
+/**
+ * v0.4.20: text label for a day-divider. "Today" / "Yesterday" /
+ * weekday name within the last week / "Jun 28" within current year /
+ * "Jun 28, 2025" earlier. Mirrors smartTimestamp's shape; injectable
+ * `now` for tests.
+ */
+export function dayLabel(iso: string, now: Date = new Date()): string {
+  const t = new Date(iso);
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfTarget = new Date(t.getFullYear(), t.getMonth(), t.getDate());
+  const dayDiff = Math.round(
+    (startOfToday.getTime() - startOfTarget.getTime()) / (24 * 60 * 60 * 1000),
+  );
+  if (dayDiff === 0) return 'Today';
+  if (dayDiff === 1) return 'Yesterday';
+  if (dayDiff > 1 && dayDiff < 7) {
+    return t.toLocaleDateString(undefined, { weekday: 'long' });
+  }
+  if (t.getFullYear() === now.getFullYear()) {
+    return t.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  return t.toLocaleDateString(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric',
+  });
+}

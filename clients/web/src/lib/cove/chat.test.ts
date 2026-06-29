@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'vitest';
-import { authorColor, initials, shouldGroupWithPrevious, smartTimestamp } from './chat';
+import {
+  authorColor, dayLabel, initials, shouldGroupWithPrevious,
+  shouldShowDayDivider, smartTimestamp,
+} from './chat';
 
 describe('initials', () => {
   test.each([
@@ -90,5 +93,62 @@ describe('shouldGroupWithPrevious', () => {
       A('2026-06-29T10:30:00Z'),
       60 * 60 * 1000,
     )).toBe(true);
+  });
+});
+
+describe('shouldShowDayDivider', () => {
+  // Pick mid-day local times so the UTC→local conversion can't push
+  // them into a neighboring day on most timezones.
+  const D = (created_at: string) => ({ created_at });
+  test('null prev → divider shown', () => {
+    expect(shouldShowDayDivider(null, D('2026-06-29T18:00:00Z'))).toBe(true);
+  });
+  test('same calendar day → no divider', () => {
+    expect(shouldShowDayDivider(
+      D('2026-06-29T15:00:00Z'),
+      D('2026-06-29T18:00:00Z'),
+    )).toBe(false);
+  });
+  test('next calendar day → divider', () => {
+    expect(shouldShowDayDivider(
+      D('2026-06-29T18:00:00Z'),
+      D('2026-06-30T18:00:00Z'),
+    )).toBe(true);
+  });
+  test('30 days apart → divider', () => {
+    expect(shouldShowDayDivider(
+      D('2026-05-29T18:00:00Z'),
+      D('2026-06-29T18:00:00Z'),
+    )).toBe(true);
+  });
+});
+
+describe('dayLabel', () => {
+  // Use mid-day local times so DST/midnight boundaries don't bite.
+  // Reference "now" is 12:00 local of Jun 29 2026 (Monday).
+  const NOW = new Date(2026, 5, 29, 12, 0, 0);
+
+  test('same day → Today', () => {
+    expect(dayLabel(new Date(2026, 5, 29, 9, 0, 0).toISOString(), NOW))
+      .toBe('Today');
+  });
+  test('previous calendar day → Yesterday', () => {
+    expect(dayLabel(new Date(2026, 5, 28, 15, 0, 0).toISOString(), NOW))
+      .toBe('Yesterday');
+  });
+  test('within last week → weekday name', () => {
+    // 4 days ago = Thursday (Jun 25)
+    const label = dayLabel(new Date(2026, 5, 25, 15, 0, 0).toISOString(), NOW);
+    expect(label).toMatch(/Thursday/);
+  });
+  test('older this year → "Mon DD"', () => {
+    // Feb 14 is more than a week earlier, same year.
+    const label = dayLabel(new Date(2026, 1, 14, 12, 0, 0).toISOString(), NOW);
+    expect(label).toMatch(/Feb 14/);
+    expect(label).not.toMatch(/2026/);
+  });
+  test('previous year → year included', () => {
+    const label = dayLabel(new Date(2025, 11, 24, 12, 0, 0).toISOString(), NOW);
+    expect(label).toMatch(/2025/);
   });
 });

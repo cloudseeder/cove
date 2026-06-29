@@ -9,7 +9,7 @@
   import AdminPanel from './AdminPanel.svelte';
   import ChatMessage from './ChatMessage.svelte';
   import EntryCard from '$lib/cove/EntryCard.svelte';
-  import { shouldGroupWithPrevious } from '$lib/cove/chat';
+  import { dayLabel, shouldGroupWithPrevious, shouldShowDayDivider } from '$lib/cove/chat';
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
   import FilesView from './FilesView.svelte';
@@ -133,12 +133,16 @@
           {/each}
         {:else}
           {#each topLevel as ve, i (ve.entry.id)}
+            {@const prev = i > 0 ? topLevel[i - 1].entry : null}
+            {@const showDivider = shouldShowDayDivider(prev, ve.entry)}
+            {#if showDivider}
+              <div class="day-divider" role="separator">
+                <span>{dayLabel(ve.entry.created_at)}</span>
+              </div>
+            {/if}
             <ChatMessage
               {ve}
-              showHeader={!shouldGroupWithPrevious(
-                i > 0 ? topLevel[i - 1].entry : null,
-                ve.entry,
-              )}
+              showHeader={showDivider || !shouldGroupWithPrevious(prev, ve.entry)}
               isNew={freshlyArrived.has(ve.entry.id!)}
               client={app.client}
               replyCount={replyCountFor(ve.entry.id)}
@@ -213,6 +217,33 @@
   .feed.chat-mode {
     /* Tighter rhythm — chat mode prefers density over breathing room. */
     line-height: 1.4;
+  }
+  .day-divider {
+    /* v0.4.20: centered pill between messages from different calendar
+       days. Subtle so it doesn't compete with content, but visible
+       enough that "what day is this?" is answered without scanning a
+       full timestamp. */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 1rem 0 0.4rem;
+    font-size: 0.74rem;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    position: relative;
+  }
+  .day-divider::before,
+  .day-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+    opacity: 0.55;
+  }
+  .day-divider span {
+    padding: 0 0.7rem;
+    background: var(--bg);
   }
   .empty {
     color: var(--muted);

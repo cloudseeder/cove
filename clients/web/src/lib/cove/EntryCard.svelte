@@ -8,9 +8,9 @@
 -->
 <script lang="ts">
   import type { Client, VerifiedEntry } from './client';
-  import { sigSummary } from './client';
   import Attachment from './Attachment.svelte';
   import Seal from './Seal.svelte';
+  import VerificationChain from './VerificationChain.svelte';
 
   interface Props {
     ve: VerifiedEntry;
@@ -49,7 +49,6 @@
       ? `Verified from ${ve.attestation.display_name}, ${personTitle}`
       : `Verified from ${ve.attestation.display_name}`,
   );
-  const summary = $derived(sigSummary(ve));
   const created = $derived(ve.entry.created_at);
 </script>
 
@@ -109,29 +108,7 @@
   {/if}
 
   {#if revealed}
-    <aside class="chain">
-      <h4>Verification chain</h4>
-      <dl>
-        <dt>Author</dt>
-        <dd>
-          {ve.attestation.display_name}{#if personTitle}, {personTitle}{/if}
-          {#if ve.attestation.affiliation}
-            <span class="affiliation">· {ve.attestation.affiliation}</span>
-          {/if}
-        </dd>
-        <dt>Pubkey</dt>
-        <dd><code>{ve.entry.author.slice(0, 24)}…</code></dd>
-        <dt>Content hash</dt>
-        <dd><code>{ve.entry.id}</code></dd>
-        <dt>Attested by root</dt>
-        <dd><code>{ve.attestation.issuer.slice(0, 24)}…</code></dd>
-        <dt>Position in log</dt>
-        <dd>{ve.inclusionProof.leaf_index} of {ve.sth.tree_size}</dd>
-        <dt>STH root</dt>
-        <dd><code>{ve.sth.root_hash.slice(0, 24)}…</code></dd>
-      </dl>
-      <p class="summary">{summary}</p>
-    </aside>
+    <VerificationChain {ve} />
   {/if}
 </article>
 
@@ -178,10 +155,6 @@
     font-size: 0.82rem;
     font-feature-settings: 'tnum';
     white-space: nowrap;
-  }
-  .affiliation {
-    color: var(--muted);
-    font-weight: normal;
   }
 
   .body {
@@ -267,42 +240,6 @@
     color: #e8c96b;
     background: rgba(212, 175, 55, 0.06);
     border-color: rgba(212, 175, 55, 0.25);
-  }
-
-  .chain {
-    margin-top: 1rem;
-    padding-top: 1rem;
-    border-top: 1px solid var(--border);
-  }
-  .chain h4 {
-    margin: 0 0 0.6rem;
-    font-size: 0.85rem;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-  }
-  dl {
-    display: grid;
-    grid-template-columns: max-content 1fr;
-    column-gap: 1rem;
-    row-gap: 0.35rem;
-    margin: 0 0 0.6rem;
-    font-size: 0.88rem;
-  }
-  dt {
-    color: var(--muted);
-  }
-  dd {
-    margin: 0;
-  }
-  code {
-    font-size: 0.86em;
-  }
-  .summary {
-    margin: 0;
-    color: var(--muted);
-    font-size: 0.85rem;
-    font-style: italic;
   }
 
   @keyframes arrive {

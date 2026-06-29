@@ -17,6 +17,7 @@
   import type { Client, VerifiedEntry } from '$lib/cove/client';
   import { authorColor, initials, smartTimestamp } from '$lib/cove/chat';
   import Attachment from '$lib/cove/Attachment.svelte';
+  import VerificationChain from '$lib/cove/VerificationChain.svelte';
 
   interface Props {
     ve: VerifiedEntry;
@@ -36,9 +37,14 @@
   const color = $derived(authorColor(ve.entry.author));
   const inits = $derived(initials(ve.attestation.display_name));
   const time = $derived(smartTimestamp(ve.entry.created_at));
+
+  /** v0.4.20: per-message reveal — clicking the ✓ badge opens the
+   *  verification chain inline. State is per-component instance so
+   *  every message toggles independently. */
+  let revealed = $state(false);
 </script>
 
-<div class="row" class:fresh={isNew} class:grouped={!showHeader}>
+<div class="row" class:fresh={isNew} class:grouped={!showHeader} class:revealed>
   {#if showHeader}
     <div class="avatar" style="background-color: {color};">{inits}</div>
   {:else}
@@ -81,7 +87,18 @@
         {#if replyCount === 0}Reply{:else if replyCount === 1}1 reply{:else}{replyCount} replies{/if}
       </button>
     {/if}
+
+    {#if revealed}
+      <VerificationChain {ve} />
+    {/if}
   </div>
+
+  <button type="button" class="reveal"
+    class:active={revealed}
+    title={revealed ? 'Hide verification chain' : 'Show verification chain'}
+    aria-expanded={revealed}
+    aria-label="Verification"
+    onclick={() => (revealed = !revealed)}>✓</button>
 </div>
 
 <style>
@@ -89,6 +106,12 @@
     display: flex;
     gap: 0.7rem;
     padding: 0.32rem 0;
+    align-items: flex-start;
+  }
+  .row.revealed {
+    background: rgba(212, 175, 55, 0.04);
+    border-radius: 8px;
+    padding: 0.5rem 0.45rem;
   }
   .row.grouped {
     padding-top: 0.08rem;
@@ -179,6 +202,37 @@
   .reply-link:hover {
     text-decoration: underline;
     color: rgb(212, 175, 55);
+  }
+  /* v0.4.20: per-message verification reveal. Default to a low-opacity
+     glyph at the message's right edge; hover the row to bring it up to
+     full strength. The expanded chain renders inline below the body via
+     <VerificationChain>. Always tappable for touch (no hover required). */
+  .reveal {
+    appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 0.78rem;
+    width: 1.55rem;
+    height: 1.55rem;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    opacity: 0.25;
+    margin-top: 0.2rem;
+    transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .row:hover .reveal {
+    opacity: 0.7;
+  }
+  .reveal:hover,
+  .reveal.active {
+    opacity: 1;
+    color: rgb(212, 175, 55);
+    border-color: rgba(212, 175, 55, 0.4);
   }
   @keyframes arrive {
     from { background: rgba(212, 175, 55, 0.10); }
