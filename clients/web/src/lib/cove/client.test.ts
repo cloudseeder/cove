@@ -382,3 +382,182 @@ describe('post', () => {
     expect(verifyEntry(captured.body)).toBe(true);
   });
 });
+
+// ---- v0.4.17: transparent session refresh ---------------------------
+//
+// The hub issues short-lived (1h) session tokens. The Client must
+// re-authenticate on its own when (a) the local pre-emptive timer fires
+// near expiry or (b) an authed request comes back 401 (host slept past
+// the timer, hub restarted, etc). Without this, every-morning users saw
+// "⚠ not authenticated; call authenticate() first" on wake.
+
+/** Mock hub that issues incrementing session tokens. Pass an `expiresAt`
+ *  shape so individual tests can stage near-expiry / pre-expired runs.
+ *  Only the latest issued token is accepted on authed paths — older
+ *  tokens get 401 (which is what an expired session looks like). */
+function mockHubWithRefresh(opts: {
+  expiresAtSequence: number[];   // expires_at returned by each /auth/verify
+}) {
+  let issueIdx = 0;
+  let activeToken: string | null = null;
+  const issued: string[] = [];
+  const fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+    const u = new URL(url.toString());
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const authHdr = (init?.headers as Record<string, string> | undefined)?.authorization;
+
+    if (u.pathname === '/auth/challenge' && method === 'POST') {
+      return jsonResp({ nonce: 'd'.repeat(64), expires_at: 9_999_999_999 });
+    }
+    if (u.pathname === '/auth/verify' && method === 'POST') {
+      const token = `tok-${issueIdx}-${'x'.repeat(60)}`.slice(0, 64);
+      const expiresAt = opts.expiresAtSequence[issueIdx]
+        ?? opts.expiresAtSequence[opts.expiresAtSequence.length - 1];
+      issued.push(token);
+      activeToken = token;
+      issueIdx += 1;
+      return jsonResp({ token, pubkey: alice.pub, expires_at: expiresAt });
+    }
+    const bearer = authHdr?.startsWith('Bearer ') ? authHdr.slice(7) : null;
+    if (bearer === null || bearer !== activeToken) {
+      return jsonResp({ error: 'auth_required', reason: 'invalid or expired token' }, 401);
+    }
+    if (u.pathname === '/threads') return jsonResp({ threads: [] });
+    return jsonResp({ error: 'not_found' }, 404);
+  });
+  return { fetch, issued: () => issued.slice() };
+}
+
+describe('session refresh', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('replays an authed request after a 401, using a fresh token', async () => {
+    const farFuture = Math.floor(Date.now() / 1000) + 3600;
+    const hub = mockHubWithRefresh({ expiresAtSequence: [farFuture, farFuture] });
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub, fetch: hub.fetch,
+    });
+    await c.authenticate();
+    const firstToken = hub.issued()[0];
+    // Stale the active token server-side without the client knowing — the
+    // hub now thinks our session is gone, but the client still has it.
+    // Simulated by clearing the hub's record of the issued token.
+    hub.fetch.mockImplementationOnce(async (url, init) => {
+      // The very next call gets a 401, exactly as if our session expired.
+      const u = new URL(url.toString());
+      const authHdr = (init?.headers as Record<string, string> | undefined)?.authorization;
+      if (u.pathname === '/threads' && authHdr === `Bearer ${firstToken}`) {
+        return jsonResp({ error: 'auth_required', reason: 'expired' }, 401);
+      }
+      // Fall back to default mock for anything else.
+      return hub.fetch.getMockImplementation()!(url, init);
+    });
+
+    const threads = await c.fetchThreads();
+    expect(threads).toEqual([]);
+    // Two tokens issued: the original, plus the silent refresh.
+    expect(hub.issued()).toHaveLength(2);
+  });
+
+  test('fires onSessionRefreshed only on refresh, not on initial authenticate', async () => {
+    const farFuture = Math.floor(Date.now() / 1000) + 3600;
+    const hub = mockHubWithRefresh({ expiresAtSequence: [farFuture, farFuture] });
+    const onSessionRefreshed = vi.fn();
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub,
+      fetch: hub.fetch, onSessionRefreshed,
+    });
+    await c.authenticate();
+    // Initial authenticate must NOT fire the callback — AppState already
+    // knows about the first token through the connect() return path.
+    expect(onSessionRefreshed).not.toHaveBeenCalled();
+
+    // Force a refresh via 401 retry.
+    const firstToken = hub.issued()[0];
+    hub.fetch.mockImplementationOnce(async (url, init) => {
+      const u = new URL(url.toString());
+      const authHdr = (init?.headers as Record<string, string> | undefined)?.authorization;
+      if (u.pathname === '/threads' && authHdr === `Bearer ${firstToken}`) {
+        return jsonResp({ error: 'expired' }, 401);
+      }
+      return hub.fetch.getMockImplementation()!(url, init);
+    });
+    await c.fetchThreads();
+    expect(onSessionRefreshed).toHaveBeenCalledTimes(1);
+    const [token, expiresAt] = onSessionRefreshed.mock.calls[0]!;
+    expect(token).toBe(hub.issued()[1]);
+    expect(expiresAt).toBe(farFuture);
+  });
+
+  test('pre-emptive timer refreshes ~60s before expiry', async () => {
+    vi.useFakeTimers();
+    const now = 1_700_000_000;
+    vi.setSystemTime(now * 1000);
+    // Session expires in 120s — timer should fire at expiresAt - 60s,
+    // i.e. 60s from now.
+    const hub = mockHubWithRefresh({
+      expiresAtSequence: [now + 120, now + 3600],
+    });
+    const onSessionRefreshed = vi.fn();
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub,
+      fetch: hub.fetch, onSessionRefreshed,
+    });
+    await c.authenticate();
+    expect(hub.issued()).toHaveLength(1);
+    // Advance just shy of refresh.
+    await vi.advanceTimersByTimeAsync(59_000);
+    expect(onSessionRefreshed).not.toHaveBeenCalled();
+    // Cross the threshold; the refresh fires.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(hub.issued()).toHaveLength(2);
+    expect(onSessionRefreshed).toHaveBeenCalledTimes(1);
+  });
+
+  test('concurrent 401s share a single refresh (no duplicate re-auths)', async () => {
+    const farFuture = Math.floor(Date.now() / 1000) + 3600;
+    const hub = mockHubWithRefresh({ expiresAtSequence: [farFuture, farFuture] });
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub, fetch: hub.fetch,
+    });
+    await c.authenticate();
+    const firstToken = hub.issued()[0];
+    // Make every call carrying the first token 401 once, like an expired
+    // session would. The retry with the second token must succeed.
+    const original = hub.fetch.getMockImplementation()!;
+    hub.fetch.mockImplementation(async (url, init) => {
+      const u = new URL(url.toString());
+      const authHdr = (init?.headers as Record<string, string> | undefined)?.authorization;
+      if (u.pathname === '/threads' && authHdr === `Bearer ${firstToken}`) {
+        return jsonResp({ error: 'expired' }, 401);
+      }
+      return original(url, init);
+    });
+    const results = await Promise.all([
+      c.fetchThreads(), c.fetchThreads(), c.fetchThreads(),
+    ]);
+    expect(results.every((r) => Array.isArray(r))).toBe(true);
+    // Exactly two tokens ever issued — the initial + ONE shared refresh.
+    expect(hub.issued()).toHaveLength(2);
+  });
+
+  test('dispose() cancels the pre-emptive refresh timer', async () => {
+    vi.useFakeTimers();
+    const now = 1_700_000_000;
+    vi.setSystemTime(now * 1000);
+    const hub = mockHubWithRefresh({ expiresAtSequence: [now + 120, now + 3600] });
+    const onSessionRefreshed = vi.fn();
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub,
+      fetch: hub.fetch, onSessionRefreshed,
+    });
+    await c.authenticate();
+    c.dispose();
+    await vi.advanceTimersByTimeAsync(120_000);
+    // No background refresh after the user disconnected.
+    expect(hub.issued()).toHaveLength(1);
+    expect(onSessionRefreshed).not.toHaveBeenCalled();
+  });
+});

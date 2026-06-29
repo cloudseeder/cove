@@ -81,6 +81,11 @@ export interface ClientOptions {
   fetch?: typeof fetch;
   /** Override for tests; defaults to globalThis.WebSocket. */
   WebSocket?: typeof WebSocket;
+  /** v0.4.17: fired after a session token is refreshed (NOT on the initial
+   *  authenticate). State uses this to swap the token into the long-lived
+   *  Tauri WS subscriber, which would otherwise reconnect forever with the
+   *  expired token. */
+  onSessionRefreshed?: (token: string, expiresAt: number) => void;
 }
 
 export class Client {
@@ -97,6 +102,14 @@ export class Client {
   private lastSth: STH | null = null;
   private highWater: Map<string, number> = new Map();
 
+  // v0.4.17: transparent session refresh. Pre-emptive timer fires at
+  // ~60s before expiresAt so the next call sees a fresh token without
+  // friction; the 401-retry path inside authedFetch covers the case
+  // where the timer didn't fire on time (host slept past expiry).
+  private onSessionRefreshed?: (token: string, expiresAt: number) => void;
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private refreshInFlight: Promise<void> | null = null;
+
   constructor(opts: ClientOptions) {
     this.hubUrl = opts.hubUrl.replace(/\/+$/, '');
     this.publicKey = opts.publicKey;
@@ -109,6 +122,17 @@ export class Client {
     }
     this.fetchImpl = opts.fetch ?? globalThis.fetch.bind(globalThis);
     this.WebSocketImpl = opts.WebSocket ?? globalThis.WebSocket;
+    this.onSessionRefreshed = opts.onSessionRefreshed;
+  }
+
+  /** Release the pre-emptive-refresh timer. Called by AppState.reset()
+   *  so an orphaned client doesn't keep re-authenticating in the
+   *  background after the user signs out. */
+  dispose(): void {
+    if (this.refreshTimer !== null) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
   }
 
   // ---- introspection -------------------------------------------------
@@ -160,7 +184,56 @@ export class Client {
     const body = await resp.json();
     this.sessionToken = body.token;
     this.sessionExpiresAt = body.expires_at;
+    this.scheduleSessionRefresh();
     return body.token;
+  }
+
+  /** v0.4.17: schedule a pre-emptive re-auth ~60s before sessionExpiresAt.
+   *  When it fires, refreshSession() updates the in-memory token and
+   *  notifies AppState via onSessionRefreshed so the WS subscriber can
+   *  swap in the fresh credential.
+   *
+   *  setTimeout in Node uses a signed 32-bit int for the delay (max
+   *  ~24.86 days). A larger value is silently clamped to 1 ms, which
+   *  would fire-and-re-schedule in a tight loop. We cap defensively;
+   *  for the production 1h TTL this never triggers. */
+  private scheduleSessionRefresh(): void {
+    if (this.refreshTimer !== null) {
+      clearTimeout(this.refreshTimer);
+      this.refreshTimer = null;
+    }
+    if (this.sessionExpiresAt === null) return;
+    const SAFE_MAX = 2_147_483_647;
+    const ms = (this.sessionExpiresAt * 1000) - Date.now() - 60_000;
+    const delay = Math.min(SAFE_MAX, Math.max(0, ms));
+    this.refreshTimer = setTimeout(() => {
+      void this.refreshSession().catch(() => {
+        // A refresh failure here is logged through the next authedFetch
+        // attempt — that's the path that surfaces user-visible state.
+        // Swallow here so an unhandled rejection doesn't escape the
+        // setTimeout callback.
+      });
+    }, delay);
+  }
+
+  /** v0.4.17: re-runs the auth handshake, then notifies the AppState
+   *  listener so the long-lived WS subscriber can pick up the new token.
+   *  Concurrent callers (pre-emptive timer + a 401-retry firing at once)
+   *  share one in-flight refresh — we don't want N parallel /auth/verify
+   *  round-trips. */
+  private async refreshSession(): Promise<void> {
+    if (this.refreshInFlight) return this.refreshInFlight;
+    this.refreshInFlight = (async () => {
+      try {
+        await this.authenticate();
+        if (this.sessionToken !== null && this.sessionExpiresAt !== null) {
+          this.onSessionRefreshed?.(this.sessionToken, this.sessionExpiresAt);
+        }
+      } finally {
+        this.refreshInFlight = null;
+      }
+    })();
+    return this.refreshInFlight;
   }
 
   // ---- directory + STH ----------------------------------------------
@@ -271,9 +344,8 @@ export class Client {
    *  Idempotent on the server. */
   async clearPending(pubkey: string): Promise<void> {
     this.requireAuth();
-    const resp = await this.fetchImpl(this.hubUrl + `/pending/${pubkey}`, {
+    const resp = await this.authedFetch(this.hubUrl + `/pending/${pubkey}`, {
       method: 'DELETE',
-      headers: this.authHeaders(),
     });
     if (resp.status !== 200) {
       throw new ClientError(`clear pending failed: ${resp.status}`);
@@ -408,12 +480,9 @@ export class Client {
   async uploadBlob(file: File): Promise<BlobRef> {
     this.requireAuth();
     const buf = await file.arrayBuffer();
-    const resp = await this.fetchImpl(this.hubUrl + '/blobs', {
+    const resp = await this.authedFetch(this.hubUrl + '/blobs', {
       method: 'POST',
-      headers: {
-        ...this.authHeaders(),
-        'content-type': file.type || 'application/octet-stream',
-      },
+      headers: { 'content-type': file.type || 'application/octet-stream' },
       body: buf,
     });
     if (resp.status !== 200) {
@@ -442,9 +511,7 @@ export class Client {
     // The path param is just the hex; the BlobRef.hash carries the
     // "sha256:" prefix which is server-side metadata, not URL.
     const hex = ref.hash.startsWith('sha256:') ? ref.hash.slice(7) : ref.hash;
-    const resp = await this.fetchImpl(this.hubUrl + '/blobs/' + hex, {
-      headers: this.authHeaders(),
-    });
+    const resp = await this.authedFetch(this.hubUrl + '/blobs/' + hex, {});
     if (resp.status !== 200) {
       throw new ClientError(`blob fetch failed: ${resp.status}`);
     }
@@ -560,9 +627,9 @@ export class Client {
 
   private async fetchInclusionProof(entryId: string): Promise<InclusionProof> {
     const params = new URLSearchParams({ entry: entryId });
-    const resp = await this.fetchImpl(
+    const resp = await this.authedFetch(
       `${this.hubUrl}/proof/inclusion?${params}`,
-      { headers: this.authHeaders() },
+      {},
     );
     if (resp.status !== 200) {
       throw new VerificationError(
@@ -577,17 +644,51 @@ export class Client {
     path: string,
     body?: unknown,
   ): Promise<any> {
-    const init: RequestInit = { method, headers: this.authHeaders() };
+    const headers: Record<string, string> = {};
+    let init: RequestInit = { method, headers };
     if (body !== undefined) {
-      (init.headers as Record<string, string>)['content-type'] = 'application/json';
+      headers['content-type'] = 'application/json';
       init.body = JSON.stringify(body);
     }
-    const resp = await this.fetchImpl(this.hubUrl + path, init);
+    const resp = await this.authedFetch(this.hubUrl + path, init);
     if (resp.status >= 400) {
       const err = await safeJson(resp);
       throw new ClientError(`${path} returned ${resp.status}: ${JSON.stringify(err)}`);
     }
     return await resp.json();
+  }
+
+  /** v0.4.17: every authenticated request goes through here. Adds the
+   *  Bearer header from the current session; on a 401 response (which
+   *  means the hub thinks our session is dead, despite the client-side
+   *  expiry check) we run refreshSession() once and replay the request.
+   *
+   *  This is the safety net for the case the pre-emptive timer didn't
+   *  cover — e.g. the host slept past expiry, or the hub restarted and
+   *  forgot our session. The common case is handled by the timer with
+   *  no extra round-trip here. */
+  private async authedFetch(url: string, init: RequestInit): Promise<Response> {
+    const send = (): Promise<Response> => {
+      const merged: Record<string, string> = {
+        ...(init.headers as Record<string, string> | undefined),
+      };
+      if (this.sessionToken) merged.authorization = `Bearer ${this.sessionToken}`;
+      return this.fetchImpl(url, { ...init, headers: merged });
+    };
+    const resp = await send();
+    if (resp.status !== 401 || this.sessionToken === null) return resp;
+    // We had a token and got 401: try once to refresh + replay. The
+    // signer is still present (keychain or InJSSigner) so this is a
+    // silent retry — no user prompt.
+    try {
+      await this.refreshSession();
+    } catch {
+      // Surface the original 401 to the caller; refreshSession itself
+      // throwing means the hub is genuinely refusing us, not just an
+      // expired session.
+      return resp;
+    }
+    return await send();
   }
 
   private authHeaders(): Record<string, string> {

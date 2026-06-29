@@ -424,6 +424,7 @@ export class AppState {
     this.replyOpen = null;
     this.teardown?.();
     this.teardown = null;
+    this.client?.dispose();
     this.client = null;
     this.authStatus = { kind: 'unauthenticated' };
   }
@@ -557,6 +558,12 @@ export class AppState {
         publicKey: opts.publicKey,
         signer: opts.mode === 'keychain' ? new TauriKeychainSigner() : undefined,
         privateKey: opts.mode === 'keychain' ? undefined : opts.privateKey,
+        // v0.4.17: transparent session refresh. When the 1h hub session
+        // is renewed (by the pre-emptive timer or by a 401-retry), swap
+        // the token into the long-lived WS subscriber. Without this the
+        // Rust subscriber reconnects forever with the dead token and the
+        // user sees a silently-stale feed after the first hour.
+        onSessionRefreshed: (token) => { void this.handleSessionRefreshed(token); },
       });
       const sessionToken = await this.client.authenticate();
       this.sessionToken = sessionToken;
@@ -579,6 +586,7 @@ export class AppState {
       if (this.inTauri) void this.refreshRootKeychain();
     } catch (err) {
       this.authStatus = { kind: 'failed', reason: errMsg(err) };
+      this.client?.dispose();
       this.client = null;
     }
   }
@@ -626,6 +634,19 @@ export class AppState {
     } catch (err) {
       this.threadStatus = { kind: 'error', message: errMsg(err) };
     }
+  }
+
+  /** v0.4.17: the Client signalled a session refresh. The HTTP path
+   *  already picked up the new token internally; we just need to point
+   *  the long-lived WS subscriber at it. Tearing down + re-subscribing
+   *  is the simplest correct thing — the next sync() closes any gap
+   *  while the new socket was opening. */
+  private async handleSessionRefreshed(token: string): Promise<void> {
+    this.sessionToken = token;
+    if (this.client === null) return;
+    this.teardown?.();
+    this.teardown = null;
+    await this.syncAndSubscribe();
   }
 
   /**
