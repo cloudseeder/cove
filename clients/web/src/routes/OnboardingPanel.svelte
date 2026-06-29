@@ -129,31 +129,25 @@
     </div>
 
   {:else if isWaiting && status.kind === 'waiting'}
-    <!-- Waiting for keymaster approval — the active part of the flow -->
+    <!-- Waiting for keymaster approval — the active part of the flow.
+         The hub already has the new member's pubkey from the /pending
+         POST during start(); the keymaster sees this request in their
+         admin queue automatically. So the user's job here isn't to
+         "deliver" the pubkey (the hub did that) — it's to help the
+         keymaster confirm "yes, that's me" before they approve.
+         The fingerprint is the verification artifact. The QR + deep
+         link are secondary (work for in-person scenarios where the
+         keymaster scans / clicks; deep links are unreliable across
+         platforms, so they're not the primary path). -->
     <h1>Waiting for approval</h1>
     <p class="muted">
-      Send the QR or link below to your keymaster. Your app will unlock
-      automatically as soon as they attest your key.
+      Your keymaster has been notified. To confirm it's you, share
+      this fingerprint with them by voice, text, or in person — they'll
+      see the same one next to your row in their queue.
     </p>
 
-    <div class="qr">
-      {@html qrSvgString}
-    </div>
-
     <div class="field">
-      <span class="field-label">Pairing link</span>
-      <div class="link-row">
-        <code class="link">{status.pairingLink}</code>
-        <button type="button" class="copy" onclick={copyLink}>
-          {copied ? 'Copied' : 'Copy'}
-        </button>
-      </div>
-    </div>
-
-    <div class="field">
-      <span class="field-label">
-        Fingerprint (compare with the one your keymaster sees)
-      </span>
+      <span class="field-label">Your fingerprint</span>
       <code class="fingerprint">{status.fingerprint}</code>
     </div>
 
@@ -161,6 +155,27 @@
       <span class="dot"></span>
       <span>Listening for your attestation…</span>
     </div>
+
+    <details class="more-ways">
+      <summary>More ways to share</summary>
+      <p class="muted small">
+        These let the keymaster pre-fill the approval from a phone scan
+        or a clicked link, when device support cooperates. They aren't
+        required — the queue entry already has everything they need.
+      </p>
+      <div class="qr">
+        {@html qrSvgString}
+      </div>
+      <div class="field">
+        <span class="field-label">Pairing link</span>
+        <div class="link-row">
+          <code class="link">{status.pairingLink}</code>
+          <button type="button" class="copy" onclick={copyLink}>
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+    </details>
 
     <div class="actions">
       <button type="button" class="ghost" onclick={back}>Back</button>
@@ -262,15 +277,35 @@
   }
   .fingerprint {
     display: block;
-    padding: 0.7rem 0.75rem;
+    padding: 0.9rem 0.75rem;
     background: var(--bg);
     color: #e8c96b;
     border: 1px solid var(--border);
     border-radius: 8px;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.95rem;
-    letter-spacing: 0.04em;
+    font-size: 1.05rem;
+    letter-spacing: 0.05em;
     text-align: center;
+    word-spacing: 0.1em;
+  }
+  .more-ways {
+    margin: 1.4rem 0 0.4rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+  }
+  .more-ways > summary {
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 0.88rem;
+    user-select: none;
+    padding: 0.2rem 0;
+  }
+  .more-ways > summary:hover {
+    color: var(--fg);
+  }
+  .more-ways .small {
+    font-size: 0.82rem;
+    margin: 0.6rem 0 0.9rem;
   }
   .status-pulse {
     margin: 1.5rem 0 0.6rem;

@@ -18,6 +18,7 @@
 -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { fingerprint } from '$lib/cove/pairing';
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
 
@@ -133,9 +134,6 @@
     await app.clearRootKeys();
   }
 
-  function shortFp(pk: string): string {
-    return pk.slice(0, 8).toUpperCase() + '…' + pk.slice(-4).toUpperCase();
-  }
 </script>
 
 <section class="admin" aria-label="Keymaster admin panel">
@@ -190,7 +188,7 @@
           <div class="row-summary">
             <div class="row-meta">
               <span class="row-name">{row.name_hint}</span>
-              <span class="row-fp">{shortFp(row.pubkey)}</span>
+              <code class="row-fp" title="Full pubkey fingerprint — compare against what the member's device shows">{fingerprint(row.pubkey)}</code>
             </div>
             <span class="row-time">{row.requested_at.slice(0, 16)}</span>
           </div>
@@ -389,7 +387,13 @@
   .row-name { font-weight: 600; font-size: 1rem; }
   .row-fp {
     color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.8rem;
+    font-size: 0.78rem;
+    background: transparent;
+    word-spacing: 0.05em;
+    /* Fingerprint is 32 hex chars + 7 spaces (8x4 blocks). Let it wrap
+       on narrow panels rather than truncate — partial matching is the
+       whole problem we fixed by switching to the full fingerprint. */
+    overflow-wrap: anywhere;
   }
   .row-time { color: var(--muted); font-size: 0.82rem; }
   .row-actions, .actions {
