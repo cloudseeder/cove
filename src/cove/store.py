@@ -119,6 +119,40 @@ class EventStore:
         ).fetchone()
         return int(row[0]) if row is not None else None
 
+    def latest_non_receipt(self, thread: str) -> Optional[tuple[Entry, int]]:
+        """v0.4.19: latest user-facing entry in a thread for inbox preview.
+
+        Receipts have body='' by spec (§8) and are noise in an 'inbox row'
+        preview — skip them and return the latest entry a reader would
+        actually want to see in the thread. Returns None if the thread is
+        receipt-only (or empty).
+        """
+        row = self._conn.execute(
+            "SELECT id, content, sig, seq FROM entries"
+            " WHERE thread=? AND kind!='receipt'"
+            " ORDER BY seq DESC LIMIT 1",
+            (thread,),
+        ).fetchone()
+        if row is None:
+            return None
+        return _row_to_entry((row[0], row[1], row[2])), int(row[3])
+
+    def caller_receipt_high_water(self, thread: str, author: str) -> int:
+        """v0.4.19: max seq of a caller's kind='receipt' entries in a thread,
+        or -1 if the caller has never receipted this thread.
+
+        Inbox uses this against thread.latest_seq to render the unread
+        indicator. We compare the seq of the receipt entry itself (not the
+        receipt's high_water_seq payload) — the seq is what every other
+        consumer of /sync uses as the read cursor, so this stays consistent
+        with how clients already paginate.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(seq) FROM entries WHERE thread=? AND author=? AND kind='receipt'",
+            (thread, author),
+        ).fetchone()
+        return int(row[0]) if row and row[0] is not None else -1
+
     def since(self, thread: str, seq: int) -> Iterable[Entry]:
         """Delta-sync: entries in thread strictly AFTER `seq`, in seq order. §7 /sync.
 

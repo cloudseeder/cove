@@ -23,6 +23,12 @@
     app.entries.reduce((n, ve) => n + ve.entry.blobs.length, 0),
   );
 
+  /** v0.4.19: count of inbox rows where latest_seq > my_high_water.
+   *  Drives the badge on the "Inbox" sidebar link. */
+  const inboxUnread = $derived(
+    app.inboxRows.filter((r) => r.latest_entry && r.latest_seq > r.my_high_water).length,
+  );
+
   // v0.2: sub-threads nest under their parent. A thread without a
   // parent_thread renders at the top level; children are indented
   // under it. We build the tree at render time from the flat list
@@ -96,7 +102,7 @@
   {/snippet}
 
   {#snippet threadNode(node: ThreadNode)}
-    {@const isActive = node.thread === app.thread}
+    {@const isActive = app.route === 'thread' && node.thread === app.thread}
     <li class:active={isActive}>
       <button type="button" onclick={() => handleSwitch(node.thread)}>
         <span class="name">{node.thread}</span>
@@ -116,8 +122,16 @@
   {/snippet}
 
   <ul>
+    <li class:active={app.route === 'inbox'} class="inbox-tab">
+      <button type="button" onclick={() => app.goToInbox()}>
+        <span class="name">Inbox</span>
+        {#if inboxUnread > 0}
+          <span class="count badge">{inboxUnread}</span>
+        {/if}
+      </button>
+    </li>
     {#if app.isBoardMember}
-      <li class:active={app.view === 'admin'} class="admin-tab">
+      <li class:active={app.route === 'thread' && app.view === 'admin'} class="admin-tab">
         <button type="button" onclick={() => app.setView('admin')}>
           <span class="name">Admin</span>
           {#if app.pendingQueue.length > 0}
@@ -129,7 +143,7 @@
     {#each tree as node (node.thread)}
       {@render threadNode(node)}
     {/each}
-    {#if !app.threads.some((t) => t.thread === app.thread)}
+    {#if app.route === 'thread' && !app.threads.some((t) => t.thread === app.thread)}
       <!-- Current thread isn't in the hub list yet (empty / just-typed
            a fresh name). Show it as active anyway so the user can see
            where they are. -->
@@ -264,6 +278,15 @@
     margin: 0.1rem 0 0.25rem 0.85rem;
     padding-left: 0.4rem;
     border-left: 2px solid rgba(160, 200, 130, 0.35);
+  }
+  .inbox-tab > button {
+    color: #e8c96b;
+  }
+  .inbox-tab + .admin-tab,
+  .inbox-tab + li:not(.admin-tab) {
+    /* Visual separator below the navigation block so it doesn't blend
+       into the thread list. */
+    margin-top: 0.35rem;
   }
   .admin-tab > button {
     color: #e8c96b;

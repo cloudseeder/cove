@@ -13,6 +13,7 @@
   import type { AppState } from '$lib/cove/state.svelte';
   import ComposeBox from './ComposeBox.svelte';
   import FilesView from './FilesView.svelte';
+  import InboxPanel from './InboxPanel.svelte';
   import ReplyPanel from './ReplyPanel.svelte';
   import ThreadList from './ThreadList.svelte';
 
@@ -53,7 +54,21 @@
   //   - main feed shows ONLY top-level entries (parents.length === 0)
   //   - replies are pulled into the ReplyPanel keyed off entry.id
   //   - reply count per top-level entry is just a filter+count
-  const topLevel = $derived(app.entries.filter((ve) => ve.entry.parents.length === 0));
+  //
+  // v0.4.19: also hide kind='receipt' entries from the chronological
+  // feed. Receipts are noise to readers — they're auto-posted on view
+  // for the audit trail. They stay in app.entries (state needs them for
+  // the high-water computation in markThreadRead).
+  const topLevel = $derived(
+    app.entries.filter((ve) =>
+      ve.entry.parents.length === 0 && ve.entry.kind !== 'receipt',
+    ),
+  );
+  /** v0.4.19: feed count excludes receipts (auto-posted on view; not
+   *  shown to readers). */
+  const visibleEntryCount = $derived(
+    app.entries.filter((ve) => ve.entry.kind !== 'receipt').length,
+  );
   function replyCountFor(parentId: string | null): number {
     if (!parentId) return 0;
     let n = 0;
@@ -67,7 +82,9 @@
 <div class="layout">
   <ThreadList {app} />
 
-  {#if app.view === 'admin'}
+  {#if app.route === 'inbox'}
+    <InboxPanel {app} />
+  {:else if app.view === 'admin'}
     <AdminPanel {app} />
   {:else if app.view === 'files'}
     <FilesView {app} />
@@ -77,7 +94,7 @@
         <div>
           <h1>{app.thread}</h1>
           <p class="muted">
-            {app.entries.length} entr{app.entries.length === 1 ? 'y' : 'ies'}
+            {visibleEntryCount} entr{visibleEntryCount === 1 ? 'y' : 'ies'}
             · you are <code>{pubkey.slice(0, 12)}…</code>
           </p>
         </div>

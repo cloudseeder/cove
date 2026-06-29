@@ -296,6 +296,45 @@ describe('subscribe', () => {
     expect(received).toEqual([]);
   });
 
+  test('v0.4.19: fetchInbox returns the /inbox rows', async () => {
+    // Lightweight smoke: the wrapper just maps response.threads onto
+    // InboxRow[]. The hub-side correctness (latest_entry skipping
+    // receipts, my_high_water reflecting caller receipts, body preview
+    // truncation) is covered by tests/test_api.py::test_inbox_*.
+    const inboxRows = [
+      {
+        thread: 'annual-meeting', entry_count: 4, latest_seq: 3,
+        parent_thread: null, my_high_water: 2,
+        latest_entry: {
+          id: 'sha256:' + 'a'.repeat(64), seq: 3, author: alice.pub,
+          kind: 'post', created_at: '2026-06-29T10:00:00Z',
+          body_preview: "I'll be there", display_name: 'Alice', role: 'member',
+        },
+      },
+      {
+        thread: 'empty', entry_count: 0, latest_seq: -1,
+        parent_thread: null, my_high_water: -1, latest_entry: null,
+      },
+    ];
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const u = new URL(url.toString());
+      if (u.pathname === '/auth/challenge') {
+        return jsonResp({ nonce: 'd'.repeat(64), expires_at: 9_999_999_999 });
+      }
+      if (u.pathname === '/auth/verify') {
+        return jsonResp({ token: 'a'.repeat(64), pubkey: alice.pub, expires_at: 9_999_999_999 });
+      }
+      if (u.pathname === '/inbox') return jsonResp({ threads: inboxRows });
+      return jsonResp({ error: 'not_found' }, 404);
+    });
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub, fetch: fetchMock,
+    });
+    await c.authenticate();
+    const rows = await c.fetchInbox();
+    expect(rows).toEqual(inboxRows);
+  });
+
   test('v0.4.18: directory_changed push triggers a /directory refetch', async () => {
     // The hub broadcasts directory_changed on /admin/attest + /admin/revoke
     // so connected clients refresh their directoryView without waiting for

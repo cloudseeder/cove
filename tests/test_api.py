@@ -26,7 +26,7 @@ from cove import crypto
 from cove.api import create_app
 from cove.auth import AuthService
 from cove.blobs import BlobStore
-from cove.entry import BlobRef, Entry, sign_entry, verify_entry
+from cove.entry import BlobRef, Entry, Receipt, sign_entry, verify_entry
 from cove.identity import (
     Attestation, Directory, Revocation, hash_manifest,
     issue_attestation, issue_directory,
@@ -377,6 +377,90 @@ def test_blob_to_entry_binding_round_trips_through_signature(hub):
     # And the blob store recorded the reference, ready for a future GC.
     assert ev.id in hub["blobs"].references_for(blob_hash)
     assert hub["blobs"].ref_count(blob_hash) == 1
+
+
+# ---- /inbox (v0.4.19) ------------------------------------------------
+
+def test_inbox_returns_one_row_per_observed_thread_with_latest_entry(hub):
+    """Landing-view bundle: one row per thread the hub has seen, each
+    carrying the latest non-receipt entry for the preview render."""
+    # Two threads, each with a couple of entries.
+    for body, thread in [("alpha-1", "alpha"), ("alpha-2", "alpha"),
+                         ("beta-1", "beta")]:
+        ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                          thread=thread, body=body)
+        r = hub["client"].post("/entries", json=_entry_payload(ev))
+        assert r.status_code == 200, r.text
+
+    r = hub["client"].get("/inbox")
+    assert r.status_code == 200, r.text
+    by_thread = {row["thread"]: row for row in r.json()["threads"]}
+    assert set(by_thread) == {"alpha", "beta"}
+    assert by_thread["alpha"]["entry_count"] == 2
+    assert by_thread["alpha"]["latest_seq"] == 1
+    assert by_thread["alpha"]["latest_entry"]["body_preview"] == "alpha-2"
+    assert by_thread["alpha"]["latest_entry"]["display_name"] == "Alice"
+    assert by_thread["alpha"]["latest_entry"]["role"] == "member"
+    assert by_thread["beta"]["latest_entry"]["body_preview"] == "beta-1"
+
+
+def test_inbox_high_water_reflects_callers_receipt_entries(hub):
+    """my_high_water == max seq of caller's kind='receipt' entries. The
+    inbox dot lights up when latest_seq > my_high_water."""
+    # Three posts → seqs 0, 1, 2.
+    for body in ["m0", "m1", "m2"]:
+        ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                          thread="t1", body=body)
+        hub["client"].post("/entries", json=_entry_payload(ev))
+
+    # No receipts yet — caller is fully unread.
+    r = hub["client"].get("/inbox").json()
+    row = next(t for t in r["threads"] if t["thread"] == "t1")
+    assert row["latest_seq"] == 2
+    assert row["my_high_water"] == -1
+
+    # Member posts a receipt acknowledging up to seq 2. That receipt
+    # itself lands at seq 3 in the thread.
+    sth = STH(**hub["client"].get("/sth").json())
+    receipt = sign_entry(Entry(
+        thread="t1", author=hub["member_pub"], kind="receipt",
+        created_at="2026-01-01T00:00:00Z",
+        body="",
+        receipt=Receipt(high_water_seq=2,
+                        observed_sth_size=sth.tree_size,
+                        observed_sth_root=sth.root_hash),
+    ), hub["member_priv"])
+    hub["client"].post("/entries", json=_entry_payload(receipt))
+
+    r = hub["client"].get("/inbox").json()
+    row = next(t for t in r["threads"] if t["thread"] == "t1")
+    # latest_seq is now 3 (the receipt counts in the per-thread sequence);
+    # my_high_water is the seq of the caller's latest receipt = 3.
+    # latest_entry MUST still be the non-receipt at seq 2 — receipts
+    # don't enter the preview because they have empty bodies and would
+    # show as noise in an inbox row.
+    assert row["my_high_water"] == 3
+    assert row["latest_entry"]["body_preview"] == "m2"
+    assert row["latest_entry"]["seq"] == 2
+
+
+def test_inbox_truncates_long_body_previews(hub):
+    """Inbox rows show a single line; long bodies must be clipped server-
+    side so the client doesn't ship the full text for every preview."""
+    long_body = "A" * 500
+    ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                      thread="t1", body=long_body)
+    hub["client"].post("/entries", json=_entry_payload(ev))
+
+    r = hub["client"].get("/inbox").json()
+    preview = r["threads"][0]["latest_entry"]["body_preview"]
+    assert len(preview) <= 141   # 140 char window + the ellipsis
+    assert preview.endswith("…")
+
+
+def test_inbox_requires_auth(hub):
+    unauth = TestClient(hub["app"])
+    assert unauth.get("/inbox").status_code == 401
 
 
 # ---- /admin/* (§7, §7.2.2) -------------------------------------------

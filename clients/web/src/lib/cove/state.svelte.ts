@@ -13,7 +13,7 @@ import {
   ensureNotificationPermission, isTauri, keychain, rootKeychain, stream, updater,
   type AvailableUpdate,
 } from './tauri';
-import type { Attestation, ThreadSummary } from './types';
+import type { Attestation, InboxRow, ThreadSummary } from './types';
 import { hashManifest } from './verify';
 
 // Tauri's invoke() rejects with a raw string when the Rust side returns
@@ -73,6 +73,19 @@ export class AppState {
   thread = $state<string>('annual-meeting');
   threadStatus = $state<ThreadStatus>({ kind: 'idle' });
   entries = $state<VerifiedEntry[]>([]);
+  /** v0.4.19: top-level navigation. After Unlock the user lands on the
+   *  email-style InboxPanel; clicking a row switches to 'thread'. The
+   *  sidebar's "Inbox" link returns. */
+  route = $state<'inbox' | 'thread'>('inbox');
+  /** v0.4.19: rows powering InboxPanel. Loaded by loadInbox(); refreshed
+   *  on directory_changed and on goToInbox(). */
+  inboxRows = $state<InboxRow[]>([]);
+  inboxStatus = $state<{ kind: 'idle' } | { kind: 'loading' }
+    | { kind: 'error'; message: string }>({ kind: 'idle' });
+  /** v0.4.19: per-thread seq of the last receipt this session has posted
+   *  (or pulled in from /inbox). markThreadRead consults this before
+   *  posting a fresh one so we don't loop on re-entering a thread. */
+  private myReceiptSeq: Map<string, number> = new Map();
   /** All observed threads on the hub. Populated by loadThreads();
    *  refreshed after post and on subscribe push. Used by ThreadList. */
   threads = $state<ThreadSummary[]>([]);
@@ -197,6 +210,11 @@ export class AppState {
 
   setView(v: View): void {
     this.view = v;
+    // v0.4.19: setView is the gesture used to enter Admin / Files from
+    // anywhere — it implies "leave Inbox if I'm on it." Without this,
+    // clicking Admin from Inbox would update view but route would stay
+    // 'inbox' and InboxPanel would keep rendering.
+    if (this.route !== 'thread') this.route = 'thread';
   }
 
   // ---- v0.4.0: admin (keymaster) flow ----------------------------------
@@ -573,14 +591,17 @@ export class AppState {
       if (this.inTauri) {
         void ensureNotificationPermission();
       }
-      await this.syncAndSubscribe();
-      // Load the thread list once we're connected. Non-blocking so a
-      // hub that's slow to respond on /threads doesn't gate the feed.
+      // v0.4.19: land on the email-style Inbox by default. Threads
+      // open on click. Fetch the directory once up-front so myAttestation
+      // resolves (AdminPanel visibility) without waiting for the first
+      // thread-view's sync to populate the directoryView.
+      this.route = 'inbox';
+      await this.client.fetchDirectory();
+      this.myAttestation = this.client.myAttestation();
+      await this.loadInbox();
+      // Sidebar thread list — non-blocking so a slow /threads doesn't
+      // gate the inbox render.
       void this.loadThreads();
-      // Cache the caller's attestation so AdminPanel knows whether
-      // to show. syncAndSubscribe → sync → fetchDirectory has
-      // already populated the client's directoryView by here.
-      this.myAttestation = this.client?.myAttestation() ?? null;
       // And on Tauri keymaster stations, surface the root keychain
       // state so AdminPanel can show "import root keys" if absent.
       if (this.inTauri) void this.refreshRootKeychain();
@@ -665,6 +686,12 @@ export class AppState {
       if (msg.type === 'directory_changed') {
         await this.client.fetchDirectory();
         this.myAttestation = this.client.myAttestation();
+        // v0.4.19: inbox row previews carry server-resolved display_name
+        // + role. A directory change can rename people / promote / demote,
+        // so the preview can go stale. Refetch if we're currently
+        // showing the inbox (cheap; otherwise it'll repopulate on the
+        // next goToInbox).
+        if (this.route === 'inbox') void this.loadInbox();
         return;
       }
       if (msg.type !== 'entry') return;
@@ -785,9 +812,90 @@ export class AppState {
     }
   }
 
+  /** v0.4.19: pull the landing-view bundle from /inbox and prime the
+   *  receipt-tracker so re-entering a thread the user already acked in
+   *  a prior session doesn't trigger a redundant receipt. */
+  async loadInbox(): Promise<void> {
+    if (this.client === null) return;
+    this.inboxStatus = { kind: 'loading' };
+    try {
+      const rows = await this.client.fetchInbox();
+      this.inboxRows = rows;
+      for (const row of rows) {
+        if (row.my_high_water >= 0) {
+          this.myReceiptSeq.set(row.thread, row.my_high_water);
+        }
+      }
+      this.inboxStatus = { kind: 'idle' };
+    } catch (err) {
+      this.inboxStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
+  /** v0.4.19: return to the email-style landing view. Tears down the
+   *  per-thread WS subscription (we'll re-open it the next time a
+   *  thread is opened) and re-loads the inbox so unread state reflects
+   *  any receipts posted during the just-finished thread session. */
+  async goToInbox(): Promise<void> {
+    this.teardown?.();
+    this.teardown = null;
+    this.entries = [];
+    this.seenIds = new Set();
+    this.replyOpen = null;
+    this.route = 'inbox';
+    await this.loadInbox();
+  }
+
+  /** v0.4.19: post a kind='receipt' entry acking the latest non-receipt
+   *  seq this client has loaded for the thread, IF that seq exceeds the
+   *  last receipt we (or any prior session of ours) posted. One receipt
+   *  per session per thread per new high-water — explicit choice made
+   *  during the design conversation ("every read is provable").
+   *
+   *  Receipts are entries: they pass through the throttle/quota layer
+   *  like any other post (§7.2) and get fanned out via /stream. They
+   *  carry the observed STH so the audit record commits to which tree
+   *  state the member acked.
+   *
+   *  Filtering kind='receipt' out of the chronological feed happens in
+   *  ThreadView (a receipt is not a message to a reader); they're still
+   *  in this.entries for the high-water computation here.
+   */
+  private async markThreadRead(thread: string): Promise<void> {
+    if (this.client === null) return;
+    let latestUserSeq = -1;
+    for (const ve of this.entries) {
+      if (ve.entry.kind === 'receipt') continue;
+      if (ve.entry.thread !== thread) continue;
+      if (ve.seq > latestUserSeq) latestUserSeq = ve.seq;
+    }
+    if (latestUserSeq < 0) return;
+    const lastReceipted = this.myReceiptSeq.get(thread) ?? -1;
+    if (latestUserSeq <= lastReceipted) return;
+    try {
+      // Prefer the STH the client already cached during the just-completed
+      // sync. fetchSth as a fallback so the receipt is never built on a
+      // stale tree (or null).
+      const sth = this.client.latestSth() ?? await this.client.fetchSth();
+      const receiptSeq = await this.client.postReceipt({
+        thread, highWaterSeq: latestUserSeq, observedSth: sth,
+      });
+      this.myReceiptSeq.set(thread, receiptSeq);
+    } catch {
+      // Receipt-posting is best-effort. A throttle/network failure here
+      // should not break the thread view; the user has already SEEN the
+      // entries, and we'll try again on the next thread enter.
+    }
+  }
+
   async switchThread(name: string): Promise<void> {
     if (this.client === null) return;
-    if (name === this.thread) return;
+    // v0.4.19: also covers the inbox→thread transition. If we're
+    // already showing the named thread AND we're in thread route, this
+    // is a no-op; otherwise we're either switching threads or returning
+    // from the inbox view and need to set up the subscription anew.
+    if (name === this.thread && this.route === 'thread') return;
+    this.route = 'thread';
     this.thread = name;
     // v0.4.9: persist last-viewed thread so the auth panel's thread
     // field pre-fills with where the user actually was on next launch,
@@ -813,5 +921,10 @@ export class AppState {
     this.teardown?.();
     this.teardown = null;
     await this.syncAndSubscribe();
+    // v0.4.19: after sync brings entries in, post a receipt if there
+    // are new non-receipt entries past our last ack. Fire-and-forget
+    // so the user is never waiting on the receipt round-trip; failures
+    // are non-fatal (see markThreadRead).
+    void this.markThreadRead(name);
   }
 }

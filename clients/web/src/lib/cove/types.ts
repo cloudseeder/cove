@@ -52,6 +52,31 @@ export interface ThreadSummary {
   parent_thread: string | null;
 }
 
+/** v0.4.19: returned by GET /inbox — one row per observed thread,
+ *  enriched with what the InboxPanel needs to render a one-line preview
+ *  + unread indicator. my_high_water is the per-thread seq of the
+ *  caller's latest kind='receipt' entry, -1 if they've never receipted
+ *  this thread. Unread = latest_seq > my_high_water. */
+export interface InboxRow {
+  thread: string;
+  entry_count: number;
+  latest_seq: number;
+  parent_thread: string | null;
+  my_high_water: number;
+  latest_entry: InboxPreviewEntry | null;
+}
+
+export interface InboxPreviewEntry {
+  id: string;
+  seq: number;
+  author: string;
+  kind: string;
+  created_at: string;
+  body_preview: string;
+  display_name: string | null;
+  role: string | null;
+}
+
 /** Mirrors cove.translog.STH. */
 export interface STH {
   tree_size: number;

@@ -301,6 +301,57 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             ],
         }
 
+    # ---- GET /inbox (v0.4.19) ------------------------------------------
+    # Landing view bundle: for every observed thread, return the latest
+    # non-receipt entry (so the client can render an "email row" preview)
+    # plus the caller's high-water seq (= max seq of receipts they've
+    # posted in that thread). Unread = latest_seq > my_high_water.
+    #
+    # One round-trip on Unlock; the client wires receipt-posting on
+    # thread-view to maintain the high-water. Display name + role are
+    # resolved against the in-memory directory so the row can render
+    # without a separate /directory hop for each preview.
+    _PREVIEW_MAX = 140
+
+    @api.get("/inbox")
+    def get_inbox(caller: str = Depends(require_session)) -> dict:
+        rows = []
+        for t, n, s, parent in overview.thread_summaries():
+            latest = store.latest_non_receipt(t)
+            high_water = store.caller_receipt_high_water(t, caller)
+            preview_entry = None
+            if latest is not None:
+                ev, ev_seq = latest
+                author_name = None
+                author_role = None
+                if directory is not None:
+                    att = directory.resolve(ev.author)
+                    if att is not None:
+                        author_name = att.display_name
+                        author_role = att.role
+                body = ev.body or ""
+                if len(body) > _PREVIEW_MAX:
+                    body = body[:_PREVIEW_MAX].rstrip() + "…"
+                preview_entry = {
+                    "id": ev.id,
+                    "seq": ev_seq,
+                    "author": ev.author,
+                    "kind": ev.kind,
+                    "created_at": ev.created_at,
+                    "body_preview": body,
+                    "display_name": author_name,
+                    "role": author_role,
+                }
+            rows.append({
+                "thread": t,
+                "entry_count": n,
+                "latest_seq": s,
+                "parent_thread": parent,
+                "my_high_water": high_water,
+                "latest_entry": preview_entry,
+            })
+        return {"threads": rows}
+
     # ---- GET /overview (§6) --------------------------------------------
     @api.get("/overview")
     def get_overview(thread: str = Query(...),

@@ -23,7 +23,8 @@ import {
   verifyDirectoryManifest, verifyEntry, verifyInclusion, verifySth,
 } from './verify';
 import type {
-  Attestation, BlobRef, DirectoryManifest, Entry, InclusionProof, STH, ThreadSummary,
+  Attestation, BlobRef, DirectoryManifest, Entry, InboxRow, InclusionProof,
+  STH, ThreadSummary,
 } from './types';
 
 /**
@@ -378,6 +379,25 @@ export class Client {
   async fetchThreads(): Promise<ThreadSummary[]> {
     const data = await this.requestJson('GET', '/threads');
     return data.threads as ThreadSummary[];
+  }
+
+  /** v0.4.19: GET /inbox — landing-view bundle. One row per observed
+   *  thread carrying the latest non-receipt entry preview plus the
+   *  caller's high-water (= seq of their latest receipt in that thread).
+   *  Drives InboxPanel; single round-trip so Unlock → painted-inbox is
+   *  fast even with many threads. */
+  async fetchInbox(): Promise<InboxRow[]> {
+    this.requireAuth();
+    const data = await this.requestJson('GET', '/inbox');
+    return data.threads as InboxRow[];
+  }
+
+  /** v0.4.19: latest STH this client has fetched, or null. Used by
+   *  state to attach an audit-grade observed_sth to receipts without
+   *  paying for a fresh /sth fetch on every thread-view (sync just
+   *  ran one). Falls back to fetchSth() at the call site if null. */
+  latestSth(): STH | null {
+    return this.lastSth;
   }
 
   // ---- sync (§7 + client-spec §4.1 + §5) ----------------------------
