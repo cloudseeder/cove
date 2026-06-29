@@ -287,6 +287,10 @@ export class AppState {
         attestations: [...current.attestations, newAtt],
         revocations: [...current.revocations],
         prevManifestHash: hashManifest(current),
+        // v0.4.13: forward the org's default_thread hint so attesting
+        // a new member doesn't silently strip it. If it wasn't set,
+        // this stays undefined and the canonical payload is unchanged.
+        defaultThread: current.default_thread,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };

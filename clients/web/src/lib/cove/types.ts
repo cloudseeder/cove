@@ -107,5 +107,11 @@ export interface DirectoryManifest {
   revocations: Revocation[];
   updated_at: string;
   prev_manifest_hash: string;
+  /** v0.4.13: optional soft hint — "land new members on this thread
+   *  after attestation." Hubs can omit. Pre-v0.4.13 manifests don't
+   *  have the field at all; manifestContent() must NOT include it when
+   *  undefined or signature verification of those older manifests
+   *  fails. */
+  default_thread?: string;
   sig: string;
 }

@@ -50,7 +50,7 @@ function attContent(att: Omit<Attestation, 'sig'>): Record<string, unknown> {
 }
 
 function manifestContent(m: Omit<DirectoryManifest, 'sig'>): Record<string, unknown> {
-  return {
+  const out: Record<string, unknown> = {
     org: m.org,
     // Full signed attestations are passed through verbatim — each
     // attestation's own sig is part of the manifest's signed payload.
@@ -59,6 +59,13 @@ function manifestContent(m: Omit<DirectoryManifest, 'sig'>): Record<string, unkn
     updated_at: m.updated_at,
     prev_manifest_hash: m.prev_manifest_hash,
   };
+  // v0.4.13: omit when undefined so this is byte-identical to the
+  // pre-v0.4.13 payload for manifests that don't carry the hint. Must
+  // match Python identity.py::_manifest_content and verify.ts.
+  if (m.default_thread != null) {
+    out.default_thread = m.default_thread;
+  }
+  return out;
 }
 
 /** Build and root-sign a single Attestation. The keymaster fills
@@ -106,6 +113,10 @@ export async function issueDirectory(
     revocations: Revocation[];
     updatedAt?: string;
     prevManifestHash?: string;
+    /** v0.4.13: forward the existing manifest's default_thread when
+     *  re-issuing so an admin who's only updating attestations doesn't
+     *  silently strip the hint. Set explicitly to override. */
+    defaultThread?: string | null;
   },
 ): Promise<DirectoryManifest> {
   const org = opts.org ?? await signer.pubkey();
@@ -115,6 +126,7 @@ export async function issueDirectory(
     revocations: opts.revocations,
     updated_at: opts.updatedAt ?? new Date().toISOString(),
     prev_manifest_hash: opts.prevManifestHash ?? ZERO_PREV_MANIFEST,
+    ...(opts.defaultThread != null ? { default_thread: opts.defaultThread } : {}),
   };
   const sig = await signer.sign(canonicalize(manifestContent(m)));
   return { ...m, sig };

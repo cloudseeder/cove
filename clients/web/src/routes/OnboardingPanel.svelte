@@ -27,12 +27,12 @@
 
   let hubUrl = $state('https://cove.oap.dev');
   let nameHint = $state('');
-  // v0.4.12: a brand-new member has no way to know which thread to
-  // land on — the question is meaningless to them. Default to 'general'
-  // (or whatever they last visited if they happen to have prior
-  // localStorage state from this device); once attested, the sidebar
-  // shows the real thread list and they can navigate.
-  const initialThread = (typeof localStorage !== 'undefined'
+  // Default thread for the new member's first landing. Priority:
+  //   1. v0.4.13+ hub-side default_thread hint from /directory
+  //   2. localStorage cove.thread (this device's prior Cove history)
+  //   3. 'general' as a final fallback
+  // Resolved at start() time so the hub URL the user typed is honored.
+  const localFallback = (typeof localStorage !== 'undefined'
     && localStorage.getItem('cove.thread')) || 'general';
 
   // ---- derived views into the AppState onboarding state machine ----
@@ -47,10 +47,27 @@
 
   async function start() {
     if (!nameHint.trim()) return;
+    const url = hubUrl.trim();
+    // Try the v0.4.13+ hub hint. Best-effort: if the hub is older, the
+    // network is flaky, or the response isn't shaped as expected, fall
+    // back to the local default. Either way the user lands somewhere.
+    let chosenThread = localFallback;
+    try {
+      const res = await fetch(`${url}/directory`, { method: 'GET' });
+      if (res.ok) {
+        const manifest = await res.json();
+        if (typeof manifest?.default_thread === 'string'
+            && manifest.default_thread.length > 0) {
+          chosenThread = manifest.default_thread;
+        }
+      }
+    } catch {
+      // network error → silent fallback to localFallback
+    }
     await app.generateAndPair({
-      hubUrl: hubUrl.trim(),
+      hubUrl: url,
       nameHint: nameHint.trim(),
-      thread: sanitizeThreadName(initialThread) || 'general',
+      thread: sanitizeThreadName(chosenThread) || 'general',
     });
   }
 

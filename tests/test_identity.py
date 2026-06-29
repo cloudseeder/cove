@@ -177,6 +177,77 @@ def test_manifest_roundtrip_verifies(root_keypair, keypair):
     assert verify_directory_manifest(m) is True
 
 
+# ---- v0.4.13: default_thread soft hint ---------------------------------
+#
+# Optional field: when None, omitted from the canonical payload AND the
+# wire-form dict so pre-v0.4.13 manifests round-trip byte-identical
+# (their signatures still verify). When set, included in both.
+
+def test_manifest_without_default_thread_omits_field_from_wire(root_keypair, keypair):
+    """Backward-compat: an unset default_thread must NOT appear in JSON."""
+    from cove.identity import manifest_to_dict
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m = issue_directory(root_priv, org=root_pub,
+                        attestations=[att], revocations=[],
+                        updated_at="2026-06-01T00:00:00+00:00")
+    d = manifest_to_dict(m)
+    assert "default_thread" not in d
+    assert verify_directory_manifest(m) is True
+
+
+def test_manifest_with_default_thread_round_trips(root_keypair, keypair):
+    """A manifest carrying default_thread verifies, the field round-trips
+    through manifest_from_dict, and the canonical payload changes — i.e.
+    setting the field actually affects the signature."""
+    from cove.identity import manifest_from_dict, manifest_to_dict
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m = issue_directory(root_priv, org=root_pub,
+                        attestations=[att], revocations=[],
+                        updated_at="2026-06-01T00:00:00+00:00",
+                        default_thread="announcements")
+    assert verify_directory_manifest(m) is True
+    d = manifest_to_dict(m)
+    assert d["default_thread"] == "announcements"
+    # Round-trip through dict reconstructs an equivalent manifest that
+    # still verifies under the original signature.
+    m2 = manifest_from_dict(d)
+    assert m2.default_thread == "announcements"
+    assert verify_directory_manifest(m2) is True
+
+
+def test_manifest_with_and_without_default_thread_have_different_sigs(root_keypair, keypair):
+    """Sanity: setting the field is observable in the signature."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m_no = issue_directory(root_priv, org=root_pub,
+                           attestations=[att], revocations=[],
+                           updated_at="2026-06-01T00:00:00+00:00")
+    m_yes = issue_directory(root_priv, org=root_pub,
+                            attestations=[att], revocations=[],
+                            updated_at="2026-06-01T00:00:00+00:00",
+                            default_thread="announcements")
+    assert m_no.sig != m_yes.sig
+
+
+def test_manifest_tampered_default_thread_fails_verify(root_keypair, keypair):
+    """Changing default_thread post-sign invalidates the manifest signature."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m = issue_directory(root_priv, org=root_pub,
+                        attestations=[att], revocations=[],
+                        updated_at="2026-06-01T00:00:00+00:00",
+                        default_thread="announcements")
+    assert verify_directory_manifest(m) is True
+    m.default_thread = "sneaky-redirect"
+    assert verify_directory_manifest(m) is False
+
+
 def test_tampered_manifest_fails_verify(root_keypair, keypair):
     """Adding an entry to the manifest after signing must invalidate."""
     root_priv, root_pub = root_keypair

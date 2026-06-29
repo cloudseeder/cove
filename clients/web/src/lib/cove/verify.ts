@@ -140,13 +140,19 @@ export function verifyAttestation(att: Attestation): boolean {
 }
 
 function manifestContent(m: DirectoryManifest): Record<string, unknown> {
-  return {
+  const out: Record<string, unknown> = {
     org: m.org,
     attestations: m.attestations.map((a) => ({ ...a })),
     revocations: m.revocations.map((r) => ({ ...r })),
     updated_at: m.updated_at,
     prev_manifest_hash: m.prev_manifest_hash,
   };
+  // v0.4.13: include only when set so pre-v0.4.13 manifests round-trip
+  // byte-identical. Must match Python identity.py::_manifest_content.
+  if (m.default_thread != null) {
+    out.default_thread = m.default_thread;
+  }
+  return out;
 }
 
 export function verifyDirectoryManifest(m: DirectoryManifest): boolean {

@@ -147,6 +147,11 @@ def main() -> int:
                             "defaults to slugified display_name). Each row "
                             "becomes a root-signed attestation with the real "
                             "name the UI renders.")
+    p.add_argument("--default-thread", default=None,
+                   help="soft hint clients use to land new members on a "
+                        "specific thread after attestation (e.g. "
+                        "'announcements'). Optional — omit to let clients "
+                        "fall back to their own default ('general').")
     p.add_argument("--force", action="store_true",
                    help="overwrite an existing state dir (DESTRUCTIVE)")
     args = p.parse_args()
@@ -209,6 +214,7 @@ def main() -> int:
         root_priv, org=root_pub,
         attestations=attestations, revocations=[],
         updated_at=issued_at,
+        default_thread=args.default_thread,
     )
     manifest_dict = manifest_to_dict(manifest)
     _write(state / "manifest.json",

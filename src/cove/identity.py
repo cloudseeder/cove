@@ -58,12 +58,21 @@ class DirectoryManifest:
     stale update is detectable as 'this prev_hash isn't the current
     head') and an append-only audit trail of admin actions (you can
     walk the chain back through every directory change).
+
+    `default_thread` (v0.4.13+) is an OPTIONAL soft hint to clients:
+    "this is the thread a new member should land on after attestation."
+    Backward-compat: when None it is OMITTED from the canonical payload
+    so old manifests still verify with their existing signature.
+    Present-and-set manifests canonicalize differently from absent ones,
+    so a pre-v0.4.13 client will fail to verify a manifest where the
+    field is set — orchestrate client-update before hub-reissue.
     """
     org: str                        # root pubkey
     attestations: list[Attestation] = field(default_factory=list)
     revocations: list[Revocation] = field(default_factory=list)
     updated_at: str = ""
     prev_manifest_hash: str = _ZERO_PREV_MANIFEST
+    default_thread: Optional[str] = None
     sig: str = ""                   # root sig over canonical(manifest minus sig)
 
 
@@ -90,13 +99,19 @@ def _att_content(att: Attestation) -> dict:
 
 
 def _manifest_content(m: DirectoryManifest) -> dict:
-    return {
+    out = {
         "org": m.org,
         "attestations": [asdict(a) for a in m.attestations],
         "revocations": [asdict(r) for r in m.revocations],
         "updated_at": m.updated_at,
         "prev_manifest_hash": m.prev_manifest_hash,
     }
+    # Conditional inclusion preserves byte-identical canonicalization for
+    # pre-v0.4.13 manifests that never had this field. See DirectoryManifest
+    # docstring for the orchestration note.
+    if m.default_thread is not None:
+        out["default_thread"] = m.default_thread
+    return out
 
 
 def hash_manifest(m: DirectoryManifest) -> str:
@@ -109,8 +124,9 @@ def hash_manifest(m: DirectoryManifest) -> str:
 
 def manifest_to_dict(m: DirectoryManifest) -> dict:
     """Wire/disk JSON form. Every signed field included so a round trip
-    preserves what the sig covers."""
-    return {
+    preserves what the sig covers. `default_thread` is omitted when None
+    to keep the byte-identical round-trip property for older manifests."""
+    out = {
         "org": m.org,
         "attestations": [asdict(a) for a in m.attestations],
         "revocations": [asdict(r) for r in m.revocations],
@@ -118,6 +134,9 @@ def manifest_to_dict(m: DirectoryManifest) -> dict:
         "prev_manifest_hash": m.prev_manifest_hash,
         "sig": m.sig,
     }
+    if m.default_thread is not None:
+        out["default_thread"] = m.default_thread
+    return out
 
 
 def manifest_from_dict(d: dict) -> DirectoryManifest:
@@ -129,6 +148,7 @@ def manifest_from_dict(d: dict) -> DirectoryManifest:
         org=d["org"], attestations=atts, revocations=revs,
         updated_at=d.get("updated_at", ""),
         prev_manifest_hash=d.get("prev_manifest_hash", _ZERO_PREV_MANIFEST),
+        default_thread=d.get("default_thread"),
         sig=d.get("sig", ""),
     )
 
@@ -182,6 +202,7 @@ def issue_directory(root_private_hex: str, *, org: str,
                     revocations: list[Revocation],
                     updated_at: Optional[str] = None,
                     prev_manifest_hash: str = _ZERO_PREV_MANIFEST,
+                    default_thread: Optional[str] = None,
                     ) -> DirectoryManifest:
     """Build and sign a directory manifest with the ROOT key. Admin-tool only.
 
@@ -189,6 +210,10 @@ def issue_directory(root_private_hex: str, *, org: str,
     current head's hash (from `hash_manifest`) for any non-genesis update.
     The hub will reject an update whose prev hash doesn't match its current
     head (StaleManifestError, §2.3 concurrency control).
+
+    `default_thread` (v0.4.13+) is the soft hint clients should land a
+    new member on after attestation. Omit (None) to keep canonicalization
+    byte-identical to pre-v0.4.13 manifests.
     """
     m = DirectoryManifest(
         org=org,
@@ -196,6 +221,7 @@ def issue_directory(root_private_hex: str, *, org: str,
         revocations=list(revocations),
         updated_at=updated_at or _now(),
         prev_manifest_hash=prev_manifest_hash,
+        default_thread=default_thread,
         sig="",
     )
     m.sig = crypto.sign(root_private_hex, crypto.canonicalize(_manifest_content(m)))
