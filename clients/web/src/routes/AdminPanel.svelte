@@ -157,6 +157,36 @@
     rolesDraft = { ...rolesDraft, [role]: Array.from(current).sort() };
   }
 
+  let newRole = $state('');
+  /** v0.4.26: add a brand-new role to the draft so the keymaster can
+   *  define caps for a role BEFORE anyone is attested with it (e.g.
+   *  "sales" or "engineering" in a non-LWCCOA org). The role name is
+   *  open-namespace, but we sanitize whitespace so a typo'd "Sales "
+   *  doesn't end up distinct from "Sales". */
+  function addRole() {
+    if (rolesDraft === null) return;
+    const name = newRole.trim();
+    if (!name || name in rolesDraft) return;
+    rolesDraft = { ...rolesDraft, [name]: [] };
+    newRole = '';
+  }
+
+  /** v0.4.26: drop a role from the draft. Existing attestations with
+   *  that role string remain valid (their attestation isn't touched —
+   *  only the capability mapping is). They simply have no capabilities
+   *  under the new manifest. The keymaster can still update those
+   *  members' roles via the Membership editor. */
+  function removeRole(role: string) {
+    if (rolesDraft === null) return;
+    const next = { ...rolesDraft };
+    delete next[role];
+    rolesDraft = next;
+  }
+
+  function roleIsObservedInAttestations(role: string): boolean {
+    return app.members.some((m) => m.role === role);
+  }
+
   function isDirty(): boolean {
     if (rolesDraft === null) return false;
     // Compare draft to the effective map normalized the same way.
@@ -682,12 +712,25 @@
                 {#each CAPABILITIES as cap}
                   <th>{cap}</th>
                 {/each}
+                <th class="remove-col"></th>
               </tr>
             </thead>
             <tbody>
-              {#each observedRoles as role}
+              {#each Object.keys(rolesDraft).sort((a, b) => {
+                const priors: Record<string, number> = { board: 0, officer: 1, member: 2 };
+                const pa = priors[a] ?? 99, pb = priors[b] ?? 99;
+                if (pa !== pb) return pa - pb;
+                return a.localeCompare(b);
+              }) as role}
                 <tr>
-                  <td class="role-col"><code>{role}</code></td>
+                  <td class="role-col">
+                    <code>{role}</code>
+                    {#if !roleIsObservedInAttestations(role)}
+                      <span class="role-tag muted" title="No attested members have this role yet">
+                        new
+                      </span>
+                    {/if}
+                  </td>
                   {#each CAPABILITIES as cap}
                     <td>
                       <input type="checkbox"
@@ -695,16 +738,35 @@
                         onchange={() => toggleCap(role, cap)} />
                     </td>
                   {/each}
+                  <td class="remove-col">
+                    <button type="button" class="role-remove"
+                      title={roleIsObservedInAttestations(role)
+                        ? 'Remove from cap map. Existing attestations keep their role string but lose all caps under the new manifest.'
+                        : 'Remove this role from the draft.'}
+                      onclick={() => removeRole(role)}>×</button>
+                  </td>
                 </tr>
               {/each}
             </tbody>
           </table>
+
+          <form class="add-role" onsubmit={(e) => { e.preventDefault(); addRole(); }}>
+            <input type="text" bind:value={newRole}
+              placeholder="Add role… (e.g. sales, engineering)"
+              autocapitalize="off" autocorrect="off" spellcheck="false" />
+            <button type="submit" class="ghost"
+              disabled={!newRole.trim() || (rolesDraft !== null && newRole.trim() in rolesDraft)}>
+              Add
+            </button>
+          </form>
+
           <p class="muted small">
             Capabilities are protocol-defined.
             <code>admin</code> sees the admin panel + pending queue.
             <code>archive</code> archives or reopens threads.
-            Saving root-signs an updated directory manifest — every
-            connected client refreshes immediately via /stream.
+            Roles themselves are org-namespaced — add the ones your
+            org actually uses. Saving root-signs an updated directory
+            manifest; every connected client refreshes via /stream.
           </p>
           {#if app.adminStatus.kind === 'error'}
             <p class="failure" role="alert">{app.adminStatus.message}</p>
@@ -1068,6 +1130,58 @@
   .role-matrix .muted.small {
     font-size: 0.78rem; margin: 0.85rem 0 0;
     line-height: 1.5;
+  }
+  /* v0.4.26: add-role + remove affordances. */
+  .role-matrix .add-role {
+    display: flex;
+    gap: 0.5rem;
+    margin: 0.85rem 0 0;
+  }
+  .role-matrix .add-role input {
+    flex: 1;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.6rem;
+    font: inherit;
+    font-size: 0.88rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .role-matrix .add-role input:focus {
+    outline: none; border-color: rgba(212, 175, 55, 0.5);
+  }
+  .role-matrix .add-role button {
+    padding: 0.4rem 1rem;
+    font-size: 0.86rem;
+  }
+  .role-matrix th.remove-col,
+  .role-matrix td.remove-col {
+    width: 1.6rem;
+    text-align: center;
+  }
+  .role-matrix .role-remove {
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--muted);
+    width: 1.3rem; height: 1.3rem;
+    border-radius: 50%;
+    cursor: pointer;
+    font-size: 0.95rem;
+    line-height: 1;
+    padding: 0;
+  }
+  .role-matrix .role-remove:hover {
+    background: rgba(220, 38, 38, 0.08);
+    border-color: rgba(220, 38, 38, 0.4);
+    color: #fca5a5;
+  }
+  .role-matrix .role-tag.muted {
+    margin-left: 0.5rem;
+    color: var(--muted);
+    background: transparent;
+    border: 1px dashed var(--border);
+    font-size: 0.62rem;
   }
   .org-settings .muted {
     color: var(--muted); margin: 0 0 0.8rem; font-size: 0.85rem;
