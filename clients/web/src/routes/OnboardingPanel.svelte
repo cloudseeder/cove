@@ -27,7 +27,13 @@
 
   let hubUrl = $state('https://cove.oap.dev');
   let nameHint = $state('');
-  let thread = $state('annual-meeting');
+  // v0.4.12: a brand-new member has no way to know which thread to
+  // land on — the question is meaningless to them. Default to 'general'
+  // (or whatever they last visited if they happen to have prior
+  // localStorage state from this device); once attested, the sidebar
+  // shows the real thread list and they can navigate.
+  const initialThread = (typeof localStorage !== 'undefined'
+    && localStorage.getItem('cove.thread')) || 'general';
 
   // ---- derived views into the AppState onboarding state machine ----
   const status = $derived(app.onboardStatus);
@@ -44,7 +50,7 @@
     await app.generateAndPair({
       hubUrl: hubUrl.trim(),
       nameHint: nameHint.trim(),
-      thread: sanitizeThreadName(thread) || 'annual-meeting',
+      thread: sanitizeThreadName(initialThread) || 'general',
     });
   }
 
@@ -88,13 +94,6 @@
       <span>Hub URL</span>
       <input type="url" bind:value={hubUrl}
         placeholder="https://cove.oap.dev" disabled={isGenerating} />
-    </label>
-
-    <label>
-      <span>Thread to open after approval</span>
-      <input type="text" bind:value={thread}
-        placeholder="annual-meeting" disabled={isGenerating}
-        autocapitalize="off" autocorrect="off" spellcheck="false" />
     </label>
 
     {#if isError && status.kind === 'error'}
