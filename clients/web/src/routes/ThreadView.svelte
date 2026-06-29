@@ -59,16 +59,46 @@
   // feed. Receipts are noise to readers — they're auto-posted on view
   // for the audit trail. They stay in app.entries (state needs them for
   // the high-water computation in markThreadRead).
+  //
+  // v0.4.25: hide kind='archive' / 'reopen' too. They're governance
+  // metadata, surfaced via the archive banner above the feed. Still in
+  // app.entries + the log — the verification reveal exposes them.
+  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen']);
   const topLevel = $derived(
     app.entries.filter((ve) =>
-      ve.entry.parents.length === 0 && ve.entry.kind !== 'receipt',
+      ve.entry.parents.length === 0 && !_HIDDEN_KINDS.has(ve.entry.kind),
     ),
   );
-  /** v0.4.19: feed count excludes receipts (auto-posted on view; not
-   *  shown to readers). */
+  /** v0.4.19/0.4.25: feed count excludes the kinds hidden above
+   *  (receipts + archive metadata). */
   const visibleEntryCount = $derived(
-    app.entries.filter((ve) => ve.entry.kind !== 'receipt').length,
+    app.entries.filter((ve) => !_HIDDEN_KINDS.has(ve.entry.kind)).length,
   );
+
+  /** v0.4.25: archive state + the affordance to flip it. The banner
+   *  shows whenever the current thread is archived; the action button
+   *  shows only if the caller has the 'archive' capability. */
+  const archived = $derived(app.isThreadArchived(app.thread));
+  const canArchive = $derived(app.hasCapability('archive'));
+  let archiveDialog = $state<{ kind: 'archive' | 'reopen' } | null>(null);
+  let archiveRationale = $state('');
+
+  function openArchiveDialog(kind: 'archive' | 'reopen') {
+    archiveDialog = { kind };
+    archiveRationale = '';
+  }
+  function closeArchiveDialog() {
+    archiveDialog = null;
+  }
+  async function submitArchive() {
+    if (!archiveDialog) return;
+    await app.setThreadArchived(
+      app.thread,
+      archiveDialog.kind === 'archive',
+      archiveRationale.trim(),
+    );
+    archiveDialog = null;
+  }
   function replyCountFor(parentId: string | null): number {
     if (!parentId) return 0;
     let n = 0;
@@ -114,8 +144,58 @@
           {:else}
             <span class="status pulse" title="History intact ✓">✓ log intact</span>
           {/if}
+          {#if canArchive}
+            {#if archived}
+              <button type="button" class="ghost archive-btn"
+                onclick={() => openArchiveDialog('reopen')}>Reopen</button>
+            {:else}
+              <button type="button" class="ghost archive-btn"
+                onclick={() => openArchiveDialog('archive')}>Archive</button>
+            {/if}
+          {/if}
         </div>
       </header>
+
+      {#if archived}
+        <div class="archive-banner" role="status">
+          <span aria-hidden="true">📁</span>
+          <span>This thread is archived — read-only by convention.
+            Posts still work; clients hide it from Inbox until reopened.</span>
+        </div>
+      {/if}
+
+      {#if archiveDialog}
+        <div class="archive-dialog">
+          <h3>
+            {archiveDialog.kind === 'archive' ? 'Archive' : 'Reopen'}
+            <code>{app.thread}</code>?
+          </h3>
+          <p class="muted">
+            {#if archiveDialog.kind === 'archive'}
+              Hides the thread from Inbox + sidebar for everyone in the
+              org. Reversible — anyone with the 'archive' capability can
+              reopen it. A signed kind='archive' entry lands in the log.
+            {:else}
+              Returns the thread to the active Inbox. A signed kind='reopen'
+              entry lands in the log so the action is auditable.
+            {/if}
+          </p>
+          <label>
+            <span>Rationale (becomes the entry's body)</span>
+            <input type="text" bind:value={archiveRationale}
+              placeholder={archiveDialog.kind === 'archive'
+                ? 'Inactive since the annual meeting'
+                : 'Topic resurfaced'} />
+          </label>
+          <div class="archive-actions">
+            <button type="button" class="ghost"
+              onclick={closeArchiveDialog}>Cancel</button>
+            <button type="button" onclick={submitArchive}>
+              {archiveDialog.kind === 'archive' ? 'Archive thread' : 'Reopen thread'}
+            </button>
+          </div>
+        </div>
+      {/if}
 
       <div class="feed" class:chat-mode={app.viewMode === 'chat'}>
         {#if topLevel.length === 0}
@@ -245,6 +325,49 @@
     padding: 0 0.7rem;
     background: var(--bg);
   }
+  /* v0.4.25: archive affordances. The banner sits between the header
+     and the feed so it's read before the first message. The dialog is
+     inline (not modal) — it sits in the same column. */
+  .archive-banner {
+    display: flex; gap: 0.6rem; align-items: center;
+    background: rgba(212, 175, 55, 0.08);
+    border: 1px solid rgba(212, 175, 55, 0.3);
+    border-radius: 8px;
+    padding: 0.6rem 0.85rem;
+    margin: 0 0 1rem;
+    font-size: 0.88rem;
+    color: var(--fg);
+  }
+  .archive-dialog {
+    border: 1px dashed rgba(212, 175, 55, 0.4);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    background: var(--panel);
+    margin: 0 0 1rem;
+  }
+  .archive-dialog h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+  .archive-dialog .muted {
+    color: var(--muted); margin: 0 0 0.7rem; font-size: 0.86rem;
+  }
+  .archive-dialog label { display: block; margin: 0.5rem 0; }
+  .archive-dialog label span {
+    display: block; font-size: 0.78rem; color: var(--muted);
+    margin-bottom: 0.25rem;
+  }
+  .archive-dialog input {
+    width: 100%; box-sizing: border-box;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.45rem 0.65rem;
+    font: inherit;
+    font-size: 0.9rem;
+  }
+  .archive-actions {
+    display: flex; justify-content: flex-end; gap: 0.5rem;
+    margin-top: 0.7rem;
+  }
+  button.archive-btn { padding: 0.32rem 0.85rem; font-size: 0.85rem; }
   .empty {
     color: var(--muted);
     text-align: center;

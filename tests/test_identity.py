@@ -248,6 +248,129 @@ def test_manifest_tampered_default_thread_fails_verify(root_keypair, keypair):
     assert verify_directory_manifest(m) is False
 
 
+# ---- capabilities_by_role (v0.4.25) ----------------------------------
+
+def test_capabilities_for_role_default_grants_board_admin_and_archive():
+    from cove.identity import capabilities_for_role
+    # No manifest → use the hardcoded default mapping (board → admin + archive).
+    assert capabilities_for_role("board", None) == {"admin", "archive"}
+    assert capabilities_for_role("officer", None) == set()
+    assert capabilities_for_role("member", None) == set()
+    assert capabilities_for_role(None, None) == set()
+
+
+def test_capabilities_for_role_honors_explicit_manifest_mapping(root_keypair, keypair):
+    """When the manifest sets capabilities_by_role, that map is
+    authoritative — a role missing from it has no caps, not the
+    default. This is the protocol-level seam that lets a non-LWCCOA
+    org rename 'board' to 'director' (or whatever) without code change."""
+    from cove.identity import capabilities_for_role
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub, role="director")
+    m = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+        capabilities_by_role={"director": ["admin", "archive"]},
+    )
+    assert capabilities_for_role("director", m) == {"admin", "archive"}
+    # Roles not in the explicit map get NOTHING — default does not bleed in.
+    assert capabilities_for_role("board", m) == set()
+
+
+def test_manifest_with_capabilities_round_trips(root_keypair, keypair):
+    from cove.identity import manifest_from_dict, manifest_to_dict
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+        capabilities_by_role={"board": ["archive", "admin"]},  # input unsorted
+    )
+    assert verify_directory_manifest(m) is True
+    d = manifest_to_dict(m)
+    # Normalized on the way out (sorted dedupe per role) so the wire form
+    # is stable across input orderings.
+    assert d["capabilities_by_role"] == {"board": ["admin", "archive"]}
+    m2 = manifest_from_dict(d)
+    assert m2.capabilities_by_role == {"board": ["admin", "archive"]}
+    assert verify_directory_manifest(m2) is True
+
+
+def test_manifest_without_capabilities_omits_field_from_wire(root_keypair, keypair):
+    """Byte-identical canonicalization for pre-v0.4.25 manifests: when
+    the field is None it must NOT appear on the wire (so old verifiers
+    that don't know the field can still re-canonicalize and verify)."""
+    from cove.identity import manifest_to_dict
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    d = manifest_to_dict(m)
+    assert "capabilities_by_role" not in d
+
+
+def test_manifest_with_and_without_capabilities_have_different_sigs(root_keypair, keypair):
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    base_args = dict(
+        org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    m_no = issue_directory(root_priv, **base_args)
+    m_yes = issue_directory(
+        root_priv, **base_args,
+        capabilities_by_role={"board": ["admin"]},
+    )
+    assert m_no.sig != m_yes.sig
+
+
+def test_directory_caller_capabilities_resolves_via_manifest(root_keypair, keypair):
+    """End-to-end through Directory.caller_capabilities: an officer-role
+    member with an officer-grants-admin manifest gets admin. Same
+    member under the default mapping gets nothing."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub, role="officer")
+
+    # Default mapping — officer has no caps.
+    m_default = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    d = Directory.from_manifest(m_default)
+    assert d.caller_capabilities(member_pub) == set()
+
+    # Explicit mapping — officer gets admin.
+    m_custom = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:01+00:00",
+        capabilities_by_role={"officer": ["admin"]},
+    )
+    d2 = Directory.from_manifest(m_custom)
+    assert d2.caller_capabilities(member_pub) == {"admin"}
+
+
+def test_tampered_capabilities_field_fails_verify(root_keypair, keypair):
+    """Post-sign edit to the cap map invalidates the signature."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+        capabilities_by_role={"board": ["admin"]},
+    )
+    assert verify_directory_manifest(m) is True
+    m.capabilities_by_role = {"board": ["admin", "archive"]}
+    assert verify_directory_manifest(m) is False
+
+
 def test_tampered_manifest_fails_verify(root_keypair, keypair):
     """Adding an entry to the manifest after signing must invalidate."""
     root_priv, root_pub = root_keypair

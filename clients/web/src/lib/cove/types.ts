@@ -29,7 +29,7 @@ export interface Receipt {
 export interface Entry {
   thread: string;
   author: string; // ed25519 pubkey hex
-  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch';
+  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch' | 'archive' | 'reopen';
   created_at: string; // rfc3339
   parents: string[];
   body: string;
@@ -44,12 +44,17 @@ export interface Entry {
 /** Returned by GET /threads — one row per observed thread. Sorted
  *  by latest_seq descending. Used by the client-side thread navigation.
  *  parent_thread (v0.2) is set when this thread was spawned via a
- *  kind='branch' entry in another thread. */
+ *  kind='branch' entry in another thread.
+ *
+ *  archived (v0.4.25) reflects the latest archive|reopen entry by a
+ *  caller with the 'archive' capability. Server-computed under the
+ *  current manifest so the rule matches what the hub enforces. */
 export interface ThreadSummary {
   thread: string;
   entry_count: number;
   latest_seq: number;
   parent_thread: string | null;
+  archived: boolean;
 }
 
 /** v0.4.19: returned by GET /inbox — one row per observed thread,
@@ -64,6 +69,7 @@ export interface InboxRow {
   parent_thread: string | null;
   my_high_water: number;
   latest_entry: InboxPreviewEntry | null;
+  archived: boolean;
 }
 
 export interface InboxPreviewEntry {
@@ -138,5 +144,22 @@ export interface DirectoryManifest {
    *  undefined or signature verification of those older manifests
    *  fails. */
   default_thread?: string;
+  /** v0.4.25: org-defined role → capability map. Same
+   *  byte-identical-when-absent rule as default_thread. Drives
+   *  hasCapability() in state and require_capability on the hub. */
+  capabilities_by_role?: Record<string, string[]>;
   sig: string;
 }
+
+/** v0.4.25: hardcoded fallback when the manifest doesn't set
+ *  capabilities_by_role. Mirrors cove.identity.DEFAULT_CAPABILITIES_BY_ROLE.
+ *  Preserves the pre-v0.4.25 behavior (only board has admin + archive). */
+export const DEFAULT_CAPABILITIES_BY_ROLE: Record<string, string[]> = {
+  board: ['admin', 'archive'],
+};
+
+/** v0.4.25: closed set of protocol-defined capability strings.
+ *  Manifests may reference unrecognized names — they're tolerated
+ *  (forward-compat) but never grant anything. */
+export const CAPABILITIES = ['admin', 'archive'] as const;
+export type Capability = typeof CAPABILITIES[number];

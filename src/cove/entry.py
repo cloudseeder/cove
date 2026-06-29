@@ -19,7 +19,16 @@ from . import crypto
 # itself is a regular signed log entry and lives in the PARENT thread;
 # the sub-thread is open-namespace and materializes on first post like
 # any other thread does.
-KINDS = {"notice", "post", "reply", "supersede", "membership", "receipt", "revoke", "branch"}
+#
+# 'archive' / 'reopen' (v0.4.25) — governance acts that toggle a
+# thread's visibility state. Body carries the human rationale. Like
+# every other entry, they're signed and live in the log; client logic
+# (not the hub) decides which entries actually mean "this thread is
+# archived" — currently: the latest board-authored archive|reopen
+# entry per thread wins. Non-board archive entries land in the log
+# but are ignored by the visibility-state computation.
+KINDS = {"notice", "post", "reply", "supersede", "membership", "receipt",
+         "revoke", "branch", "archive", "reopen"}
 
 # Fields excluded from the content that id/sig commit to.
 _NON_CONTENT = {"id", "sig"}

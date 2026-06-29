@@ -152,6 +152,17 @@ function manifestContent(m: DirectoryManifest): Record<string, unknown> {
   if (m.default_thread != null) {
     out.default_thread = m.default_thread;
   }
+  // v0.4.25: same byte-identical-when-absent rule. The wire form from
+  // the hub is already normalized (sorted + deduped per role); we
+  // include it verbatim so the bytes we hash equal the bytes the
+  // signer signed.
+  if (m.capabilities_by_role != null) {
+    const normalized: Record<string, string[]> = {};
+    for (const [role, caps] of Object.entries(m.capabilities_by_role)) {
+      normalized[role] = [...new Set(caps)].sort();
+    }
+    out.capabilities_by_role = normalized;
+  }
   return out;
 }
 

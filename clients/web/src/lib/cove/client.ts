@@ -157,6 +157,13 @@ export class Client {
     return this.directoryView.resolve(this.publicKey);
   }
 
+  /** v0.4.25: the cached directory manifest from the last fetch.
+   *  Lets AppState read capabilities_by_role + default_thread without
+   *  re-fetching. Null until fetchDirectory has run. */
+  currentManifest(): DirectoryManifest | null {
+    return this.directory;
+  }
+
   /** v0.4.23: enumerate all currently-attested, non-revoked members.
    *  Drives the AdminPanel membership editor. Empty array (not null)
    *  when the directory hasn't been loaded yet so callers can map

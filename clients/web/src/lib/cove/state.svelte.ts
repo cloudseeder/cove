@@ -14,7 +14,10 @@ import {
   ensureNotificationPermission, isTauri, keychain, rootKeychain, stream, updater,
   type AvailableUpdate,
 } from './tauri';
-import type { Attestation, InboxRow, ThreadSummary } from './types';
+import type {
+  Attestation, DirectoryManifest, InboxRow, ThreadSummary,
+} from './types';
+import { DEFAULT_CAPABILITIES_BY_ROLE } from './types';
 import type { RevokedEntry } from './client';
 import { hashManifest } from './verify';
 
@@ -150,9 +153,13 @@ export class AppState {
   adminStatus = $state<{ kind: 'idle' } | { kind: 'submitting' }
     | { kind: 'error'; message: string }>({ kind: 'idle' });
   /** v0.4.0: caller's own attestation, resolved at connect-time.
-   *  Drives AdminPanel visibility (role==='board'). Null until
-   *  fetchDirectory has run, which happens during connect(). */
+   *  Drives AdminPanel visibility (via hasCapability + isBoardMember).
+   *  Null until fetchDirectory has run, which happens during connect(). */
   myAttestation = $state<Attestation | null>(null);
+  /** v0.4.25: the current directory manifest, cached so hasCapability
+   *  can read capabilities_by_role without a re-fetch. Refreshed
+   *  alongside myAttestation. */
+  manifest = $state<DirectoryManifest | null>(null);
   /** v0.4.23: snapshot of currently-attested, non-revoked members
    *  for the AdminPanel membership editor. Refreshed alongside
    *  myAttestation on directory fetches and after admin mutations. */
@@ -331,6 +338,10 @@ export class AppState {
         // a new member doesn't silently strip it. If it wasn't set,
         // this stays undefined and the canonical payload is unchanged.
         defaultThread: current.default_thread,
+        // v0.4.25: forward the existing role → caps map so admin
+        // mutations to attestations/revocations don't silently strip
+        // it. If the manifest doesn't carry one, this stays undefined.
+        capabilitiesByRole: current.capabilities_by_role ?? null,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -400,6 +411,10 @@ export class AppState {
         revocations: [...current.revocations],
         prevManifestHash: hashManifest(current),
         defaultThread: current.default_thread,
+        // v0.4.25: forward the existing role → caps map so admin
+        // mutations to attestations/revocations don't silently strip
+        // it. If the manifest doesn't carry one, this stays undefined.
+        capabilitiesByRole: current.capabilities_by_role ?? null,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -409,6 +424,7 @@ export class AppState {
       // response and the WS push arrival.
       await this.client.fetchDirectory();
       this.myAttestation = this.client.myAttestation();
+      this.manifest = this.client.currentManifest();
       this.members = this.client.currentMembers();
       this.revoked = this.client.recentlyRevoked();
     } catch (err) {
@@ -470,10 +486,70 @@ export class AppState {
         revocations: [...current.revocations, newRev],
         prevManifestHash: hashManifest(current),
         defaultThread: current.default_thread,
+        // v0.4.25: forward the existing role → caps map so admin
+        // mutations to attestations/revocations don't silently strip
+        // it. If the manifest doesn't carry one, this stays undefined.
+        capabilitiesByRole: current.capabilities_by_role ?? null,
       });
       await this.client.submitRevocation(newManifest);
       this.adminStatus = { kind: 'idle' };
       await this.client.fetchDirectory();
+      this.myAttestation = this.client.myAttestation();
+      this.manifest = this.client.currentManifest();
+      this.members = this.client.currentMembers();
+      this.revoked = this.client.recentlyRevoked();
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
+  /** v0.4.25: re-issue the directory manifest with a new role → caps
+   *  map. Like setDefaultThread, this is a root-signed manifest update
+   *  posted via /admin/attest. Pass an empty object to express "all
+   *  roles have no caps"; pass null to CLEAR the field entirely
+   *  (manifest omits it; clients fall back to default mapping).
+   */
+  async setCapabilitiesByRole(
+    next: Record<string, string[]> | null,
+  ): Promise<void> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      return;
+    }
+    if (!this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before changing roles.',
+      };
+      return;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    const signer: RootSigner = {
+      sign: (m) => rootKeychain.signMessage(m),
+      pubkey: async () => (await rootKeychain.status()).public_key!,
+    };
+    try {
+      const current = await this.client.fetchDirectory();
+      const rootPub = await signer.pubkey();
+      if (rootPub !== current.org) {
+        throw new Error(
+          'Root key on this device does not match the hub org pubkey.',
+        );
+      }
+      const newManifest = await issueDirectory(signer, {
+        org: current.org,
+        attestations: [...current.attestations],
+        revocations: [...current.revocations],
+        prevManifestHash: hashManifest(current),
+        defaultThread: current.default_thread,
+        capabilitiesByRole: next,
+      });
+      await this.client.submitAttestation(newManifest);
+      this.adminStatus = { kind: 'idle' };
+      // Refresh local snapshot so the AdminPanel + every hasCapability
+      // consumer reflects the new map immediately.
+      await this.client.fetchDirectory();
+      this.manifest = this.client.currentManifest();
       this.myAttestation = this.client.myAttestation();
       this.members = this.client.currentMembers();
       this.revoked = this.client.recentlyRevoked();
@@ -557,6 +633,9 @@ export class AppState {
         revocations: [...current.revocations],
         prevManifestHash: hashManifest(current),
         defaultThread: newDefault ?? undefined,
+        // v0.4.25: changing default_thread shouldn't strip the org's
+        // role → caps map either.
+        capabilitiesByRole: current.capabilities_by_role ?? null,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -567,11 +646,38 @@ export class AppState {
     }
   }
 
-  /** Helper: is the caller in board tier on this hub? Drives the
-   *  AdminPanel tab visibility. The hub enforces actual access via
-   *  the require_board gate on /pending — this is purely a UI hint. */
+  /** v0.4.25: is the caller granted `cap` under the current manifest?
+   *  Reads manifest.capabilities_by_role when set; otherwise falls
+   *  back to DEFAULT_CAPABILITIES_BY_ROLE (board → admin + archive).
+   *
+   *  The hub enforces the real check via require_capability(cap) on
+   *  protected endpoints — this is the client-side UI hint that
+   *  decides whether to even SHOW the affordance. */
+  hasCapability(cap: string): boolean {
+    const role = this.myAttestation?.role;
+    if (!role) return false;
+    const map = this.manifest?.capabilities_by_role ?? DEFAULT_CAPABILITIES_BY_ROLE;
+    return (map[role] ?? []).includes(cap);
+  }
+
+  /** Back-compat: pre-v0.4.25 callers used isBoardMember to gate the
+   *  AdminPanel. The semantics are now "has the 'admin' capability,"
+   *  which under the default mapping is exactly board role — but an
+   *  org can remap so that some other role gets admin instead. */
   get isBoardMember(): boolean {
-    return this.myAttestation?.role === 'board';
+    return this.hasCapability('admin');
+  }
+
+  /** v0.4.25: is a named thread currently archived? Consults the
+   *  cached inbox rows first (most authoritative — server-computed
+   *  under the current manifest) then the sidebar thread list. A
+   *  freshly-typed name the hub has never seen returns false. */
+  isThreadArchived(name: string): boolean {
+    const inboxRow = this.inboxRows.find((r) => r.thread === name);
+    if (inboxRow) return inboxRow.archived;
+    const threadRow = this.threads.find((t) => t.thread === name);
+    if (threadRow) return threadRow.archived;
+    return false;
   }
 
   /**
@@ -781,6 +887,7 @@ export class AppState {
       this.route = 'inbox';
       await this.client.fetchDirectory();
       this.myAttestation = this.client.myAttestation();
+      this.manifest = this.client.currentManifest();
       this.members = this.client.currentMembers();
       this.revoked = this.client.recentlyRevoked();
       await this.loadInbox();
@@ -871,6 +978,7 @@ export class AppState {
       if (msg.type === 'directory_changed') {
         await this.client.fetchDirectory();
         this.myAttestation = this.client.myAttestation();
+        this.manifest = this.client.currentManifest();
         this.members = this.client.currentMembers();
       this.revoked = this.client.recentlyRevoked();
         // v0.4.19: inbox row previews carry server-resolved display_name
@@ -930,6 +1038,36 @@ export class AppState {
     // an empty feed pointed at by the branch link.
     await this.switchThread(newThread);
     // loadThreads refreshes parent_thread bookkeeping in the sidebar.
+    void this.loadThreads();
+  }
+
+  /** v0.4.25: post a kind='archive' or kind='reopen' entry on the
+   *  given thread. Body carries the rationale. Caller checks
+   *  hasCapability('archive') first; this is the wire op. */
+  async setThreadArchived(thread: string, archived: boolean,
+                          rationale: string): Promise<void> {
+    if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    const ev = {
+      thread,
+      author: this.authStatus.pubkey,
+      kind: (archived ? 'archive' : 'reopen') as 'archive' | 'reopen',
+      created_at: new Date().toISOString(),
+      parents: [],
+      body: rationale,
+      blobs: [],
+      supersedes: null,
+      receipt: null,
+      branch_thread: null,
+      id: null,
+      sig: null,
+    };
+    await this.client.post(ev);
+    // Refresh the inbox + thread list so the archived flag flips
+    // immediately for the keymaster who acted. Other connected
+    // clients pick it up on the /stream entry push (their inboxRows
+    // refresh in loadInbox; sidebars refresh in loadThreads via the
+    // post round-trip).
+    await this.loadInbox();
     void this.loadThreads();
   }
 

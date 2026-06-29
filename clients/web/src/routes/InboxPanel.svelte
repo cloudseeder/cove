@@ -39,17 +39,29 @@
     return e.body_preview || '(attachment)';
   }
 
+  // v0.4.25: archived threads are filtered out of the main list by
+  // default. A "Show archived" toggle reveals them in a muted section
+  // below, so they're never lost — just out of the way.
+  let showArchived = $state(false);
+  const activeRows = $derived(
+    app.inboxRows.filter((r) => !r.archived),
+  );
+  const archivedRows = $derived(
+    app.inboxRows.filter((r) => r.archived),
+  );
+
   // Sort: unread first, then by latest_seq desc within each group.
-  // Stays a derived to react to inboxRows changes.
-  const sorted = $derived.by(() => {
-    const rows = [...app.inboxRows];
-    rows.sort((a, b) => {
+  const sortBy = (rows: InboxRow[]) => {
+    const out = [...rows];
+    out.sort((a, b) => {
       const ua = isUnread(a), ub = isUnread(b);
       if (ua !== ub) return ua ? -1 : 1;
       return b.latest_seq - a.latest_seq;
     });
-    return rows;
-  });
+    return out;
+  };
+  const sortedActive = $derived(sortBy(activeRows));
+  const sortedArchived = $derived(sortBy(archivedRows));
 </script>
 
 <section class="inbox" aria-label="Inbox">
@@ -57,7 +69,10 @@
     <div>
       <h1>Inbox</h1>
       <p class="muted">
-        {sorted.length} thread{sorted.length === 1 ? '' : 's'}
+        {sortedActive.length} thread{sortedActive.length === 1 ? '' : 's'}
+        {#if sortedArchived.length > 0}
+          · {sortedArchived.length} archived
+        {/if}
         {#if app.inboxStatus.kind === 'loading'} · refreshing…{/if}
       </p>
     </div>
@@ -73,7 +88,49 @@
     <div class="error">⚠ {app.inboxStatus.message}</div>
   {/if}
 
-  {#if sorted.length === 0 && app.inboxStatus.kind !== 'loading'}
+  {#snippet row(r: InboxRow)}
+    {@const e = r.latest_entry}
+    {@const unread = isUnread(r)}
+    <li class:unread class:archived={r.archived}>
+      <button type="button" onclick={() => app.switchThread(r.thread)}>
+        <span class="dot" aria-hidden="true" class:unread></span>
+        {#if e}
+          <span class="avatar" aria-hidden="true"
+            style="background: {authorColor(e.author)}">
+            {initials(e.display_name ?? e.author.slice(0, 2))}
+          </span>
+        {:else}
+          <span class="avatar empty" aria-hidden="true">·</span>
+        {/if}
+        <span class="middle">
+          <span class="top-row">
+            <span class="thread-name">{r.thread}</span>
+            <span class="time">{e ? smartTimestamp(e.created_at) : '—'}</span>
+          </span>
+          <span class="preview">
+            {#if e}
+              <span class="author">{authorLabel(r)}</span>
+              <span class="sep">—</span>
+              <span class="body">{previewBody(r)}</span>
+            {:else}
+              <span class="body muted">{previewBody(r)}</span>
+            {/if}
+          </span>
+          <span class="meta">
+            {r.entry_count} {r.entry_count === 1 ? 'entry' : 'entries'}
+            {#if unread && e}
+              · {r.latest_seq - r.my_high_water} new
+            {/if}
+            {#if r.archived}
+              · archived
+            {/if}
+          </span>
+        </span>
+      </button>
+    </li>
+  {/snippet}
+
+  {#if sortedActive.length === 0 && sortedArchived.length === 0 && app.inboxStatus.kind !== 'loading'}
     <div class="empty">
       <p>No threads yet on this hub.</p>
       <p class="muted">
@@ -83,45 +140,25 @@
     </div>
   {:else}
     <ul>
-      {#each sorted as row (row.thread)}
-        {@const e = row.latest_entry}
-        {@const unread = isUnread(row)}
-        <li class:unread>
-          <button type="button" onclick={() => app.switchThread(row.thread)}>
-            <span class="dot" aria-hidden="true" class:unread></span>
-            {#if e}
-              <span class="avatar" aria-hidden="true"
-                style="background: {authorColor(e.author)}">
-                {initials(e.display_name ?? e.author.slice(0, 2))}
-              </span>
-            {:else}
-              <span class="avatar empty" aria-hidden="true">·</span>
-            {/if}
-            <span class="middle">
-              <span class="top-row">
-                <span class="thread-name">{row.thread}</span>
-                <span class="time">{e ? smartTimestamp(e.created_at) : '—'}</span>
-              </span>
-              <span class="preview">
-                {#if e}
-                  <span class="author">{authorLabel(row)}</span>
-                  <span class="sep">—</span>
-                  <span class="body">{previewBody(row)}</span>
-                {:else}
-                  <span class="body muted">{previewBody(row)}</span>
-                {/if}
-              </span>
-              <span class="meta">
-                {row.entry_count} {row.entry_count === 1 ? 'entry' : 'entries'}
-                {#if unread && e}
-                  · {row.latest_seq - row.my_high_water} new
-                {/if}
-              </span>
-            </span>
-          </button>
-        </li>
+      {#each sortedActive as r (r.thread)}
+        {@render row(r)}
       {/each}
     </ul>
+    {#if sortedArchived.length > 0}
+      <div class="archived-section">
+        <button type="button" class="archived-toggle"
+          onclick={() => (showArchived = !showArchived)}>
+          {showArchived ? '▾' : '▸'} {sortedArchived.length} archived
+        </button>
+        {#if showArchived}
+          <ul>
+            {#each sortedArchived as r (r.thread)}
+              {@render row(r)}
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
   {/if}
 </section>
 
@@ -275,6 +312,30 @@
     font-size: 0.75rem;
     color: var(--muted);
   }
+  /* v0.4.25: archived section sits below the active list, collapsed
+     by default. Rows render in the same shape but muted. */
+  .archived-section {
+    margin-top: 0.8rem;
+    border-top: 1px solid rgba(255,255,255,0.05);
+    padding-top: 0.4rem;
+  }
+  .archived-toggle {
+    appearance: none;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0.4rem 2rem;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-family: inherit;
+  }
+  .archived-toggle:hover { color: var(--fg); }
+  li.archived {
+    opacity: 0.55;
+  }
+  li.archived:hover { opacity: 0.85; }
   .empty {
     padding: 3rem 2rem;
     text-align: center;

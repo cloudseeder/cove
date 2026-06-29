@@ -33,15 +33,22 @@
   // parent_thread renders at the top level; children are indented
   // under it. We build the tree at render time from the flat list
   // returned by /threads — parent_thread on each row is enough.
+  // v0.4.25: archived threads are filtered out of the main tree and
+  // shown in a collapsible "Archived" section so they don't clutter
+  // day-to-day navigation. Show-archived expands them on demand.
   type ThreadNode = {
     thread: string;
     entry_count: number;
     latest_seq: number;
     children: ThreadNode[];
   };
+  const activeThreads = $derived(app.threads.filter((t) => !t.archived));
+  const archivedThreads = $derived(app.threads.filter((t) => t.archived));
+  let showArchived = $state(false);
+
   const tree = $derived.by(() => {
     const byName = new Map<string, ThreadNode>();
-    for (const t of app.threads) {
+    for (const t of activeThreads) {
       byName.set(t.thread, {
         thread: t.thread,
         entry_count: t.entry_count,
@@ -50,7 +57,7 @@
       });
     }
     const roots: ThreadNode[] = [];
-    for (const t of app.threads) {
+    for (const t of activeThreads) {
       const node = byName.get(t.thread)!;
       const parent = t.parent_thread ? byName.get(t.parent_thread) : null;
       if (parent) parent.children.push(node);
@@ -154,6 +161,28 @@
         </button>
         {@render activeSubNav()}
       </li>
+    {/if}
+    {#if archivedThreads.length > 0}
+      <li class="archived-toggle-row">
+        <button type="button" class="archived-toggle"
+          onclick={() => (showArchived = !showArchived)}>
+          {showArchived ? '▾' : '▸'} {archivedThreads.length} archived
+        </button>
+      </li>
+      {#if showArchived}
+        {#each archivedThreads as t (t.thread)}
+          {@const isActive = app.route === 'thread' && t.thread === app.thread}
+          <li class:active={isActive} class="archived">
+            <button type="button" onclick={() => handleSwitch(t.thread)}>
+              <span class="name">{t.thread}</span>
+              <span class="count">{t.entry_count}</span>
+            </button>
+            {#if isActive}
+              {@render activeSubNav()}
+            {/if}
+          </li>
+        {/each}
+      {/if}
     {/if}
   </ul>
 
@@ -291,6 +320,29 @@
   .admin-tab > button {
     color: #e8c96b;
   }
+  /* v0.4.25: archived threads in the sidebar — collapsed by default,
+     muted when expanded so they don't compete with active threads. */
+  .archived-toggle-row {
+    margin: 0.4rem 0 0;
+  }
+  .archived-toggle {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0.32rem 0.7rem;
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    text-align: left;
+    font-family: inherit;
+  }
+  .archived-toggle:hover { color: var(--fg); }
+  li.archived {
+    opacity: 0.55;
+  }
+  li.archived:hover { opacity: 0.85; }
   .badge {
     background: #d4af37; color: #0a0a0a;
     padding: 0.05rem 0.45rem;

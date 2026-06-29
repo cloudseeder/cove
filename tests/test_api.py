@@ -458,6 +458,81 @@ def test_inbox_truncates_long_body_previews(hub):
     assert preview.endswith("…")
 
 
+def test_inbox_reflects_archive_state_set_by_board_authored_archive_entries(hub):
+    """v0.4.25: a board-authored kind='archive' entry flips the
+    `archived` flag on /inbox + /threads. A later 'reopen' flips it
+    back. Non-board archive entries are ignored (no capability)."""
+    # Promote the default member to board so we have an archiver.
+    current = hub["directory"].manifest
+    promoted = issue_attestation(
+        hub["root_priv"], member_pubkey=hub["member_pub"],
+        display_name="Alice", affiliation="U-1", role="board",
+        issuer_pubkey=hub["root_pub"],
+        issued_at="2026-06-29T00:00:00+00:00",
+    )
+    new_manifest = _chained(
+        hub,
+        attestations=list(current.attestations) + [promoted],
+        revocations=list(current.revocations),
+        updated_at="2026-06-29T00:00:01+00:00",
+    )
+    r = hub["client"].post(
+        "/admin/attest", json={"manifest": _manifest_dict(new_manifest)})
+    assert r.status_code == 200, r.text
+
+    # Seed a thread, then archive it.
+    seed = _signed_post(hub["member_priv"], hub["member_pub"],
+                        thread="annual-meeting", body="hello")
+    hub["client"].post("/entries", json=_entry_payload(seed))
+    archive_entry = _signed_post(
+        hub["member_priv"], hub["member_pub"],
+        thread="annual-meeting", kind="archive",
+        body="inactive — filing this",
+    )
+    hub["client"].post("/entries", json=_entry_payload(archive_entry))
+
+    rows = hub["client"].get("/inbox").json()["threads"]
+    row = next(r for r in rows if r["thread"] == "annual-meeting")
+    assert row["archived"] is True
+
+    rows = hub["client"].get("/threads").json()["threads"]
+    row = next(r for r in rows if r["thread"] == "annual-meeting")
+    assert row["archived"] is True
+
+    # Reopen flips it back.
+    reopen_entry = _signed_post(
+        hub["member_priv"], hub["member_pub"],
+        thread="annual-meeting", kind="reopen",
+        body="reopening; topic resurfaced",
+    )
+    hub["client"].post("/entries", json=_entry_payload(reopen_entry))
+    rows = hub["client"].get("/inbox").json()["threads"]
+    row = next(r for r in rows if r["thread"] == "annual-meeting")
+    assert row["archived"] is False
+
+
+def test_archive_entry_from_non_archive_capability_role_is_ignored(hub):
+    """A 'member'-role caller posting kind='archive' lands the entry in
+    the log but the visibility-state computation skips it — they don't
+    have the archive capability under the default mapping."""
+    seed = _signed_post(hub["member_priv"], hub["member_pub"],
+                        thread="annual-meeting", body="hello")
+    hub["client"].post("/entries", json=_entry_payload(seed))
+
+    # Default fixture member is role='member' — no archive cap.
+    fake_archive = _signed_post(
+        hub["member_priv"], hub["member_pub"],
+        thread="annual-meeting", kind="archive", body="trying my luck",
+    )
+    r = hub["client"].post("/entries", json=_entry_payload(fake_archive))
+    assert r.status_code == 200, r.text  # accepted at protocol layer
+
+    # But /inbox reports it as still active.
+    rows = hub["client"].get("/inbox").json()["threads"]
+    row = next(r for r in rows if r["thread"] == "annual-meeting")
+    assert row["archived"] is False
+
+
 def test_inbox_requires_auth(hub):
     unauth = TestClient(hub["app"])
     assert unauth.get("/inbox").status_code == 401

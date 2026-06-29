@@ -196,18 +196,31 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             raise _AuthRequired("invalid or expired token")
         return pubkey
 
-    def require_board(caller: str = Depends(require_session)) -> str:
-        """Auth + role gate for admin-UI surfaces (pending queue, etc.).
+    def require_capability(cap: str):
+        """v0.4.25: auth + capability gate for admin-UI surfaces. Replaces
+        the previous hardcoded `role == "board"` check; the role → caps
+        map is now org-configurable via DirectoryManifest.capabilities_by_role
+        (with a hardcoded default that preserves the LWCCOA shape: board
+        gets admin + archive).
+
         Root-sig protection on mutation paths (/admin/attest, /admin/revoke,
-        /admin/limits) remains: this gate just keeps in-app admin views
-        scoped to board-role members. Member-role and officer-role tokens
-        get 403, not 401 — they're authenticated, just not authorized."""
-        if directory is None:
-            raise _Forbidden("no_directory")
-        att = directory.resolve(caller)
-        if att is None or att.role != "board":
-            raise _Forbidden("board role required")
-        return caller
+        /admin/limits) remains independent — those checks are on the
+        signing key, not the session's capability set.
+
+        Members without `cap` get 403, not 401 — they're authenticated,
+        just not authorized."""
+        def _dep(caller: str = Depends(require_session)) -> str:
+            if directory is None:
+                raise _Forbidden("no_directory")
+            if cap not in directory.caller_capabilities(caller):
+                raise _Forbidden(f"capability {cap!r} required")
+            return caller
+        return _dep
+
+    # Kept as a back-compat alias for any future-test or external call
+    # site that hard-named the old gate; same semantics as
+    # require_capability("admin").
+    require_board = require_capability("admin")
 
     @api.exception_handler(_AuthRequired)
     async def _auth_required_handler(_request, exc: "_AuthRequired"):
@@ -291,12 +304,22 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     # Auth-gated like /sync; the directory authoritatively names members
     # but threads are open-namespace so this list reflects observed state,
     # not a registry.
+    def _has_archive_capability(pubkey: str) -> bool:
+        """v0.4.25: helper closure passed to store.archive_state_per_thread.
+        Reads the live Directory so a freshly-updated capabilities_by_role
+        map takes effect on the next request without a hub restart."""
+        if directory is None:
+            return False
+        return "archive" in directory.caller_capabilities(pubkey)
+
     @api.get("/threads")
     def get_threads(_caller: str = Depends(require_session)) -> dict:
+        archived_threads = store.archive_state_per_thread(_has_archive_capability)
         return {
             "threads": [
                 {"thread": t, "entry_count": n, "latest_seq": s,
-                 "parent_thread": parent}
+                 "parent_thread": parent,
+                 "archived": archived_threads.get(t, False)}
                 for t, n, s, parent in overview.thread_summaries()
             ],
         }
@@ -315,6 +338,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
     @api.get("/inbox")
     def get_inbox(caller: str = Depends(require_session)) -> dict:
+        archived_threads = store.archive_state_per_thread(_has_archive_capability)
         rows = []
         for t, n, s, parent in overview.thread_summaries():
             latest = store.latest_non_receipt(t)
@@ -349,6 +373,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                 "parent_thread": parent,
                 "my_high_water": high_water,
                 "latest_entry": preview_entry,
+                "archived": archived_threads.get(t, False),
             })
         return {"threads": rows}
 

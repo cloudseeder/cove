@@ -137,6 +137,41 @@ class EventStore:
             return None
         return _row_to_entry((row[0], row[1], row[2])), int(row[3])
 
+    def archive_state_per_thread(self, has_archive_capability) -> dict[str, bool]:
+        """v0.4.25: per-thread archived/active state for /threads + /inbox.
+
+        For each thread that has any archive|reopen entries, walk them
+        newest-first and pick the latest one whose author had the
+        `archive` capability at the time of evaluation. If that latest
+        qualifying entry's kind is 'archive', the thread is archived;
+        if it's 'reopen' (or none qualifies), the thread is active.
+
+        `has_archive_capability` is a callable (author_pubkey) -> bool —
+        the API layer passes a closure over Directory.caller_capabilities
+        so the rule the hub enforces is exactly the rule clients see.
+
+        Returns ONLY threads with a positive archive state — callers
+        treat absence as "active." Keeps the response small for orgs
+        that haven't archived anything.
+        """
+        rows = self._conn.execute(
+            "SELECT thread, kind, author, seq FROM entries"
+            " WHERE kind IN ('archive', 'reopen')"
+            " ORDER BY seq DESC"
+        ).fetchall()
+        # Walk per-thread; first qualifying author wins (newest-first).
+        seen: set[str] = set()
+        out: dict[str, bool] = {}
+        for thread, kind, author, _seq in rows:
+            if thread in seen:
+                continue
+            if not has_archive_capability(author):
+                continue
+            seen.add(thread)
+            if kind == "archive":
+                out[thread] = True
+        return out
+
     def caller_receipt_high_water(self, thread: str, author: str) -> int:
         """v0.4.19: max seq of a caller's kind='receipt' entries in a thread,
         or -1 if the caller has never receipted this thread.

@@ -152,6 +152,71 @@ def test_get_pending_requires_board_role(hub):
     assert r.status_code == 403
 
 
+def test_get_pending_respects_custom_capabilities_by_role(hub):
+    """v0.4.25: the require_capability gate reads the manifest's
+    capabilities_by_role map. An org that grants 'admin' to its
+    'officer' role lets officer-tier members hit /pending — no
+    code change. Inverse: revoking 'admin' from 'board' locks them
+    out under the same gate."""
+    # Step 1: attest an officer and verify they get 403 under the
+    # default mapping (officer has no caps by default).
+    officer_priv, officer_pub = crypto.generate_keypair()
+    _attest_new(hub, role="officer", pub=officer_pub,
+                display_name="Treasurer", affiliation="board",
+                issued_at="2026-06-01T00:00:00+00:00",
+                updated_at="2026-06-15T00:00:00+00:00")
+    officer = TestClient(hub["app"])
+    ch = officer.post("/auth/challenge").json()
+    sig = crypto.sign(officer_priv, ch["nonce"].encode())
+    sess = officer.post("/auth/verify", json={
+        "pubkey": officer_pub, "nonce": ch["nonce"], "sig": sig,
+    }).json()
+    officer.headers["Authorization"] = f"Bearer {sess['token']}"
+    assert officer.get("/pending").status_code == 403
+
+    # Step 2: root re-issues the manifest with an explicit map that
+    # grants officer the 'admin' capability. Now the same session token
+    # works against /pending.
+    current = hub["directory"].manifest
+    remapped = issue_directory(
+        hub["root_priv"], org=hub["root_pub"],
+        attestations=list(current.attestations),
+        revocations=list(current.revocations),
+        updated_at="2026-06-15T00:00:01+00:00",
+        prev_manifest_hash=hash_manifest(current),
+        capabilities_by_role={
+            "board":   ["admin", "archive"],
+            "officer": ["admin"],
+        },
+    )
+    r = hub["client"].post(
+        "/admin/attest", json={"manifest": _manifest_dict_v25(remapped)})
+    assert r.status_code == 200, r.text
+    assert officer.get("/pending").status_code == 200
+
+
+def _manifest_dict_v25(m) -> dict:
+    """Wire-form manifest serializer that includes v0.4.25's
+    capabilities_by_role field. The local _manifest_dict above pre-dates
+    that field and is kept narrow on purpose."""
+    out = {
+        "org": m.org,
+        "attestations": [asdict(a) for a in m.attestations],
+        "revocations": [asdict(r) for r in m.revocations],
+        "updated_at": m.updated_at,
+        "prev_manifest_hash": m.prev_manifest_hash,
+        "sig": m.sig,
+    }
+    if m.default_thread is not None:
+        out["default_thread"] = m.default_thread
+    if m.capabilities_by_role is not None:
+        out["capabilities_by_role"] = {
+            role: sorted(set(caps))
+            for role, caps in m.capabilities_by_role.items()
+        }
+    return out
+
+
 def test_get_pending_returns_queue_in_order(hub):
     board = _board_client(hub)
     unauth = TestClient(hub["app"])

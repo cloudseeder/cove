@@ -23,6 +23,9 @@
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
   import type { Attestation } from '$lib/cove/types';
+  import {
+    CAPABILITIES, DEFAULT_CAPABILITIES_BY_ROLE, type Capability,
+  } from '$lib/cove/types';
 
   interface Props {
     app: AppState;
@@ -103,6 +106,82 @@
     try { return new Date(iso).toLocaleDateString(undefined, {
       year: 'numeric', month: 'short', day: 'numeric',
     }); } catch { return iso.slice(0, 10); }
+  }
+
+  /** v0.4.25: roles × capabilities editor. The matrix is derived from
+   *  the current manifest (if it has an explicit map) OR the default
+   *  fallback OR observed-roles-from-attestations. Edits go into a
+   *  draft; Save root-signs a fresh manifest. */
+  const observedRoles = $derived.by(() => {
+    const set = new Set<string>();
+    for (const att of app.members) set.add(att.role);
+    const map = app.manifest?.capabilities_by_role ?? DEFAULT_CAPABILITIES_BY_ROLE;
+    for (const role of Object.keys(map)) set.add(role);
+    // Stable order: alpha, but with default LWCCOA-ish ordering on top
+    // so newcomers always see the canonical roles first.
+    return Array.from(set).sort((a, b) => {
+      const priors: Record<string, number> = { board: 0, officer: 1, member: 2 };
+      const pa = priors[a] ?? 99, pb = priors[b] ?? 99;
+      if (pa !== pb) return pa - pb;
+      return a.localeCompare(b);
+    });
+  });
+
+  /** Current effective map = manifest's if set, else the default. */
+  const effectiveMap = $derived(
+    app.manifest?.capabilities_by_role ?? DEFAULT_CAPABILITIES_BY_ROLE,
+  );
+
+  /** Draft the user is editing. Initialized lazily on first open of
+   *  the editor; null means "not editing right now" (closed/idle). */
+  let rolesDraft = $state<Record<string, string[]> | null>(null);
+
+  function openRolesEditor() {
+    // Deep-clone so flips don't mutate the cached manifest.
+    const next: Record<string, string[]> = {};
+    for (const role of observedRoles) {
+      next[role] = [...(effectiveMap[role] ?? [])];
+    }
+    rolesDraft = next;
+  }
+
+  function closeRolesEditor() {
+    rolesDraft = null;
+  }
+
+  function toggleCap(role: string, cap: Capability) {
+    if (rolesDraft === null) return;
+    const current = new Set(rolesDraft[role] ?? []);
+    if (current.has(cap)) current.delete(cap);
+    else current.add(cap);
+    rolesDraft = { ...rolesDraft, [role]: Array.from(current).sort() };
+  }
+
+  function isDirty(): boolean {
+    if (rolesDraft === null) return false;
+    // Compare draft to the effective map normalized the same way.
+    const allRoles = new Set([
+      ...Object.keys(rolesDraft),
+      ...Object.keys(effectiveMap),
+    ]);
+    for (const role of allRoles) {
+      const a = [...(rolesDraft[role] ?? [])].sort().join(',');
+      const b = [...(effectiveMap[role] ?? [])].sort().join(',');
+      if (a !== b) return true;
+    }
+    return false;
+  }
+
+  async function submitRoles() {
+    if (rolesDraft === null) return;
+    // Drop roles whose caps list is empty AND wasn't explicitly in the
+    // current map — keeps the wire form tight.
+    const stripped: Record<string, string[]> = {};
+    for (const [role, caps] of Object.entries(rolesDraft)) {
+      if (caps.length > 0) stripped[role] = [...caps].sort();
+    }
+    await app.setCapabilitiesByRole(stripped);
+    if (app.adminStatus.kind === 'idle') closeRolesEditor();
   }
 
   let rootPriv = $state('');
@@ -568,6 +647,80 @@
       </div>
     </section>
 
+    <!-- v0.4.25: org-defined role → capability map. The default
+         mapping (board → admin + archive) is what kicks in when this
+         field is absent — that matches pre-v0.4.25 behavior, including
+         the LWCCOA pilot's current manifest. Set it explicitly to
+         grant capabilities to other roles (an "officer" who can see
+         admin views; a "lead" who can archive threads; whatever the
+         org needs). -->
+    <section class="roles">
+      <header class="roles-header">
+        <div>
+          <h2>Roles & permissions</h2>
+          <p class="muted">
+            {#if app.manifest?.capabilities_by_role}
+              Org-defined. {Object.keys(app.manifest.capabilities_by_role).length}
+              role{Object.keys(app.manifest.capabilities_by_role).length === 1 ? '' : 's'} mapped.
+            {:else}
+              Using the default mapping (board → admin + archive). Other
+              roles have no capabilities until you map them.
+            {/if}
+          </p>
+        </div>
+        {#if rolesDraft === null}
+          <button type="button" class="ghost" onclick={openRolesEditor}>Edit</button>
+        {/if}
+      </header>
+
+      {#if rolesDraft !== null}
+        <div class="role-matrix">
+          <table>
+            <thead>
+              <tr>
+                <th class="role-col">Role</th>
+                {#each CAPABILITIES as cap}
+                  <th>{cap}</th>
+                {/each}
+              </tr>
+            </thead>
+            <tbody>
+              {#each observedRoles as role}
+                <tr>
+                  <td class="role-col"><code>{role}</code></td>
+                  {#each CAPABILITIES as cap}
+                    <td>
+                      <input type="checkbox"
+                        checked={(rolesDraft[role] ?? []).includes(cap)}
+                        onchange={() => toggleCap(role, cap)} />
+                    </td>
+                  {/each}
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          <p class="muted small">
+            Capabilities are protocol-defined.
+            <code>admin</code> sees the admin panel + pending queue.
+            <code>archive</code> archives or reopens threads.
+            Saving root-signs an updated directory manifest — every
+            connected client refreshes immediately via /stream.
+          </p>
+          {#if app.adminStatus.kind === 'error'}
+            <p class="failure" role="alert">{app.adminStatus.message}</p>
+          {/if}
+          <div class="actions">
+            <button type="button" class="ghost" onclick={closeRolesEditor}
+              disabled={app.adminStatus.kind === 'submitting'}>Cancel</button>
+            <button type="button" onclick={submitRoles}
+              disabled={app.adminStatus.kind === 'submitting' || !isDirty()}>
+              {app.adminStatus.kind === 'submitting' ? 'Signing…' : 'Save mapping'}
+            </button>
+          </div>
+        </div>
+      {/if}
+    </section>
+
     <section class="danger-zone">
       <button type="button" class="ghost" onclick={clearRoot}>
         Forget root key on this device
@@ -857,6 +1010,64 @@
     margin-top: 2rem;
     border-top: 1px solid var(--border);
     padding-top: 1.4rem;
+  }
+
+  /* v0.4.25: roles × capabilities matrix. Small enough that a flat
+     table reads better than a grid of cards. */
+  .roles {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .roles-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 1rem;
+  }
+  .roles-header h2 { margin: 0 0 0.3rem; }
+  .roles-header p { margin: 0; }
+  .role-matrix {
+    margin-top: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    background: var(--panel);
+  }
+  .role-matrix table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  .role-matrix th, .role-matrix td {
+    text-align: center;
+    padding: 0.4rem 0.6rem;
+  }
+  .role-matrix th.role-col, .role-matrix td.role-col {
+    text-align: left;
+  }
+  .role-matrix th {
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-size: 0.74rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .role-matrix td {
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+  }
+  .role-matrix tr:last-child td { border-bottom: none; }
+  .role-matrix input[type="checkbox"] {
+    width: 1rem; height: 1rem; cursor: pointer; margin: 0;
+  }
+  .role-matrix code {
+    background: rgba(255,255,255,0.04);
+    padding: 0.08rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.85em;
+  }
+  .role-matrix .muted.small {
+    font-size: 0.78rem; margin: 0.85rem 0 0;
+    line-height: 1.5;
   }
   .org-settings .muted {
     color: var(--muted); margin: 0 0 0.8rem; font-size: 0.85rem;

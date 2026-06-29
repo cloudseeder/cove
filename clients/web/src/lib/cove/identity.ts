@@ -65,6 +65,17 @@ function manifestContent(m: Omit<DirectoryManifest, 'sig'>): Record<string, unkn
   if (m.default_thread != null) {
     out.default_thread = m.default_thread;
   }
+  // v0.4.25: org-defined role → cap map. Normalize each role's list
+  // (sorted dedupe) so the canonical bytes are determined by the SET
+  // of (role, cap) pairs rather than dict-iteration order. Mirrors
+  // Python identity.py::_manifest_content.
+  if (m.capabilities_by_role != null) {
+    const normalized: Record<string, string[]> = {};
+    for (const [role, caps] of Object.entries(m.capabilities_by_role)) {
+      normalized[role] = [...new Set(caps)].sort();
+    }
+    out.capabilities_by_role = normalized;
+  }
   return out;
 }
 
@@ -117,6 +128,11 @@ export async function issueDirectory(
      *  re-issuing so an admin who's only updating attestations doesn't
      *  silently strip the hint. Set explicitly to override. */
     defaultThread?: string | null;
+    /** v0.4.25: forward the existing manifest's role → caps map.
+     *  Pass undefined to leave the canonical payload unchanged
+     *  (byte-identical to pre-v0.4.25). Pass null to explicitly
+     *  clear an existing map (the next manifest omits the field). */
+    capabilitiesByRole?: Record<string, string[]> | null;
   },
 ): Promise<DirectoryManifest> {
   const org = opts.org ?? await signer.pubkey();
@@ -127,6 +143,8 @@ export async function issueDirectory(
     updated_at: opts.updatedAt ?? new Date().toISOString(),
     prev_manifest_hash: opts.prevManifestHash ?? ZERO_PREV_MANIFEST,
     ...(opts.defaultThread != null ? { default_thread: opts.defaultThread } : {}),
+    ...(opts.capabilitiesByRole != null
+      ? { capabilities_by_role: opts.capabilitiesByRole } : {}),
   };
   const sig = await signer.sign(canonicalize(manifestContent(m)));
   return { ...m, sig };

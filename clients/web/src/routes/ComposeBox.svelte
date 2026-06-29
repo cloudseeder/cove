@@ -74,21 +74,41 @@
     }
   }
 
+  /** v0.4.25: soft block when posting to an archived thread. The hub
+   *  still accepts these entries — archive state is a visibility
+   *  filter, not a write barrier (CLAUDE.md non-negotiable #5: no
+   *  silent failures). The user has to explicitly confirm. */
+  const archived = $derived(app.isThreadArchived(app.thread));
+  let armedForArchived = $state(false);
+
   async function send() {
     const body = draft.trim();
     if ((!body && pending.length === 0) || sending) return;
+    // v0.4.25: archived-thread confirmation gate. First click arms the
+    // button ("Post anyway?"); second click posts. Cleared on any
+    // unrelated state change (thread switch, draft change, etc).
+    if (archived && !armedForArchived && !replyTo) {
+      armedForArchived = true;
+      return;
+    }
     sending = true;
     error = null;
     try {
       await app.post(body, pending, replyTo);
       draft = '';
       pending = [];
+      armedForArchived = false;
     } catch (err) {
       error = (err as Error).message;
     } finally {
       sending = false;
     }
   }
+  // Reset the armed flag when the user navigates away or the thread
+  // state changes underneath us (someone reopened the thread, say).
+  $effect(() => {
+    if (!archived) armedForArchived = false;
+  });
 
   function onKey(ev: KeyboardEvent) {
     if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey)) {
@@ -182,10 +202,28 @@
       </button>
     {/if}
     <button type="submit"
+      class:armed={archived && armedForArchived}
       disabled={sending || (draft.trim() === '' && pending.length === 0)}>
-      {sending ? '…' : 'Send'}
+      {sending
+        ? '…'
+        : (archived && armedForArchived
+          ? 'Post anyway'
+          : 'Send')}
     </button>
   </div>
+
+  {#if archived && !replyTo}
+    <span class="archive-hint">
+      📁 This thread is archived.
+      {#if armedForArchived}
+        Click <strong>Post anyway</strong> to confirm — the entry lands
+        in the log but the thread stays out of the active Inbox.
+      {:else}
+        Posting still works, but a reader has to expand the archived
+        section to see it.
+      {/if}
+    </span>
+  {/if}
 
   {#if error}
     <span class="error">{error}</span>
@@ -339,6 +377,23 @@
   .error {
     color: #fca5a5;
     font-size: 0.85rem;
+  }
+  /* v0.4.25: archived-thread soft-block hint. Sits below the send row,
+     same column. */
+  .archive-hint {
+    display: block;
+    margin-top: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    background: rgba(212, 175, 55, 0.08);
+    border: 1px solid rgba(212, 175, 55, 0.3);
+    border-radius: 6px;
+    font-size: 0.83rem;
+    color: var(--fg);
+    line-height: 1.4;
+  }
+  button.armed {
+    background: rgba(212, 175, 55, 0.85);
+    color: #0a0a0a;
   }
 
   /* Branch button — distinct from the paperclip via a slightly warmer

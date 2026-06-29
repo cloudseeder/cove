@@ -66,6 +66,16 @@ class DirectoryManifest:
     Present-and-set manifests canonicalize differently from absent ones,
     so a pre-v0.4.13 client will fail to verify a manifest where the
     field is set — orchestrate client-update before hub-reissue.
+
+    `capabilities_by_role` (v0.4.25+) is an OPTIONAL org-defined map
+    from role name → list of protocol capabilities. Drives the
+    require_capability gate server-side and the AdminPanel + archive-
+    button gates client-side. Same byte-identical-when-absent rule as
+    default_thread — when None it is omitted from the canonical
+    payload, and clients fall back to a hardcoded default
+    (DEFAULT_CAPABILITIES_BY_ROLE: board has admin + archive, no other
+    role has anything). The hardcoded default is intentionally
+    LWCCOA-shaped — orgs with different role names set this explicitly.
     """
     org: str                        # root pubkey
     attestations: list[Attestation] = field(default_factory=list)
@@ -73,7 +83,42 @@ class DirectoryManifest:
     updated_at: str = ""
     prev_manifest_hash: str = _ZERO_PREV_MANIFEST
     default_thread: Optional[str] = None
+    capabilities_by_role: Optional[dict[str, list[str]]] = None
     sig: str = ""                   # root sig over canonical(manifest minus sig)
+
+
+# ---- capability constants (v0.4.25) ----------------------------------
+# Closed set of protocol-defined capability strings. Manifests that
+# reference unrecognized capability names are tolerated (forward-compat:
+# a future client may know about "foo"; today's client just never
+# matches on it). The default mapping below is what kicks in when a
+# manifest has no capabilities_by_role field — it preserves the
+# pre-v0.4.25 behavior where only board could see admin surfaces.
+CAPABILITIES = frozenset({"admin", "archive"})
+DEFAULT_CAPABILITIES_BY_ROLE: dict[str, list[str]] = {
+    "board": ["admin", "archive"],
+}
+
+
+def capabilities_for_role(role: Optional[str],
+                          manifest: Optional[DirectoryManifest]) -> set[str]:
+    """Resolve the capability set for a given role under a given manifest.
+
+    `role` is the attestation's role string for the caller (None when
+    the caller has no attestation — they get the empty set).
+    `manifest` is the directory manifest in effect; pass None for the
+    no-directory case (server returns empty set, falls through to a 403).
+
+    Rule: if the manifest sets `capabilities_by_role`, that map is
+    authoritative — a role missing from it has no capabilities. If the
+    field is absent (typical for pre-v0.4.25 manifests, including the
+    current LWCCOA pilot), DEFAULT_CAPABILITIES_BY_ROLE applies.
+    """
+    if role is None:
+        return set()
+    mapping = (manifest.capabilities_by_role if manifest else None) \
+              or DEFAULT_CAPABILITIES_BY_ROLE
+    return set(mapping.get(role, []))
 
 
 # ---- exceptions -------------------------------------------------------
@@ -111,6 +156,15 @@ def _manifest_content(m: DirectoryManifest) -> dict:
     # docstring for the orchestration note.
     if m.default_thread is not None:
         out["default_thread"] = m.default_thread
+    if m.capabilities_by_role is not None:
+        # JCS sorts object keys but not array values — normalize each
+        # role's cap list (sorted + deduped) so the canonical bytes are
+        # determined by the SET of (role, cap) pairs, not by ordering
+        # noise from whatever produced the dict.
+        out["capabilities_by_role"] = {
+            role: sorted(set(caps))
+            for role, caps in m.capabilities_by_role.items()
+        }
     return out
 
 
@@ -124,8 +178,9 @@ def hash_manifest(m: DirectoryManifest) -> str:
 
 def manifest_to_dict(m: DirectoryManifest) -> dict:
     """Wire/disk JSON form. Every signed field included so a round trip
-    preserves what the sig covers. `default_thread` is omitted when None
-    to keep the byte-identical round-trip property for older manifests."""
+    preserves what the sig covers. `default_thread` and
+    `capabilities_by_role` are omitted when None to keep the byte-
+    identical round-trip property for older manifests."""
     out = {
         "org": m.org,
         "attestations": [asdict(a) for a in m.attestations],
@@ -136,6 +191,11 @@ def manifest_to_dict(m: DirectoryManifest) -> dict:
     }
     if m.default_thread is not None:
         out["default_thread"] = m.default_thread
+    if m.capabilities_by_role is not None:
+        out["capabilities_by_role"] = {
+            role: sorted(set(caps))
+            for role, caps in m.capabilities_by_role.items()
+        }
     return out
 
 
@@ -144,11 +204,19 @@ def manifest_from_dict(d: dict) -> DirectoryManifest:
     defaults for optional ones, matching the dataclass."""
     atts = [Attestation(**a) for a in d.get("attestations", []) or []]
     revs = [Revocation(**r) for r in d.get("revocations", []) or []]
+    caps_raw = d.get("capabilities_by_role")
+    caps = None
+    if isinstance(caps_raw, dict):
+        # Normalize so a hand-edited / tool-produced manifest round-trips
+        # through verify(); the canonical form is sorted-deduped per role.
+        caps = {role: sorted(set(v)) for role, v in caps_raw.items()
+                if isinstance(role, str) and isinstance(v, list)}
     return DirectoryManifest(
         org=d["org"], attestations=atts, revocations=revs,
         updated_at=d.get("updated_at", ""),
         prev_manifest_hash=d.get("prev_manifest_hash", _ZERO_PREV_MANIFEST),
         default_thread=d.get("default_thread"),
+        capabilities_by_role=caps,
         sig=d.get("sig", ""),
     )
 
@@ -203,6 +271,7 @@ def issue_directory(root_private_hex: str, *, org: str,
                     updated_at: Optional[str] = None,
                     prev_manifest_hash: str = _ZERO_PREV_MANIFEST,
                     default_thread: Optional[str] = None,
+                    capabilities_by_role: Optional[dict[str, list[str]]] = None,
                     ) -> DirectoryManifest:
     """Build and sign a directory manifest with the ROOT key. Admin-tool only.
 
@@ -214,6 +283,11 @@ def issue_directory(root_private_hex: str, *, org: str,
     `default_thread` (v0.4.13+) is the soft hint clients should land a
     new member on after attestation. Omit (None) to keep canonicalization
     byte-identical to pre-v0.4.13 manifests.
+
+    `capabilities_by_role` (v0.4.25+) is the org-defined role → caps map.
+    Omit (None) to keep canonicalization byte-identical to pre-v0.4.25
+    manifests; the hub + clients fall back to DEFAULT_CAPABILITIES_BY_ROLE
+    in that case.
     """
     m = DirectoryManifest(
         org=org,
@@ -222,6 +296,7 @@ def issue_directory(root_private_hex: str, *, org: str,
         updated_at=updated_at or _now(),
         prev_manifest_hash=prev_manifest_hash,
         default_thread=default_thread,
+        capabilities_by_role=capabilities_by_role,
         sig="",
     )
     m.sig = crypto.sign(root_private_hex, crypto.canonicalize(_manifest_content(m)))
@@ -385,6 +460,17 @@ class Directory:
     def resolve(self, pubkey: str) -> Optional[Attestation]:
         """Return the current attestation for a key, or None. Caller checks revocation/expiry."""
         return self._by_key.get(pubkey)
+
+    def caller_capabilities(self, pubkey: str) -> set[str]:
+        """v0.4.25: capability set for the holder of `pubkey` under the
+        current manifest. Returns the empty set for an unattested or
+        revoked-as-of-now caller. Backed by capabilities_for_role +
+        the manifest's optional capabilities_by_role map; falls back
+        to DEFAULT_CAPABILITIES_BY_ROLE when the manifest omits it."""
+        att = self._by_key.get(pubkey)
+        if att is None:
+            return set()
+        return capabilities_for_role(att.role, self._manifest)
 
     def attested_keys(self) -> list[str]:
         """All pubkeys that have been attested at any point — regardless of
