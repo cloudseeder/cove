@@ -94,6 +94,24 @@ describe('shouldGroupWithPrevious', () => {
       60 * 60 * 1000,
     )).toBe(true);
   });
+  test('curr=notice never groups, even with same author', () => {
+    expect(shouldGroupWithPrevious(
+      { ...A('2026-06-29T10:00:00Z'), kind: 'post' },
+      { ...A('2026-06-29T10:01:00Z'), kind: 'notice' },
+    )).toBe(false);
+  });
+  test('prev=notice never absorbs the next message', () => {
+    expect(shouldGroupWithPrevious(
+      { ...A('2026-06-29T10:00:00Z'), kind: 'notice' },
+      { ...A('2026-06-29T10:01:00Z'), kind: 'post' },
+    )).toBe(false);
+  });
+  test('two notices in a row each get their own frame', () => {
+    expect(shouldGroupWithPrevious(
+      { ...A('2026-06-29T10:00:00Z'), kind: 'notice' },
+      { ...A('2026-06-29T10:01:00Z'), kind: 'notice' },
+    )).toBe(false);
+  });
 });
 
 describe('shouldShowDayDivider', () => {

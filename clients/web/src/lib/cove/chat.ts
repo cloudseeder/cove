@@ -67,13 +67,20 @@ export function smartTimestamp(iso: string, now: Date = new Date()): string {
  * `prev`? Two entries group when they share an author AND are within
  * `gapMs` of each other. The first entry of a thread never groups
  * (prev === null).
+ *
+ * v0.4.21: notices never group — they're the headline entry kind and
+ * deserve their own visually-distinct frame. Both directions: a notice
+ * can't continue a chat run, and a chat message after a notice can't
+ * pretend it's grouped with the notice. kind is optional in the type so
+ * older callers (tests that don't carry it) still compile.
  */
 export function shouldGroupWithPrevious(
-  prev: { author: string; created_at: string } | null,
-  curr: { author: string; created_at: string },
+  prev: { author: string; created_at: string; kind?: string } | null,
+  curr: { author: string; created_at: string; kind?: string },
   gapMs: number = 5 * 60 * 1000,
 ): boolean {
   if (prev === null) return false;
+  if (curr.kind === 'notice' || prev.kind === 'notice') return false;
   if (prev.author !== curr.author) return false;
   const prevTime = new Date(prev.created_at).getTime();
   const currTime = new Date(curr.created_at).getTime();

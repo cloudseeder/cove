@@ -34,6 +34,11 @@
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
   const isBoard = $derived(ve.attestation.role === 'board');
+  /** v0.4.21: notices are the headline entry kind — board broadcasts
+   *  to all members. They get a gold-bordered standout treatment so
+   *  they don't get lost in casual chat. Always show the header
+   *  (enforced upstream via shouldGroupWithPrevious). */
+  const isNotice = $derived(ve.entry.kind === 'notice');
   const color = $derived(authorColor(ve.entry.author));
   const inits = $derived(initials(ve.attestation.display_name));
   const time = $derived(smartTimestamp(ve.entry.created_at));
@@ -44,7 +49,8 @@
   let revealed = $state(false);
 </script>
 
-<div class="row" class:fresh={isNew} class:grouped={!showHeader} class:revealed>
+<div class="row" class:fresh={isNew} class:grouped={!showHeader}
+  class:revealed class:notice={isNotice}>
   {#if showHeader}
     <div class="avatar" style="background-color: {color};">{inits}</div>
   {:else}
@@ -57,6 +63,9 @@
         <span class="name" class:board={isBoard}>{ve.attestation.display_name}</span>
         {#if ve.attestation.title}
           <span class="title">· {ve.attestation.title}</span>
+        {/if}
+        {#if isNotice}
+          <span class="notice-badge" aria-label="Board notice">◆ NOTICE</span>
         {/if}
         <span class="time">{time}</span>
       </div>
@@ -112,6 +121,34 @@
     background: rgba(212, 175, 55, 0.04);
     border-radius: 8px;
     padding: 0.5rem 0.45rem;
+  }
+  /* v0.4.21: notice standout. Gold-bordered card-in-stream so a board
+     broadcast never reads as just another chat message. The badge near
+     the name + slightly more breathing room reinforce the "official"
+     framing without breaking the chat density. */
+  .row.notice {
+    border: 1px solid rgba(212, 175, 55, 0.45);
+    background: rgba(212, 175, 55, 0.05);
+    border-radius: 10px;
+    padding: 0.7rem 0.85rem;
+    margin: 0.55rem 0;
+    box-shadow: 0 0 0 1px rgba(212, 175, 55, 0.08) inset;
+  }
+  .row.notice.revealed {
+    background: rgba(212, 175, 55, 0.08);
+  }
+  .row.notice .body {
+    font-size: 0.98rem;
+  }
+  .notice-badge {
+    font-size: 0.66rem;
+    letter-spacing: 0.1em;
+    color: rgb(212, 175, 55);
+    background: rgba(212, 175, 55, 0.12);
+    padding: 0.1rem 0.42rem;
+    border-radius: 999px;
+    font-weight: 600;
+    border: 1px solid rgba(212, 175, 55, 0.3);
   }
   .row.grouped {
     padding-top: 0.08rem;
