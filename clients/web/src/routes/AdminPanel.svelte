@@ -32,7 +32,7 @@
   /** v0.4.23: per-row edit / revoke state for the membership editor.
    *  Only one row open at a time so the form doesn't compete with
    *  itself across rows. */
-  type RowMode = { kind: 'edit' } | { kind: 'revoke' };
+  type RowMode = { kind: 'edit' } | { kind: 'revoke' } | { kind: 'limits' };
   let openRow = $state<string | null>(null);   // pubkey of the open row
   let rowMode = $state<RowMode | null>(null);
   let editName = $state('');
@@ -40,6 +40,7 @@
   let editRole = $state<'member' | 'officer' | 'board'>('member');
   let editTitle = $state('');
   let revokeReason = $state('');
+  let limitsTier = $state<'member' | 'officer' | 'board'>('member');
 
   function openEdit(att: Attestation) {
     openRow = att.member_pubkey;
@@ -54,6 +55,14 @@
     openRow = att.member_pubkey;
     rowMode = { kind: 'revoke' };
     revokeReason = '';
+  }
+
+  function openLimits(att: Attestation) {
+    openRow = att.member_pubkey;
+    rowMode = { kind: 'limits' };
+    // Default the dropdown to the member's role-derived tier so "Save"
+    // without changing anything is a no-op rather than a downgrade.
+    limitsTier = (att.role as 'member' | 'officer' | 'board');
   }
 
   function closeRow() {
@@ -80,8 +89,20 @@
     if (app.adminStatus.kind === 'idle') closeRow();
   }
 
+  async function submitLimits(att: Attestation) {
+    await app.setMemberTier({ pubkey: att.member_pubkey, tier: limitsTier });
+    if (app.adminStatus.kind === 'idle') closeRow();
+  }
+
   function isSelf(att: Attestation): boolean {
     return att.member_pubkey === app.myAttestation?.member_pubkey;
+  }
+
+  /** Pretty-print an ISO timestamp for the revoked-tombstone row. */
+  function formatRevokedAt(iso: string): string {
+    try { return new Date(iso).toLocaleDateString(undefined, {
+      year: 'numeric', month: 'short', day: 'numeric',
+    }); } catch { return iso.slice(0, 10); }
   }
 
   let rootPriv = $state('');
@@ -355,6 +376,7 @@
               {#if !isOpen}
                 <div class="row-actions">
                   <button type="button" class="ghost" onclick={() => openEdit(att)}>Edit</button>
+                  <button type="button" class="ghost" onclick={() => openLimits(att)}>Limits</button>
                   <button type="button" class="danger"
                     onclick={() => openRevoke(att)}
                     disabled={isSelf(att)}
@@ -408,6 +430,38 @@
               </div>
             {/if}
 
+            {#if isOpen && rowMode?.kind === 'limits'}
+              <div class="row-form">
+                <p class="muted small">
+                  Throttle override applies to {att.display_name}'s
+                  per-identity rate, volume, and storage caps. Default
+                  is the tier matching their role ({att.role}); pick a
+                  different tier to lift or lower the ceiling. Overrides
+                  are process-local on the hub — they reset on hub
+                  restart, by design (§7.2.2).
+                </p>
+                <label>
+                  <span>Tier</span>
+                  <select bind:value={limitsTier}>
+                    <option value="member">member (default)</option>
+                    <option value="officer">officer (3× member)</option>
+                    <option value="board">board (6× member)</option>
+                  </select>
+                </label>
+                {#if app.adminStatus.kind === 'error'}
+                  <p class="failure" role="alert">{app.adminStatus.message}</p>
+                {/if}
+                <div class="row-actions">
+                  <button type="button" class="ghost" onclick={closeRow}
+                    disabled={app.adminStatus.kind === 'submitting'}>Cancel</button>
+                  <button type="button" onclick={() => submitLimits(att)}
+                    disabled={app.adminStatus.kind === 'submitting'}>
+                    {app.adminStatus.kind === 'submitting' ? 'Signing…' : 'Apply tier'}
+                  </button>
+                </div>
+              </div>
+            {/if}
+
             {#if isOpen && rowMode?.kind === 'revoke'}
               <div class="row-form danger-form">
                 <p class="warn">
@@ -435,6 +489,44 @@
                 </div>
               </div>
             {/if}
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
+  {#if app.rootKeysPresent && app.revoked.length > 0}
+    <!-- v0.4.24: tombstones for revoked keys. No actions — once revoked,
+         always revoked (§2.3). Surfacing them keeps the audit story
+         visible: when the board acts, the receipt of that action is
+         right here, not buried in a manifest chain. -->
+    <section class="revoked">
+      <h2>Recently revoked</h2>
+      <p class="muted">
+        These keys are permanently out of the directory. Historical
+        entries they signed before the revocation timestamp remain
+        valid (the as-of rule).
+      </p>
+      <ul>
+        {#each app.revoked as r (r.revocation.pubkey)}
+          <li>
+            <div class="revoked-summary">
+              <div class="revoked-meta">
+                <div class="revoked-name-row">
+                  <span class="revoked-name">
+                    {r.attestation?.display_name ?? '(unattested key)'}
+                  </span>
+                  {#if r.attestation?.role}
+                    <span class="role-tag">{r.attestation.role}</span>
+                  {/if}
+                </div>
+                <div class="revoked-reason">
+                  {r.revocation.reason || 'no reason given'}
+                </div>
+                <code class="revoked-fp">{fingerprint(r.revocation.pubkey)}</code>
+              </div>
+              <span class="revoked-at">{formatRevokedAt(r.revocation.revoked_at)}</span>
+            </div>
           </li>
         {/each}
       </ul>
@@ -707,6 +799,58 @@
   }
   button.danger-filled:hover:not(:disabled) {
     background: rgb(220, 38, 38);
+  }
+
+  /* v0.4.24: revoked tombstones. Muted styling so they read as past
+     events, not active members. Reasons get equal billing because
+     'why did we revoke them?' is the audit question this section is
+     here to answer. */
+  .revoked {
+    margin-top: 1.6rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.2rem;
+  }
+  .revoked > .muted {
+    color: var(--muted); margin: 0 0 0.8rem; font-size: 0.85rem;
+  }
+  .revoked ul {
+    list-style: none; margin: 0; padding: 0;
+  }
+  .revoked > ul > li {
+    border: 1px solid var(--border); border-radius: 10px;
+    background: rgba(255, 255, 255, 0.015);
+    padding: 0.7rem 0.9rem;
+    margin: 0 0 0.5rem;
+    opacity: 0.85;
+  }
+  .revoked-summary {
+    display: flex; gap: 1rem; align-items: flex-start;
+    justify-content: space-between;
+  }
+  .revoked-meta {
+    flex: 1; min-width: 0; display: flex; flex-direction: column;
+    gap: 0.25rem;
+  }
+  .revoked-name-row {
+    display: flex; align-items: baseline; gap: 0.45rem; flex-wrap: wrap;
+  }
+  .revoked-name {
+    font-weight: 600; color: var(--muted);
+    text-decoration: line-through;
+    text-decoration-color: rgba(220, 38, 38, 0.5);
+  }
+  .revoked-reason {
+    font-size: 0.88rem;
+    color: var(--fg);
+  }
+  .revoked-fp {
+    color: var(--muted);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.76rem;
+    overflow-wrap: anywhere;
+  }
+  .revoked-at {
+    color: var(--muted); font-size: 0.82rem; flex-shrink: 0;
   }
 
   .org-settings {

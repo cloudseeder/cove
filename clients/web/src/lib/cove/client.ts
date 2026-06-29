@@ -24,7 +24,7 @@ import {
 } from './verify';
 import type {
   Attestation, BlobRef, DirectoryManifest, Entry, InboxRow, InclusionProof,
-  STH, ThreadSummary,
+  Revocation, STH, ThreadSummary,
 } from './types';
 
 /**
@@ -164,6 +164,13 @@ export class Client {
   currentMembers(): Attestation[] {
     if (this.directoryView === null) return [];
     return this.directoryView.currentMembers();
+  }
+
+  /** v0.4.24: revocations + their last-known attestation, newest first.
+   *  Drives the AdminPanel "Recently revoked" tombstone section. */
+  recentlyRevoked(): RevokedEntry[] {
+    if (this.directoryView === null) return [];
+    return this.directoryView.recentlyRevoked();
   }
 
   /** Forget the per-thread delta-sync cursor so the next sync(thread)
@@ -384,6 +391,21 @@ export class Client {
   }> {
     this.requireAuth();
     return await this.requestJson('POST', '/admin/revoke', { manifest });
+  }
+
+  /** v0.4.24: POST /admin/limits — per-identity throttle override.
+   *  payload + sig were assembled by the caller (root-signed canonical
+   *  bytes of `payload`). Throttle overrides are PROCESS-LOCAL on the
+   *  hub by design (spec §7.2.2): they evaporate on hub restart, so
+   *  this is a "raise the board's tier for an annual mailing" knob,
+   *  not a durable role change. Use the membership editor for the
+   *  latter. */
+  async submitTierOverride(opts: {
+    payload: { pubkey: string; tier: string };
+    sig: string;
+  }): Promise<{ pubkey: string; tier: string }> {
+    this.requireAuth();
+    return await this.requestJson('POST', '/admin/limits', opts);
   }
 
   async fetchSth(): Promise<STH> {
@@ -748,6 +770,15 @@ export class Client {
 }
 
 // ---- directory view (resolve + revocation lookups) ------------------
+export interface RevokedEntry {
+  revocation: Revocation;
+  /** Last attestation ever held by the revoked pubkey, or null if the
+   *  manifest contains a revocation for a pubkey that was never attested
+   *  in any preserved attestation (shouldn't happen for current pilots
+   *  but the type permits it). */
+  attestation: Attestation | null;
+}
+
 interface DirectoryView {
   resolve(pubkey: string): Attestation | null;
   isRevoked(pubkey: string, asOf?: string): boolean;
@@ -755,6 +786,10 @@ interface DirectoryView {
    *  admin membership editor. Sorted by display_name (case-insensitive)
    *  so the panel doesn't reshuffle on each refresh. */
   currentMembers(): Attestation[];
+  /** v0.4.24: enumerate revocations + each one's last-known attestation
+   *  for the "Recently revoked" tombstone view. Sorted by revoked_at
+   *  desc (most recent first). */
+  recentlyRevoked(): RevokedEntry[];
 }
 
 function buildDirectoryView(m: DirectoryManifest): DirectoryView {
@@ -788,6 +823,24 @@ function buildDirectoryView(m: DirectoryManifest): DirectoryView {
       }
       out.sort((a, b) =>
         a.display_name.localeCompare(b.display_name, undefined, { sensitivity: 'base' }),
+      );
+      return out;
+    },
+    recentlyRevoked() {
+      const out: RevokedEntry[] = [];
+      for (const r of m.revocations) {
+        // Use the earliest revoked_at for a given pubkey — same rule
+        // the resolve / isRevoked path uses, so the tombstone matches
+        // what every other verifier sees.
+        const earliest = revMap.get(r.pubkey);
+        if (!earliest || earliest.revoked_at !== r.revoked_at) continue;
+        out.push({
+          revocation: r,
+          attestation: attMap.get(r.pubkey) ?? null,
+        });
+      }
+      out.sort((a, b) =>
+        a.revocation.revoked_at < b.revocation.revoked_at ? 1 : -1,
       );
       return out;
     },

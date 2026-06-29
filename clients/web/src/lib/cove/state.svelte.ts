@@ -6,6 +6,7 @@
  * One mutation point per concern keeps it analyzable.
  */
 import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
+import { canonicalize } from './crypto';
 import { issueAttestation, issueDirectory, type RootSigner } from './identity';
 import { encodePairingLink, fingerprint as fingerprintOf } from './pairing';
 import {
@@ -14,6 +15,7 @@ import {
   type AvailableUpdate,
 } from './tauri';
 import type { Attestation, InboxRow, ThreadSummary } from './types';
+import type { RevokedEntry } from './client';
 import { hashManifest } from './verify';
 
 // Tauri's invoke() rejects with a raw string when the Rust side returns
@@ -155,6 +157,9 @@ export class AppState {
    *  for the AdminPanel membership editor. Refreshed alongside
    *  myAttestation on directory fetches and after admin mutations. */
   members = $state<Attestation[]>([]);
+  /** v0.4.24: revocations + their last-known attestation, newest
+   *  first. Drives the "Recently revoked" subsection in AdminPanel. */
+  revoked = $state<RevokedEntry[]>([]);
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
 
@@ -335,6 +340,7 @@ export class AppState {
       // push round-trip.
       await this.client.fetchDirectory();
       this.members = this.client.currentMembers();
+      this.revoked = this.client.recentlyRevoked();
     } catch (err) {
       this.adminStatus = {
         kind: 'error', message: errMsg(err),
@@ -404,6 +410,7 @@ export class AppState {
       await this.client.fetchDirectory();
       this.myAttestation = this.client.myAttestation();
       this.members = this.client.currentMembers();
+      this.revoked = this.client.recentlyRevoked();
     } catch (err) {
       this.adminStatus = { kind: 'error', message: errMsg(err) };
     }
@@ -469,6 +476,41 @@ export class AppState {
       await this.client.fetchDirectory();
       this.myAttestation = this.client.myAttestation();
       this.members = this.client.currentMembers();
+      this.revoked = this.client.recentlyRevoked();
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
+  /** v0.4.24: set a per-identity throttle tier override (§7.2.2).
+   *  The hub's /admin/limits is process-local — overrides EVAPORATE on
+   *  hub restart by design. Use this for "raise so-and-so's tier for
+   *  the annual mailing" rather than as a durable role tweak (durable
+   *  changes go through updateMember).
+   *
+   *  Payload is root-signed off-hub via rootKeychain (the hub holds
+   *  NO root.priv, per CLAUDE.md non-negotiable #1). */
+  async setMemberTier(opts: {
+    pubkey: string;
+    tier: 'member' | 'officer' | 'board';
+  }): Promise<void> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      return;
+    }
+    if (!this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before changing limits.',
+      };
+      return;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    try {
+      const payload = { pubkey: opts.pubkey, tier: opts.tier };
+      const sig = await rootKeychain.signMessage(canonicalize(payload));
+      await this.client.submitTierOverride({ payload, sig });
+      this.adminStatus = { kind: 'idle' };
     } catch (err) {
       this.adminStatus = { kind: 'error', message: errMsg(err) };
     }
@@ -740,6 +782,7 @@ export class AppState {
       await this.client.fetchDirectory();
       this.myAttestation = this.client.myAttestation();
       this.members = this.client.currentMembers();
+      this.revoked = this.client.recentlyRevoked();
       await this.loadInbox();
       // Sidebar thread list — non-blocking so a slow /threads doesn't
       // gate the inbox render.
@@ -829,6 +872,7 @@ export class AppState {
         await this.client.fetchDirectory();
         this.myAttestation = this.client.myAttestation();
         this.members = this.client.currentMembers();
+      this.revoked = this.client.recentlyRevoked();
         // v0.4.19: inbox row previews carry server-resolved display_name
         // + role. A directory change can rename people / promote / demote,
         // so the preview can go stale. Refetch if we're currently
