@@ -476,20 +476,16 @@ export class Client {
 
   /** Standalone verification — used by subscribe() to verify pushed entries.
    *
-   *  IMPORTANT: when no sthArg is passed, this fetches a FRESH STH rather
-   *  than reusing the cached one. The cache is stale by definition on the
-   *  push path: by the time a pushed entry arrives, the tree has grown to
-   *  include it, but the cached STH was captured BEFORE that growth.
-   *  Sync passes sthArg explicitly so its batched entries share a single
-   *  consistent STH; push gets its own fresh fetch per entry.
-   *
-   *  Bug history: omitting this caused 'inclusion proof failed under sth
-   *  size=N' on every post-sync push — proof was for size N+1 but verify
-   *  was checking against the cached size-N STH. */
-  async verify(entry: Entry, seq: number, sthArg?: STH): Promise<VerifiedEntry> {
+   *  v0.4.31: the inclusion proof + STH come bundled from a single
+   *  atomic snapshot on the hub. There's no separate /sth fetch in the
+   *  verify path anymore, so the race that used to produce
+   *  'inclusion proof failed under sth size=N' on the first entry of
+   *  a brand-new thread is gone. sthArg is still accepted for
+   *  backwards-compat (sync used to pass a batch STH) but is ignored
+   *  in favor of the per-entry bundled STH. */
+  async verify(entry: Entry, seq: number, _sthArg?: STH): Promise<VerifiedEntry> {
     this.requireAuth();
     if (this.directory === null) await this.fetchDirectory();
-    const sth = sthArg ?? await this.fetchSth();
 
     // 1+2. id + sig (recomputes id, verifies sig over canonical content).
     if (!verifyEntry(entry)) {
@@ -520,8 +516,12 @@ export class Client {
       );
     }
 
-    // 5. inclusion proof under the current STH.
-    const proof = await this.fetchInclusionProof(entry.id!);
+    // 5. inclusion proof under the bundled STH. Atomic on the hub
+    // — proof.tree_size === sth.tree_size by construction.
+    const { proof, sth } = await this.fetchInclusionProof(entry.id!);
+    if (!verifySth(sth)) {
+      throw new VerificationError('STH signature invalid — pinned hub key check failed');
+    }
     if (!verifyInclusion(entry.id!, seq, proof, sth)) {
       throw new VerificationError(
         `inclusion proof failed for ${entry.id} under sth size=${sth.tree_size}`,
@@ -710,7 +710,13 @@ export class Client {
     return { ...entry, id, sig };
   }
 
-  private async fetchInclusionProof(entryId: string): Promise<InclusionProof> {
+  /** v0.4.31: fetch inclusion proof + STH bundled. The hub returns
+   *  both from a single atomic translog snapshot, so proof.tree_size
+   *  is guaranteed to equal sth.tree_size — no client-side race
+   *  between sequential /sth and /proof/inclusion fetches. */
+  private async fetchInclusionProof(
+    entryId: string,
+  ): Promise<{ proof: InclusionProof; sth: STH }> {
     const params = new URLSearchParams({ entry: entryId });
     const resp = await this.authedFetch(
       `${this.hubUrl}/proof/inclusion?${params}`,
@@ -721,7 +727,24 @@ export class Client {
         `no inclusion proof for ${entryId} (status ${resp.status})`,
       );
     }
-    return await resp.json();
+    const body = await resp.json() as InclusionProof & { sth?: STH };
+    if (!body.sth) {
+      // Older hub that doesn't bundle. Fall back to a separate /sth
+      // fetch and accept the (small) race — LWCCOA pilot's hub is
+      // always current so this branch is for browser-testing against
+      // a pinned older hub.
+      const sth = await this.fetchSth();
+      return {
+        proof: {
+          leaf_index: body.leaf_index,
+          tree_size: body.tree_size,
+          audit_path: body.audit_path,
+        },
+        sth,
+      };
+    }
+    const { sth, ...proofFields } = body;
+    return { proof: proofFields, sth };
   }
 
   private async requestJson(

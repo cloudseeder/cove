@@ -324,11 +324,15 @@ def test_broadcast_notice_path_end_to_end(tmp_path, root_keypair, hub_keypair):
             assert verify_entry(received) is True
 
             # 7b. Inclusion proof under the CURRENT STH (§5 step 4).
-            sth = STH(**client.get("/sth").json())
-            assert verify_sth(sth) is True
-            proof = InclusionProof(**client.get(
+            # v0.4.31: /proof/inclusion now bundles the STH atomically
+            # with the proof — single round-trip, no race window
+            # between separate /sth and /proof/inclusion calls.
+            body = client.get(
                 "/proof/inclusion", params={"entry": received.id},
-            ).json())
+            ).json()
+            sth = STH(**body.pop("sth"))
+            assert verify_sth(sth) is True
+            proof = InclusionProof(**body)
             assert verify_inclusion(received.id, push["seq"], proof, sth) is True
 
             # 7c. Directory resolution: origin is BOARD, not 'some attested
@@ -555,13 +559,15 @@ def test_equivocation_substrate_fires_on_divergent_observed_sths(tmp_path, root_
     # observation is preserved. A governance dispute can produce both
     # entries with their signatures intact and let the dispute proceed
     # on the signed record.
-    final_sth = STH(**board_client.get("/sth").json())
     for receipt_ev in (alice_receipt, bob_receipt):
         seq = hub_["store"].seq_of(receipt_ev.id)
-        proof = InclusionProof(**board_client.get(
+        # v0.4.31: bundled proof + STH from one atomic snapshot.
+        body = board_client.get(
             "/proof/inclusion", params={"entry": receipt_ev.id},
-        ).json())
-        assert verify_inclusion(receipt_ev.id, seq, proof, final_sth) is True
+        ).json()
+        sth = STH(**body.pop("sth"))
+        proof = InclusionProof(**body)
+        assert verify_inclusion(receipt_ev.id, seq, proof, sth) is True
 
     # The /ledger acked partition is independent of equivocation — both
     # members acked the same high_water_seq, so both still appear in
@@ -723,10 +729,12 @@ def test_revocation_mid_session_immediately_cuts_off_revoked_member(
     assert store.exists(bob_receipt.id)
 
     # Inclusion-proves under the CURRENT post-revoke STH.
-    sth_now = STH(**board_client.get("/sth").json())
-    proof = InclusionProof(**board_client.get(
+    # v0.4.31: /proof/inclusion bundles the STH from the same snapshot.
+    body = board_client.get(
         "/proof/inclusion", params={"entry": bob_receipt.id},
-    ).json())
+    ).json()
+    sth_now = STH(**body.pop("sth"))
+    proof = InclusionProof(**body)
     seq = store.seq_of(bob_receipt.id)
     assert verify_inclusion(bob_receipt.id, seq, proof, sth_now) is True
 
@@ -904,11 +912,14 @@ def test_hub_state_survives_full_restart(tmp_path, root_keypair, hub_keypair):
 
         # Inclusion proofs for every pre-restart entry verify under
         # the post-restart head — the rebuild reproduced the same tree.
+        # v0.4.31: discard the bundled STH; this test uses post_restart_sth.
         for ev in (notice, receipts["alice"], receipts["bob"]):
             seq = hub_b["store"].seq_of(ev.id)
-            proof = InclusionProof(**client.get(
+            body = client.get(
                 "/proof/inclusion", params={"entry": ev.id},
-            ).json())
+            ).json()
+            body.pop("sth", None)
+            proof = InclusionProof(**body)
             assert verify_inclusion(ev.id, seq, proof, post_restart_sth) is True
 
         # --- overview rebuilt from store ---

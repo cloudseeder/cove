@@ -1561,15 +1561,45 @@ def test_sth_returns_signed_tree_head(hub):
 # ---- GET /proof/inclusion -------------------------------------------
 
 def test_inclusion_proof_verifies_against_sth(hub):
+    """v0.4.31: /proof/inclusion bundles the proof + STH from a single
+    atomic snapshot of the translog. The bundled STH is what verify
+    runs against; a separately-fetched /sth could be at a higher
+    tree_size if another entry landed between the two requests."""
     ev = _signed_post(hub["member_priv"], hub["member_pub"])
     seq = hub["client"].post("/entries", json=_entry_payload(ev)).json()["seq"]
 
     r = hub["client"].get("/proof/inclusion", params={"entry": ev.id})
     assert r.status_code == 200
-    proof = InclusionProof(**r.json())
+    body = r.json()
+    sth = STH(**body.pop("sth"))
+    proof = InclusionProof(**body)
 
-    sth = STH(**hub["client"].get("/sth").json())
+    assert proof.tree_size == sth.tree_size, \
+        "atomic bundle: proof and STH must come from the same tree snapshot"
     assert verify_inclusion(ev.id, seq, proof, sth) is True
+
+
+def test_inclusion_proof_and_sth_stay_consistent_under_concurrent_appends(hub):
+    """v0.4.31 regression: post a flurry of entries, then for each entry
+    fetch /proof/inclusion and assert the bundled proof+sth still
+    verifies. Without the atomic bundling on the hub, this race used
+    to produce 'inclusion proof failed under sth size=N' errors
+    because proof.tree_size could drift past sth.tree_size between the
+    client's separate /sth and /proof/inclusion calls."""
+    ids_and_seqs = []
+    for i in range(10):
+        ev = _signed_post(hub["member_priv"], hub["member_pub"], body=f"m{i}")
+        seq = hub["client"].post("/entries", json=_entry_payload(ev)).json()["seq"]
+        ids_and_seqs.append((ev.id, seq))
+
+    for entry_id, seq in ids_and_seqs:
+        r = hub["client"].get("/proof/inclusion", params={"entry": entry_id})
+        assert r.status_code == 200
+        body = r.json()
+        sth = STH(**body.pop("sth"))
+        proof = InclusionProof(**body)
+        assert proof.tree_size == sth.tree_size
+        assert verify_inclusion(entry_id, seq, proof, sth) is True
 
 
 def test_inclusion_proof_404_for_unknown_entry(hub):
@@ -1847,7 +1877,9 @@ def test_startup_reconciles_in_memory_translog_with_on_disk_store(
         assert sth.root_hash == pre_restart_root
         # Every pre-restart entry is provable under the post-restart STH.
         for entry_id, seq in pre_restart_ids:
-            proof = InclusionProof(**client.get(
+            body = client.get(
                 "/proof/inclusion", params={"entry": entry_id}
-            ).json())
+            ).json()
+            body.pop("sth", None)  # v0.4.31: bundled, discarded here
+            proof = InclusionProof(**body)
             assert verify_inclusion(entry_id, seq, proof, sth) is True

@@ -456,7 +456,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     @api.get("/proof/inclusion")
     def get_inclusion(entry: str = Query(...)):
         try:
-            return asdict(translog.inclusion_proof(entry))
+            # v0.4.31: bundle the proof + STH from a single atomic
+            # snapshot of the translog. Eliminates the client-side
+            # "size error" race where another entry could land between
+            # separate /sth and /proof/inclusion fetches, producing
+            # proof.tree_size != sth.tree_size.
+            proof, sth = translog.inclusion_proof_and_sth(entry)
+            return {**asdict(proof), "sth": asdict(sth)}
         except KeyError:
             return _err(404, error="not_found", entry=entry)
 

@@ -43,6 +43,12 @@ class HubConfig:
     escalating_auto_throttle: bool = False   # never auto-revoke; revocation is a governance act
 
     # §6.4 / §10.8 signed-tree-head cadence: publish at least every N entries and every M seconds.
+    # NOTE (v0.4.31 investigation): these fields are currently NOT
+    # consulted by translog.current_sth() — it recomputes from the
+    # current tree state on every call. The constants remain as spec
+    # documentation; if we ever wire actual batching, the real fix for
+    # the "size error" race is in /proof/inclusion's atomic bundling
+    # (see api.py), NOT this cadence.
     sth_every_n_events: int = 64
     sth_every_seconds: int = 300
 

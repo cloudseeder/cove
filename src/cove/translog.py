@@ -150,6 +150,12 @@ class TamperEvidentLog:
         self._leaves: list[str] = []                  # leaf hashes in seq order
         self._index: dict[str, int] = {}              # entry_id -> position
         self._last_sth: STH | None = None
+        # v0.4.31: serialize tree mutations + atomic read snapshots so
+        # /proof/inclusion + /sth can return a consistent pair to the
+        # client. RLock so a method that builds a proof can also call
+        # current_sth without deadlocking.
+        import threading
+        self._lock = threading.RLock()
 
     def append(self, entry_id: str, seq: int) -> None:
         """Add a leaf for an accepted entry. Spec §7.1 step 8.
@@ -158,8 +164,9 @@ class TamperEvidentLog:
         next monotonic value and that `entry_id` is unique (§7.1 step 6/7).
         translog trusts that and just records the leaf.
         """
-        self._leaves.append(hash_leaf(entry_id, seq))
-        self._index[entry_id] = len(self._leaves) - 1
+        with self._lock:
+            self._leaves.append(hash_leaf(entry_id, seq))
+            self._index[entry_id] = len(self._leaves) - 1
 
     def rebuild(self, entries) -> None:
         """Replace state from the source-of-truth entry stream. Spec §9
@@ -179,6 +186,12 @@ class TamperEvidentLog:
 
     def current_sth(self) -> STH:
         """Compute root, chain prev_sth_hash, sign with hub key. Spec §6.4.1."""
+        with self._lock:
+            return self._current_sth_unlocked()
+
+    def _current_sth_unlocked(self) -> STH:
+        """current_sth body without the lock. Internal helper for atomic
+        bundle methods that hold the lock for both proof + STH."""
         size = len(self._leaves)
         root = _mth(self._leaves)
         if self._last_sth is not None and self._last_sth.tree_size == size:
@@ -204,26 +217,46 @@ class TamperEvidentLog:
 
     def inclusion_proof(self, entry_id: str) -> InclusionProof:
         """Spec §6.4.2. Raises KeyError if entry is absent."""
-        if entry_id not in self._index:
-            raise KeyError(f"entry {entry_id} not in log")
-        m = self._index[entry_id]
-        return InclusionProof(
-            leaf_index=m,
-            tree_size=len(self._leaves),
-            audit_path=_audit_path(m, self._leaves),
-        )
+        with self._lock:
+            if entry_id not in self._index:
+                raise KeyError(f"entry {entry_id} not in log")
+            m = self._index[entry_id]
+            return InclusionProof(
+                leaf_index=m,
+                tree_size=len(self._leaves),
+                audit_path=_audit_path(m, self._leaves),
+            )
+
+    def inclusion_proof_and_sth(self, entry_id: str) -> tuple[InclusionProof, STH]:
+        """v0.4.31: atomic snapshot of (proof, STH) — both reads see the
+        same tree state under one lock. Eliminates the race that produced
+        client-side 'inclusion proof failed under sth size=N' errors when
+        another entry was appended between the client's separate /sth
+        and /proof/inclusion fetches."""
+        with self._lock:
+            if entry_id not in self._index:
+                raise KeyError(f"entry {entry_id} not in log")
+            m = self._index[entry_id]
+            proof = InclusionProof(
+                leaf_index=m,
+                tree_size=len(self._leaves),
+                audit_path=_audit_path(m, self._leaves),
+            )
+            sth = self._current_sth_unlocked()
+        return proof, sth
 
     def consistency_proof(self, first_size: int, second_size: int) -> ConsistencyProof:
         """Spec §6.4.2."""
-        if not (0 < first_size <= second_size <= len(self._leaves)):
-            raise ValueError(
-                f"bad consistency sizes: 0 < {first_size} <= {second_size} <= {len(self._leaves)}"
+        with self._lock:
+            if not (0 < first_size <= second_size <= len(self._leaves)):
+                raise ValueError(
+                    f"bad consistency sizes: 0 < {first_size} <= {second_size} <= {len(self._leaves)}"
+                )
+            return ConsistencyProof(
+                first_size=first_size,
+                second_size=second_size,
+                path=_consistency_path(first_size, self._leaves[:second_size]),
             )
-        return ConsistencyProof(
-            first_size=first_size,
-            second_size=second_size,
-            path=_consistency_path(first_size, self._leaves[:second_size]),
-        )
 
 
 # ---- client-side verification (also used by the client; mirror in client repo) ----

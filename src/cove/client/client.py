@@ -233,7 +233,7 @@ class Client:
         sth = self._last_sth or self.fetch_sth()
         return self._verify(entry, seq, sth)
 
-    def _verify(self, ev: Entry, seq: int, sth: STH) -> VerifiedEntry:
+    def _verify(self, ev: Entry, seq: int, _sth: STH) -> VerifiedEntry:
         # 1+2. id + sig (recomputes id, verifies sig over canonical content).
         if not verify_entry(ev):
             raise VerificationError(f"entry {ev.id} id/sig invalid")
@@ -249,8 +249,14 @@ class Client:
             raise VerificationError(
                 f"author {ev.author} was revoked as-of {ev.created_at}")
 
-        # 5. inclusion proof under the current STH.
-        proof = self._fetch_inclusion_proof(ev.id)
+        # 5. inclusion proof + STH bundled atomically (v0.4.31). Eliminates
+        # the race where proof.tree_size could drift past a separately-
+        # fetched STH's tree_size when another entry landed between calls.
+        # The _sth caller-passed parameter is ignored — kept for the
+        # internal callsite signature only.
+        proof, sth = self._fetch_inclusion_proof_and_sth(ev.id)
+        if not verify_sth(sth):
+            raise VerificationError("STH signature invalid")
         if not verify_inclusion(ev.id, seq, proof, sth):
             raise VerificationError(
                 f"inclusion proof failed for {ev.id} under sth size={sth.tree_size}")
@@ -258,12 +264,21 @@ class Client:
         return VerifiedEntry(entry=ev, seq=seq, sth=sth,
                              inclusion_proof=proof, attestation=att)
 
-    def _fetch_inclusion_proof(self, entry_id: str) -> InclusionProof:
+    def _fetch_inclusion_proof_and_sth(self, entry_id: str) -> tuple[InclusionProof, STH]:
+        """v0.4.31: read /proof/inclusion's bundled response. Returns
+        (proof, sth) from a single hub-side atomic snapshot."""
         r = self._http.get("/proof/inclusion", params={"entry": entry_id})
         if r.status_code != 200:
             raise VerificationError(
                 f"no inclusion proof for {entry_id} (status {r.status_code})")
-        return InclusionProof(**r.json())
+        body = r.json()
+        sth_dict = body.pop("sth", None)
+        if sth_dict is None:
+            # Older hub fallback — fetch STH separately. Race window
+            # exists but is small in single-writer scenarios.
+            sth = self.fetch_sth()
+            return InclusionProof(**body), sth
+        return InclusionProof(**body), STH(**sth_dict)
 
     # ---- post (§3) ---------------------------------------------------
     def post(self, entry: Entry) -> int:
