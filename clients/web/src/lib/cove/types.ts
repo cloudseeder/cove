@@ -148,6 +148,17 @@ export interface ConsistencyProof {
   path: string[];
 }
 
+/** v0.4.35: per-entry delivery ledger snapshot from `GET /ledger`. Mirrors
+ *  `cove.index.Ledger.status`. `acked` and `not_acked` partition the
+ *  attested directory by whether each member's high-water seq in the
+ *  entry's thread is at or past the entry's seq. The not_acked list is
+ *  the actionable one — those are the people whose hub hasn't yet posted
+ *  a receipt covering this entry. */
+export interface LedgerStatus {
+  acked: string[];
+  not_acked: string[];
+}
+
 /** Mirrors cove.identity.Attestation.
  *  v0.3 rename: `unit` → `affiliation` (generic org sub-grouping);
  *  add optional `title` (human-readable job title). Role stays as the

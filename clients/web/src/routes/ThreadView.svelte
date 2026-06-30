@@ -302,6 +302,7 @@
               replyCount={replyCountFor(ve.entry.id)}
               onReply={() => app.openReplyPanel(ve)}
               onFollowBranch={(sub) => app.switchThread(sub)}
+              members={app.members}
             />
           {/each}
         {:else}
@@ -321,6 +322,7 @@
               replyCount={replyCountFor(ve.entry.id)}
               onReply={() => app.openReplyPanel(ve)}
               onFollowBranch={(sub) => app.switchThread(sub)}
+              members={app.members}
             />
           {/each}
         {/if}

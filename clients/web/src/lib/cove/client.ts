@@ -24,7 +24,7 @@ import {
 } from './verify';
 import type {
   Attestation, BlobRef, DirectoryManifest, Entry, InboxRow, InclusionProof,
-  Invite, Revocation, STH, ThreadSummary,
+  Invite, LedgerStatus, Revocation, STH, ThreadSummary,
 } from './types';
 
 /**
@@ -507,6 +507,19 @@ export class Client {
     this.requireAuth();
     const data = await this.requestJson('GET', '/inbox');
     return data.threads as InboxRow[];
+  }
+
+  /** v0.4.35: GET /ledger?entry=… — per-entry delivery status against
+   *  the attested directory. The hub returns `{acked, not_acked}` lists
+   *  of member pubkeys; the caller resolves display names through the
+   *  cached directory. Drives DeliveryIndicator's "N of M delivered"
+   *  card. This is the accountability surface — the protocol's whole
+   *  purpose was that you can see when a message hasn't landed. */
+  async fetchLedger(entryId: string): Promise<LedgerStatus> {
+    this.requireAuth();
+    const params = new URLSearchParams({ entry: entryId });
+    const data = await this.requestJson('GET', `/ledger?${params}`);
+    return { acked: data.acked ?? [], not_acked: data.not_acked ?? [] };
   }
 
   /** v0.4.19: latest STH this client has fetched, or null. Used by

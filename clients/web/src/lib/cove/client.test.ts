@@ -335,6 +335,42 @@ describe('subscribe', () => {
     expect(rows).toEqual(inboxRows);
   });
 
+  test('v0.4.35: fetchLedger queries /ledger?entry=… and returns acked/not_acked', async () => {
+    const entryId = 'sha256:' + 'a'.repeat(64);
+    const acked = ['pubkey_alice', 'pubkey_bob'];
+    const notAcked = ['pubkey_kevin'];
+    let observedUrl: string | null = null;
+    const fetchMock = vi.fn(async (url: string | URL | Request) => {
+      const u = new URL(url.toString());
+      if (u.pathname === '/auth/challenge') {
+        return jsonResp({ nonce: 'd'.repeat(64), expires_at: 9_999_999_999 });
+      }
+      if (u.pathname === '/auth/verify') {
+        return jsonResp({ token: 'a'.repeat(64), pubkey: alice.pub, expires_at: 9_999_999_999 });
+      }
+      if (u.pathname === '/ledger') {
+        observedUrl = u.toString();
+        return jsonResp({ acked, not_acked: notAcked });
+      }
+      return jsonResp({ error: 'not_found' }, 404);
+    });
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub, fetch: fetchMock,
+    });
+    await c.authenticate();
+    const status = await c.fetchLedger(entryId);
+    expect(status).toEqual({ acked, not_acked: notAcked });
+    expect(observedUrl).toContain(`entry=${encodeURIComponent(entryId)}`);
+  });
+
+  test('v0.4.35: fetchLedger requires auth — throws before authenticate()', async () => {
+    const c = new Client({
+      hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub,
+      fetch: vi.fn(async () => jsonResp({}, 500)),
+    });
+    await expect(c.fetchLedger('sha256:' + 'a'.repeat(64))).rejects.toThrow();
+  });
+
   test('v0.4.18: directory_changed push triggers a /directory refetch', async () => {
     // The hub broadcasts directory_changed on /admin/attest + /admin/revoke
     // so connected clients refresh their directoryView without waiting for

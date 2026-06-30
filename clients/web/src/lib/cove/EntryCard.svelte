@@ -8,7 +8,9 @@
 -->
 <script lang="ts">
   import type { Client, VerifiedEntry } from './client';
+  import type { Attestation } from './types';
   import Attachment from './Attachment.svelte';
+  import DeliveryIndicator from './DeliveryIndicator.svelte';
   import Seal from './Seal.svelte';
   import VerificationChain from './VerificationChain.svelte';
 
@@ -30,10 +32,15 @@
     /** v0.2: fired when the user clicks a branch-card body — switches to
      *  the sub-thread named in entry.branch_thread. */
     onFollowBranch?: (subThread: string) => void;
+    /** v0.4.35: attested directory for resolving pubkey → display name
+     *  in the DeliveryIndicator. Omitted when the parent doesn't have
+     *  the manifest yet — the indicator is suppressed in that case so
+     *  it doesn't render half-resolved rows. */
+    members?: Attestation[];
   }
 
   let { ve, isNew = false, client = null, replyCount = 0,
-        onReply, onFollowBranch }: Props = $props();
+        onReply, onFollowBranch, members = [] }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
 
@@ -93,17 +100,22 @@
     </div>
   {/if}
 
-  {#if onReply}
+  {#if onReply || (client && members.length > 0 && ve.entry.id)}
     <footer>
-      <button type="button" class="reply" onclick={onReply}>
-        {#if replyCount === 0}
-          Reply
-        {:else if replyCount === 1}
-          1 reply
-        {:else}
-          {replyCount} replies
-        {/if}
-      </button>
+      {#if onReply}
+        <button type="button" class="reply" onclick={onReply}>
+          {#if replyCount === 0}
+            Reply
+          {:else if replyCount === 1}
+            1 reply
+          {:else}
+            {replyCount} replies
+          {/if}
+        </button>
+      {/if}
+      {#if client && members.length > 0 && ve.entry.id}
+        <DeliveryIndicator {client} entryId={ve.entry.id} {members} />
+      {/if}
     </footer>
   {/if}
 
@@ -224,6 +236,9 @@
     margin-top: 0.7rem;
     display: flex;
     justify-content: flex-start;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
   }
   .reply {
     background: transparent;

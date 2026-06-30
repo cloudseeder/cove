@@ -58,7 +58,7 @@
       <!-- Pinned parent — same EntryCard, no reply CTA inside the panel
            (you're already 'in' the reply context). -->
       <div class="parent">
-        <EntryCard ve={parent} client={app.client} />
+        <EntryCard ve={parent} client={app.client} members={app.members} />
       </div>
 
       <div class="replies">
@@ -66,7 +66,7 @@
           <p class="empty">No replies yet. Start the conversation.</p>
         {:else}
           {#each replies as ve (ve.entry.id)}
-            <EntryCard {ve} client={app.client} />
+            <EntryCard {ve} client={app.client} members={app.members} />
           {/each}
         {/if}
       </div>

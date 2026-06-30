@@ -15,8 +15,10 @@
 -->
 <script lang="ts">
   import type { Client, VerifiedEntry } from '$lib/cove/client';
+  import type { Attestation } from '$lib/cove/types';
   import { authorColor, initials, smartTimestamp } from '$lib/cove/chat';
   import Attachment from '$lib/cove/Attachment.svelte';
+  import DeliveryIndicator from '$lib/cove/DeliveryIndicator.svelte';
   import VerificationChain from '$lib/cove/VerificationChain.svelte';
 
   interface Props {
@@ -27,10 +29,12 @@
     onReply?: () => void;
     onFollowBranch?: (subThread: string) => void;
     isNew?: boolean;
+    /** v0.4.35: see EntryCard. */
+    members?: Attestation[];
   }
 
   let { ve, showHeader, client = null, replyCount = 0,
-        onReply, onFollowBranch, isNew = false }: Props = $props();
+        onReply, onFollowBranch, isNew = false, members = [] }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
   const isBoard = $derived(ve.attestation.role === 'board');
@@ -91,10 +95,17 @@
       </div>
     {/if}
 
-    {#if onReply}
-      <button type="button" class="reply-link" onclick={onReply}>
-        {#if replyCount === 0}Reply{:else if replyCount === 1}1 reply{:else}{replyCount} replies{/if}
-      </button>
+    {#if onReply || (client && members.length > 0 && ve.entry.id)}
+      <div class="footer-row">
+        {#if onReply}
+          <button type="button" class="reply-link" onclick={onReply}>
+            {#if replyCount === 0}Reply{:else if replyCount === 1}1 reply{:else}{replyCount} replies{/if}
+          </button>
+        {/if}
+        {#if client && members.length > 0 && ve.entry.id}
+          <DeliveryIndicator {client} entryId={ve.entry.id} {members} />
+        {/if}
+      </div>
     {/if}
 
     {#if revealed}
@@ -226,6 +237,13 @@
   .attachments {
     margin: 0.3rem 0;
   }
+  .footer-row {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    flex-wrap: wrap;
+    margin-top: 0.1rem;
+  }
   .reply-link {
     appearance: none;
     background: transparent;
@@ -234,7 +252,6 @@
     cursor: pointer;
     font-size: 0.78rem;
     padding: 0.15rem 0;
-    margin-top: 0.1rem;
   }
   .reply-link:hover {
     text-decoration: underline;
