@@ -82,14 +82,27 @@
 <aside class="thread-list" aria-label="Threads">
   <header>
     <h2>Threads</h2>
-    <button
-      type="button"
-      class="refresh"
-      title="Refresh thread list"
-      onclick={() => app.loadThreads()}
-    >
-      ↻
-    </button>
+    <div class="header-actions">
+      <!-- v0.4.30: + New thread button mirrors the InboxPanel one so
+           a user inside any thread can compose a fresh one without
+           navigating back to Inbox. Same dialog, same state. -->
+      <button
+        type="button"
+        class="new-thread"
+        title="Start a new thread (public or private to selected members)"
+        onclick={() => app.openNewThreadDialog()}
+      >
+        +
+      </button>
+      <button
+        type="button"
+        class="refresh"
+        title="Refresh thread list"
+        onclick={() => app.loadThreads()}
+      >
+        ↻
+      </button>
+    </div>
   </header>
 
   {#snippet activeSubNav()}
@@ -230,7 +243,10 @@
     color: var(--muted);
     font-weight: 600;
   }
-  .refresh {
+  .header-actions {
+    display: flex; align-items: center; gap: 0.25rem;
+  }
+  .refresh, .new-thread {
     background: transparent;
     border: none;
     color: var(--muted);
@@ -238,11 +254,20 @@
     cursor: pointer;
     padding: 0.1em 0.4em;
     border-radius: 4px;
+    line-height: 1;
   }
-  .refresh:hover {
+  .refresh:hover, .new-thread:hover {
     background: rgba(255, 255, 255, 0.04);
     color: var(--fg);
   }
+  .new-thread {
+    /* The + button is the primary action; tint it gold so it doesn't
+       disappear next to the refresh control. */
+    color: #d4af37;
+    font-weight: 600;
+    font-size: 1.2em;
+  }
+  .new-thread:hover { color: #e8c96b; }
   ul {
     list-style: none;
     padding: 0.4rem 0.5rem;

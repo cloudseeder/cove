@@ -673,6 +673,81 @@ export class AppState {
     return this.hasCapability('admin');
   }
 
+  /** v0.4.30: + New thread dialog state. Lifted from InboxPanel so
+   *  the sidebar (and any other entry point later) can open the same
+   *  dialog without duplicating its state machine. Null when closed. */
+  newThreadDialog = $state<{
+    name: string;
+    scope: 'public' | 'private';
+    selected: Set<string>;
+    message: string;
+    submitting: boolean;
+    error: string | null;
+  } | null>(null);
+
+  openNewThreadDialog(): void {
+    this.newThreadDialog = {
+      name: '',
+      scope: 'public',
+      selected: new Set<string>(),
+      message: '',
+      submitting: false,
+      error: null,
+    };
+  }
+
+  closeNewThreadDialog(): void {
+    this.newThreadDialog = null;
+  }
+
+  toggleNewThreadMember(pubkey: string): void {
+    if (!this.newThreadDialog) return;
+    const next = new Set(this.newThreadDialog.selected);
+    if (next.has(pubkey)) next.delete(pubkey);
+    else next.add(pubkey);
+    this.newThreadDialog = { ...this.newThreadDialog, selected: next };
+  }
+
+  /** Run the new-thread submit through createDirectThread (private)
+   *  or switchThread+post (public). Sets/clears submitting + error
+   *  on the dialog state so the UI can render spinner + failure. */
+  async submitNewThread(): Promise<void> {
+    if (!this.newThreadDialog) return;
+    const sanitized = this.newThreadDialog.name.trim().toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!sanitized) {
+      this.newThreadDialog = {
+        ...this.newThreadDialog, error: 'Thread name is required.',
+      };
+      return;
+    }
+    this.newThreadDialog = {
+      ...this.newThreadDialog, submitting: true, error: null,
+    };
+    try {
+      const d = this.newThreadDialog;
+      if (d.scope === 'private') {
+        await this.createDirectThread({
+          thread: sanitized,
+          pubkeys: Array.from(d.selected),
+          message: d.message,
+        });
+      } else {
+        await this.switchThread(sanitized);
+        if (d.message.trim()) await this.post(d.message);
+      }
+      this.newThreadDialog = null;
+    } catch (err) {
+      this.newThreadDialog = this.newThreadDialog
+        ? {
+            ...this.newThreadDialog,
+            submitting: false,
+            error: errMsg(err),
+          }
+        : null;
+    }
+  }
+
   /** v0.4.25: is a named thread currently archived? Consults the
    *  cached inbox rows first (most authoritative — server-computed
    *  under the current manifest) then the sidebar thread list. A

@@ -63,80 +63,10 @@
   const sortedActive = $derived(sortBy(activeRows));
   const sortedArchived = $derived(sortBy(archivedRows));
 
-  // v0.4.27: + New thread dialog. Audience radio decides whether the
-  // thread is public or audience-scoped. For scoped threads the user
-  // multi-selects from current members; the caller is auto-included.
-  let newDialog = $state<{
-    name: string;
-    scope: 'public' | 'private';
-    selected: Set<string>;       // pubkeys
-    message: string;
-    submitting: boolean;
-    error: string | null;
-  } | null>(null);
-
-  function openNewDialog() {
-    newDialog = {
-      name: '',
-      scope: 'public',
-      selected: new Set<string>(),
-      message: '',
-      submitting: false,
-      error: null,
-    };
-  }
-  function closeNewDialog() {
-    newDialog = null;
-  }
-  function togglePubkey(pk: string) {
-    if (!newDialog) return;
-    const next = new Set(newDialog.selected);
-    if (next.has(pk)) next.delete(pk);
-    else next.add(pk);
-    newDialog = { ...newDialog, selected: next };
-  }
-  function sanitizeNewThreadName(s: string): string {
-    return s.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-')
-      .replace(/^-+|-+$/g, '');
-  }
-  async function submitNewThread() {
-    if (!newDialog) return;
-    const name = sanitizeNewThreadName(newDialog.name);
-    if (!name) {
-      newDialog = { ...newDialog, error: 'Thread name is required.' };
-      return;
-    }
-    newDialog = { ...newDialog, submitting: true, error: null };
-    try {
-      if (newDialog.scope === 'private') {
-        await app.createDirectThread({
-          thread: name,
-          pubkeys: Array.from(newDialog.selected),
-          message: newDialog.message,
-        });
-      } else {
-        await app.switchThread(name);
-        if (newDialog.message.trim()) await app.post(newDialog.message);
-      }
-      closeNewDialog();
-    } catch (err) {
-      newDialog = {
-        ...newDialog,
-        submitting: false,
-        error: (err as Error).message,
-      };
-    }
-  }
-
-  /** Caller's own pubkey — must be in the audience for a private
-   *  thread. Excluded from the multi-select list (auto-included
-   *  with a static checked badge). */
-  const myPubkey = $derived(
-    app.authStatus.kind === 'authenticated' ? app.authStatus.pubkey : '',
-  );
-  const otherMembers = $derived(
-    app.members.filter((m) => m.member_pubkey !== myPubkey),
-  );
+  // v0.4.27/v0.4.30: + New thread button. Dialog state + submit live
+  // on AppState now (lifted in v0.4.30) so the sidebar can open the
+  // same dialog. The dialog itself renders in ThreadView so it's
+  // available regardless of route.
 </script>
 
 <section class="inbox" aria-label="Inbox">
@@ -154,7 +84,7 @@
     <div class="head-right">
       <button type="button" class="new-thread-btn"
         title="Start a new thread (public or private to selected members)"
-        onclick={openNewDialog}>+ New thread</button>
+        onclick={() => app.openNewThreadDialog()}>+ New thread</button>
       <button type="button" class="refresh"
         title="Refresh inbox"
         disabled={app.inboxStatus.kind === 'loading'}
@@ -240,82 +170,9 @@
   {/if}
 </section>
 
-{#if newDialog}
-  <div class="modal-backdrop" onclick={closeNewDialog} role="presentation"></div>
-  <div class="modal" role="dialog" aria-label="Start a new thread">
-    <h3>New thread</h3>
-
-    <label>
-      <span>Thread name</span>
-      <input type="text" bind:value={newDialog.name}
-        placeholder="e.g. board-private-2026-q3"
-        maxlength="64" autocapitalize="off"
-        autocorrect="off" spellcheck="false" />
-    </label>
-
-    <fieldset class="scope">
-      <legend>Audience</legend>
-      <label class="radio">
-        <input type="radio" bind:group={newDialog.scope} value="public" />
-        <span>Everyone in the org</span>
-      </label>
-      <label class="radio">
-        <input type="radio" bind:group={newDialog.scope} value="private" />
-        <span>Just these people</span>
-      </label>
-    </fieldset>
-
-    {#if newDialog.scope === 'private'}
-      <div class="audience-list">
-        <p class="self-line">
-          ✓ <strong>You</strong> (auto-included as creator)
-        </p>
-        <ul>
-          {#each otherMembers as m (m.member_pubkey)}
-            <li>
-              <label>
-                <input type="checkbox"
-                  checked={newDialog.selected.has(m.member_pubkey)}
-                  onchange={() => togglePubkey(m.member_pubkey)} />
-                <span class="name">{m.display_name}</span>
-                {#if m.role !== 'member'}
-                  <span class="role-tag">{m.role}</span>
-                {/if}
-              </label>
-            </li>
-          {/each}
-        </ul>
-        {#if otherMembers.length === 0}
-          <p class="muted small">
-            No other attested members on this hub yet. A private thread
-            still works — you'll be the only audience member.
-          </p>
-        {/if}
-      </div>
-    {/if}
-
-    <label>
-      <span>First message</span>
-      <textarea bind:value={newDialog.message} rows="3"
-        placeholder="Type the first message (optional — you can post later)…"></textarea>
-    </label>
-
-    {#if newDialog.error}
-      <p class="failure" role="alert">{newDialog.error}</p>
-    {/if}
-
-    <div class="modal-actions">
-      <button type="button" class="ghost" onclick={closeNewDialog}
-        disabled={newDialog.submitting}>Cancel</button>
-      <button type="button" onclick={submitNewThread}
-        disabled={newDialog.submitting || sanitizeNewThreadName(newDialog.name) === ''}>
-        {newDialog.submitting
-          ? 'Creating…'
-          : (newDialog.scope === 'private' ? 'Create private thread' : 'Create thread')}
-      </button>
-    </div>
-  </div>
-{/if}
+<!-- v0.4.30: dialog markup lives in ThreadView.svelte now so the sidebar
+     trigger renders it independently of which main-pane route is active.
+     The state + submit live on AppState (newThreadDialog field). -->
 
 <style>
   .inbox {
@@ -524,128 +381,7 @@
     cursor: pointer;
   }
   .new-thread-btn:hover { background: #e2bf4e; }
-
-  :global(.modal-backdrop) {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 50;
-  }
-  :global(.modal) {
-    position: fixed;
-    z-index: 51;
-    top: 50%; left: 50%;
-    transform: translate(-50%, -50%);
-    max-width: 520px; width: calc(100vw - 4rem);
-    max-height: calc(100vh - 4rem);
-    overflow-y: auto;
-    background: var(--panel);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 1.4rem 1.6rem;
-  }
-  :global(.modal h3) { margin: 0 0 0.85rem; font-size: 1.1rem; }
-  :global(.modal label) { display: block; margin: 0.7rem 0; }
-  :global(.modal label > span) {
-    display: block; font-size: 0.82rem; color: var(--muted);
-    margin-bottom: 0.3rem;
-  }
-  :global(.modal input[type="text"]),
-  :global(.modal textarea) {
-    width: 100%; box-sizing: border-box;
-    background: var(--bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.45rem 0.65rem; font: inherit; font-size: 0.9rem;
-  }
-  :global(.modal textarea) {
-    font-family: inherit;
-    resize: vertical;
-  }
-
-  fieldset.scope {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 0.6rem 0.85rem 0.4rem;
-    margin: 0.85rem 0;
-  }
-  fieldset.scope legend {
-    padding: 0 0.4rem;
-    font-size: 0.78rem;
-    color: var(--muted);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  label.radio {
-    display: flex; align-items: center; gap: 0.5rem;
-    margin: 0.3rem 0;
-    font-size: 0.92rem;
-  }
-  label.radio input { margin: 0; }
-  label.radio span { display: inline; font-size: inherit; color: inherit; }
-
-  .audience-list {
-    border: 1px dashed var(--border);
-    border-radius: 8px;
-    padding: 0.7rem 0.85rem;
-    margin: 0.85rem 0;
-    max-height: 12rem;
-    overflow-y: auto;
-  }
-  .audience-list .self-line {
-    margin: 0 0 0.5rem;
-    font-size: 0.88rem;
-    color: rgb(120, 200, 140);
-  }
-  .audience-list ul {
-    list-style: none; margin: 0; padding: 0;
-  }
-  .audience-list li {
-    padding: 0.15rem 0;
-  }
-  .audience-list label {
-    display: flex; align-items: center; gap: 0.55rem;
-    margin: 0; cursor: pointer;
-    font-size: 0.9rem;
-  }
-  .audience-list label .name { font-weight: 500; color: var(--fg); }
-  .audience-list label .role-tag {
-    font-size: 0.7rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    background: rgba(255,255,255,0.04);
-    border: 1px solid var(--border);
-    padding: 0.05rem 0.4rem;
-    border-radius: 999px;
-  }
-
-  .modal-actions {
-    display: flex; justify-content: flex-end; gap: 0.5rem;
-    margin-top: 1rem;
-  }
-  .modal-actions button {
-    background: #d4af37; color: #0a0a0a;
-    border: none; border-radius: 999px;
-    padding: 0.5rem 1.2rem; font: inherit; font-weight: 600;
-    cursor: pointer;
-  }
-  .modal-actions button:hover:not(:disabled) { background: #e2bf4e; }
-  .modal-actions button:disabled {
-    background: var(--border); color: var(--muted); cursor: not-allowed;
-  }
-  .modal-actions button.ghost {
-    background: transparent; border: 1px solid var(--border);
-    color: var(--muted);
-  }
-  .modal-actions button.ghost:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.04); color: var(--fg);
-  }
-  .failure {
-    margin: 0.7rem 0 0; padding: 0.5rem 0.75rem;
-    background: rgba(220, 38, 38, 0.08);
-    border: 1px solid rgba(220, 38, 38, 0.4);
-    color: #fca5a5; font-size: 0.86rem;
-    border-radius: 6px;
-  }
-  :global(.modal .small) { font-size: 0.78rem; }
-  :global(.modal .muted) { color: var(--muted); }
+  /* v0.4.30: dialog styles moved to ThreadView.svelte (which owns
+     the dialog now). Keeps the only-shared CSS next to the only
+     mount point that's always live for an authenticated user. */
 </style>
