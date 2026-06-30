@@ -1,6 +1,6 @@
 [package]
 name = "cove-web"
-version = "0.4.27"
+version = "0.4.28"
 description = "Cove — Tauri desktop/mobile shell"
 edition = "2021"
 
@@ -77,6 +77,15 @@ tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"
 tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
 url = "2"
+
+# v0.4.28: pin `time` to <=0.3.51 to keep transitive `cookie 0.18.1`
+# building. cookie's parse.rs:226 calls `time::Parsable::parse(input)` —
+# a 1-arg API that time 0.3.52 expanded to 2-arg (Option<Parsed> added).
+# Cargo's resolver was picking 0.3.52, breaking the macOS build in CI.
+# Cookie comes in transitively through the tauri-plugin-updater
+# dependency chain; pinning here forces every consumer onto a
+# compatible version until cookie ships a fix.
+time = "=0.3.51"
 
 [features]
 default = ["custom-protocol"]
