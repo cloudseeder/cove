@@ -183,6 +183,10 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             "https://tauri.localhost",
             "http://localhost:1420",
             "http://localhost:5173",
+            # v0.4.29: PWA installed from app.cove.oap.dev. Same hub
+            # API at cove.oap.dev with a different origin — CORS has to
+            # name it explicitly.
+            "https://app.cove.oap.dev",
         ],
         allow_credentials=True,
         allow_methods=["*"],

@@ -34,6 +34,24 @@ export function isTauri(): boolean {
   );
 }
 
+/** v0.4.29: is the app running as an installed PWA? Two signals matter:
+ *  the display-mode media query (set to `standalone` when launched from
+ *  the home-screen icon on iOS / Android), and the iOS Safari-specific
+ *  `navigator.standalone` flag (pre-display-mode-support). Both have
+ *  the same UX consequence: there's no browser chrome, the user
+ *  installed this, paste-each-launch friction needs to go down.
+ *  Returns false outside the browser. */
+export function isPWA(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (isTauri()) return false;  // Tauri webview reports standalone too
+  try {
+    if (window.matchMedia?.('(display-mode: standalone)')?.matches) return true;
+  } catch { /* matchMedia is fine to throw on legacy WebKit */ }
+  // iOS Safari predates display-mode; check the legacy flag too.
+  const nav = navigator as Navigator & { standalone?: boolean };
+  return !!nav.standalone;
+}
+
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) {
     throw new Error(`Tauri command '${cmd}' called outside Tauri context`);

@@ -11,7 +11,7 @@ import { issueAttestation, issueDirectory, type RootSigner } from './identity';
 import { encodePairingLink, fingerprint as fingerprintOf } from './pairing';
 import {
   appVersion,
-  ensureNotificationPermission, isTauri, keychain, rootKeychain, stream, updater,
+  ensureNotificationPermission, isPWA, isTauri, keychain, rootKeychain, stream, updater,
   type AvailableUpdate,
 } from './tauri';
 import type {
@@ -97,6 +97,11 @@ export class AppState {
   /** True iff running inside the Tauri shell — drives the keychain
    *  vs paste-box branch in the auth panel. */
   inTauri = $state<boolean>(isTauri());
+  /** v0.4.29: installed PWA mode. Browser-only-mode + installed-to-
+   *  home-screen. Auth UI treats this like Tauri's paste flow (no
+   *  hardware keychain) but tunes the messaging — the user is on
+   *  a mobile device that just opened the app from its icon. */
+  inPWA = $state<boolean>(isPWA());
   /** v0.4.16: bundle version exposed in the UI so users can read off
    *  which build they're on without digging into the OS-level About
    *  dialog. Populated asynchronously after construct because

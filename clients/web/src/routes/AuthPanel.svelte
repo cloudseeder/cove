@@ -214,14 +214,33 @@
 
   {:else}
     <!-- Paste flow.
-         - Browser: the only flow available. Private key lives in JS
-           heap; that's what running outside Tauri costs you.
+         - PWA (mobile, installed): paste mode for v0.4.29. v0.4.30 will
+           add passphrase-encrypted IndexedDB key storage. For now the
+           user pastes (or generates and copies) each session.
+         - Browser: same paste flow.
          - Tauri w/ useTauriPaste opt-in: an explicit fallback when
            keychain custody isn't available (unsigned macOS) or the
-           user wants to opt out of OS-level storage. Same JS-heap
-           lifetime, but the choice is deliberate. -->
-    <h1>Connect</h1>
-    {#if app.inTauri && useTauriPaste}
+           user wants to opt out of OS-level storage. -->
+    {#if app.inPWA && onOnboard}
+      <h1>Welcome to Cove</h1>
+      <p class="muted">
+        First time on this device? Generate a key here and have your
+        keymaster attest it — the app unlocks as soon as they do.
+      </p>
+      <div class="hero-actions">
+        <button type="button" onclick={onOnboard}>Get started</button>
+      </div>
+      <p class="divider"><span>or paste an existing key</span></p>
+    {:else}
+      <h1>Connect</h1>
+    {/if}
+    {#if app.inPWA}
+      <p class="muted">
+        Mobile (PWA) — your private key lives in memory for this
+        session only. You'll paste it again next launch until v0.4.30
+        adds passphrase-protected on-device storage.
+      </p>
+    {:else if app.inTauri && useTauriPaste}
       <p class="muted">
         Paste mode — your private key stays in the app's memory for
         this session only and never touches disk or the OS keychain.
