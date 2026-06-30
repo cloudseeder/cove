@@ -680,6 +680,17 @@ export class AppState {
     return false;
   }
 
+  /** v0.4.27: current audience scope for a thread, or null if public.
+   *  The hub only surfaces audience-scoped threads to members, so a
+   *  non-null result here also means "I'm in the audience." */
+  threadAudience(name: string): { pubkeys: string[] } | null {
+    const inboxRow = this.inboxRows.find((r) => r.thread === name);
+    if (inboxRow) return inboxRow.audience;
+    const threadRow = this.threads.find((t) => t.thread === name);
+    if (threadRow) return threadRow.audience;
+    return null;
+  }
+
   /**
    * Quietly check the updater feed. Call once on app load; the feed
    * URL + pubkey live in tauri.conf.json. A signature-verification
@@ -1069,6 +1080,63 @@ export class AppState {
     // post round-trip).
     await this.loadInbox();
     void this.loadThreads();
+  }
+
+  /** v0.4.27: post a kind='audience' entry on `thread` scoping it to
+   *  `pubkeys`. The hub enforces the "must currently be in the
+   *  audience to update" rule (or "anyone for the first entry").
+   *  Refreshes inbox + threads so the new audience reflects locally. */
+  async setThreadAudience(thread: string, pubkeys: string[]): Promise<void> {
+    if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    const ev = {
+      thread,
+      author: this.authStatus.pubkey,
+      kind: 'audience' as const,
+      created_at: new Date().toISOString(),
+      parents: [],
+      body: '',
+      blobs: [],
+      supersedes: null,
+      receipt: null,
+      branch_thread: null,
+      audience: { pubkeys: [...pubkeys] },
+      id: null,
+      sig: null,
+    };
+    await this.client.post(ev);
+    await this.loadInbox();
+    void this.loadThreads();
+  }
+
+  /** v0.4.27: create a new thread with an audience scope and an
+   *  initial message in one user action. Posts:
+   *    1. kind='audience' establishing the scope
+   *    2. kind='post' with the first message
+   *  The hub assigns sequential seqs; clients see the audience
+   *  before the post arrives, so the entry is filtered correctly
+   *  for non-audience subscribers.
+   *
+   *  `pubkeys` MUST include the caller — otherwise they'd lock
+   *  themselves out of their own thread. UI enforces this; we also
+   *  guard here. */
+  async createDirectThread(opts: {
+    thread: string;
+    pubkeys: string[];
+    message: string;
+  }): Promise<void> {
+    if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    const me = this.authStatus.pubkey;
+    const audiencePubkeys = opts.pubkeys.includes(me)
+      ? [...opts.pubkeys]
+      : [me, ...opts.pubkeys];
+    await this.setThreadAudience(opts.thread, audiencePubkeys);
+    // Then the first post. switchThread sets up the WS subscription,
+    // syncs, and posts the receipt; we use it so the user lands inside
+    // the new thread after creation rather than back on Inbox.
+    await this.switchThread(opts.thread);
+    if (opts.message.trim()) {
+      await this.post(opts.message);
+    }
   }
 
   async post(body: string, files: File[] = [],

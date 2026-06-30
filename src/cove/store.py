@@ -13,7 +13,7 @@ from dataclasses import asdict
 from typing import Iterable, Optional
 
 from . import crypto
-from .entry import BlobRef, Entry, Receipt
+from .entry import Audience, BlobRef, Entry, Receipt
 
 
 _SCHEMA = """
@@ -136,6 +136,64 @@ class EventStore:
         if row is None:
             return None
         return _row_to_entry((row[0], row[1], row[2])), int(row[3])
+
+    def thread_audience(self, thread: str) -> Optional[Audience]:
+        """v0.4.27: compute the current audience scope for a thread.
+
+        Walks kind='audience' entries oldest-first. The FIRST one
+        establishes the audience by any author (an audience-less thread
+        is public, so anyone can scope it). Subsequent audience entries
+        update the audience only if the entry's author was a member of
+        the audience at the time of the entry — "anyone currently in
+        the audience can change it" (Brooks's design decision).
+
+        Returns None when no valid audience entry exists (thread is
+        public). Otherwise returns the latest accepted audience.
+        """
+        rows = self._conn.execute(
+            "SELECT id, content, sig FROM entries"
+            " WHERE thread=? AND kind='audience'"
+            " ORDER BY seq",
+            (thread,),
+        ).fetchall()
+        current: Optional[Audience] = None
+        for row in rows:
+            ev = _row_to_entry(row)
+            # Defensive: a kind='audience' entry without an audience
+            # field shouldn't exist (pipeline rejects it), but a
+            # malformed test fixture could; just skip it.
+            if ev.audience is None:
+                continue
+            if current is None:
+                current = ev.audience
+                continue
+            if ev.author in (current.pubkeys or []):
+                current = ev.audience
+            # else: ignore — author wasn't in the audience at the time.
+        return current
+
+    def threads_with_audience(self) -> dict[str, Audience]:
+        """v0.4.27: bulk equivalent of thread_audience for the /threads
+        and /inbox list endpoints. Returns {thread: Audience} for every
+        thread that has any audience entries; threads not in the dict
+        are public (None / no scope).
+        """
+        rows = self._conn.execute(
+            "SELECT thread, id, content, sig, seq FROM entries"
+            " WHERE kind='audience'"
+            " ORDER BY thread, seq"
+        ).fetchall()
+        out: dict[str, Audience] = {}
+        for thread, eid, content_blob, sig, _seq in rows:
+            ev = _row_to_entry((eid, content_blob, sig))
+            if ev.audience is None:
+                continue
+            current = out.get(thread)
+            if current is None:
+                out[thread] = ev.audience
+            elif ev.author in (current.pubkeys or []):
+                out[thread] = ev.audience
+        return out
 
     def archive_state_per_thread(self, has_archive_capability) -> dict[str, bool]:
         """v0.4.25: per-thread archived/active state for /threads + /inbox.
@@ -263,7 +321,13 @@ def _row_to_entry(row: tuple) -> Entry:
     blobs = [BlobRef(**b) for b in content.pop("blobs", [])]
     receipt_dict = content.pop("receipt", None)
     receipt = Receipt(**receipt_dict) if receipt_dict is not None else None
-    ev = Entry(blobs=blobs, receipt=receipt, **content)
+    # v0.4.27: audience field is conditionally present in canonical
+    # content. Older entries don't have the key at all (Entry.content
+    # strips it when None); newer entries with kind='audience' carry
+    # an {pubkeys: [...]} dict.
+    audience_dict = content.pop("audience", None)
+    audience = Audience(**audience_dict) if audience_dict is not None else None
+    ev = Entry(blobs=blobs, receipt=receipt, audience=audience, **content)
     ev.id = entry_id
     ev.sig = sig
     return ev

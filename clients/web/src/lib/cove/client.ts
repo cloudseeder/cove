@@ -692,7 +692,14 @@ export class Client {
   private async signEntry(entry: Entry): Promise<Entry> {
     const content: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(entry)) {
-      if (k !== 'id' && k !== 'sig') content[k] = v;
+      if (k === 'id' || k === 'sig') continue;
+      // v0.4.27: byte-identical-when-null rule for the audience field
+      // mirrors Python's Entry.content(). Pre-v0.4.27 entries don't
+      // carry audience at all; including it as null would break their
+      // verifiability under the new client. Conditional omission keeps
+      // canonicalization stable.
+      if (k === 'audience' && (v === null || v === undefined)) continue;
+      content[k] = v;
     }
     const canonical = canonicalize(content);
     const id = 'sha256:' + bytesToHex(sha256(canonical));

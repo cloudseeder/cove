@@ -20,6 +20,17 @@ export interface Receipt {
   observed_sth_root: string;
 }
 
+/** v0.4.27: audience scope for a thread, set by a kind='audience' entry.
+ *  Conditionally present on canonical Entry content. Mirrors
+ *  cove.entry.Audience.
+ *
+ *  The hub computes per-thread current audience by walking audience
+ *  entries oldest-first: first one establishes by any author, subsequent
+ *  ones honored only if author is in the current audience. */
+export interface Audience {
+  pubkeys: string[];
+}
+
 /** Mirrors cove.entry.Entry. `id` and `sig` are populated after signing.
  *
  *  kind='branch' (v0.2) declares that a sub-thread spawned off this
@@ -29,7 +40,7 @@ export interface Receipt {
 export interface Entry {
   thread: string;
   author: string; // ed25519 pubkey hex
-  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch' | 'archive' | 'reopen';
+  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch' | 'archive' | 'reopen' | 'audience';
   created_at: string; // rfc3339
   parents: string[];
   body: string;
@@ -37,6 +48,10 @@ export interface Entry {
   supersedes: string | null;
   receipt: Receipt | null;
   branch_thread: string | null;
+  /** v0.4.27: set on kind='audience' entries. Conditionally omitted
+   *  from canonical content when null so adding the field doesn't
+   *  invalidate every pre-v0.4.27 signature. */
+  audience?: Audience | null;
   id: string | null;
   sig: string | null;
 }
@@ -55,6 +70,11 @@ export interface ThreadSummary {
   latest_seq: number;
   parent_thread: string | null;
   archived: boolean;
+  /** v0.4.27: server-computed current audience for this thread, or
+   *  null when public. The hub only returns rows where the caller is
+   *  in the audience, so receiving a non-null `audience` here means
+   *  "I'm a member of this private thread." */
+  audience: Audience | null;
 }
 
 /** v0.4.19: returned by GET /inbox — one row per observed thread,
@@ -70,6 +90,9 @@ export interface InboxRow {
   my_high_water: number;
   latest_entry: InboxPreviewEntry | null;
   archived: boolean;
+  /** v0.4.27: server-computed audience or null when public. Same
+   *  semantics as ThreadSummary.audience. */
+  audience: Audience | null;
 }
 
 export interface InboxPreviewEntry {

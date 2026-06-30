@@ -26,7 +26,7 @@ from . import crypto
 from .auth import AuthError, AuthService
 from .blobs import BlobStore
 from .config import DEFAULT, HubConfig
-from .entry import BlobRef, Entry, Receipt
+from .entry import Audience, BlobRef, Entry, Receipt
 from .identity import (
     Attestation, Directory, DirectoryManifest,
     InvalidManifestSignatureError, RevocationDroppedError,
@@ -56,22 +56,33 @@ class FanOut:
     """
 
     def __init__(self) -> None:
-        self._connections: set[WebSocket] = set()
+        # v0.4.27: store pubkey alongside each connection so audience-
+        # scoped entry pushes can be filtered per-subscriber. Public
+        # threads + directory_changed broadcasts still fan out to all.
+        self._connections: dict[WebSocket, str] = {}
         self._lock = asyncio.Lock()
 
-    async def register(self, ws: WebSocket) -> None:
+    async def register(self, ws: WebSocket, pubkey: str = "") -> None:
         async with self._lock:
-            self._connections.add(ws)
+            self._connections[ws] = pubkey
 
     async def unregister(self, ws: WebSocket) -> None:
         async with self._lock:
-            self._connections.discard(ws)
+            self._connections.pop(ws, None)
 
-    async def broadcast(self, payload: dict) -> None:
+    async def broadcast(self, payload: dict,
+                        audience_pubkeys: Optional[list[str]] = None) -> None:
+        """Fan a payload to every registered subscriber, or — when
+        `audience_pubkeys` is given — only to subscribers whose pubkey
+        is in the list. `audience_pubkeys=None` means "public" (everyone)
+        and is what every non-audience-scoped path passes."""
         async with self._lock:
-            conns = list(self._connections)
+            conns = list(self._connections.items())
+        audience_set = set(audience_pubkeys) if audience_pubkeys is not None else None
         dead: list[WebSocket] = []
-        for ws in conns:
+        for ws, pk in conns:
+            if audience_set is not None and pk not in audience_set:
+                continue
             try:
                 await ws.send_json(payload)
             except Exception:
@@ -79,7 +90,7 @@ class FanOut:
         if dead:
             async with self._lock:
                 for ws in dead:
-                    self._connections.discard(ws)
+                    self._connections.pop(ws, None)
 
     def __len__(self) -> int:
         return len(self._connections)
@@ -278,20 +289,43 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             return _throttle_response(e)
         # §7.1 step 10: fan-out to live subscribers. Offline-queueing is the
         # client-side responsibility (delta-sync via GET /sync on reconnect).
+        # v0.4.27: audience-scoped threads filter entry pushes to only
+        # subscribers in the audience. Non-audience members never see
+        # the push on /stream; they also can't /sync the thread later.
+        audience = store.thread_audience(ev.thread)
+        audience_pubkeys = (
+            list(audience.pubkeys) if audience is not None else None
+        )
         await fanout.broadcast({
             "type": "entry",
             "entry": _entry_to_dict(ev),
             "seq": seq,
-        })
+        }, audience_pubkeys=audience_pubkeys)
         return {"id": ev.id, "seq": seq}
+
+    def _caller_in_thread_audience(thread: str, caller: str) -> bool:
+        """v0.4.27: is `caller` allowed to see entries from `thread`?
+        Public threads (no audience entry ever) — always true. Audience-
+        scoped threads — true iff caller's pubkey is in the audience
+        pubkeys list. Hub-side enforcement, computed live so a freshly-
+        posted audience entry takes effect on the next request."""
+        audience = store.thread_audience(thread)
+        if audience is None:
+            return True
+        return caller in (audience.pubkeys or [])
 
     # ---- GET /sync (§7) -------------------------------------------------
     @api.get("/sync")
     def get_sync(thread: str = Query(...), since: int = Query(...),
-                 _caller: str = Depends(require_session)) -> dict:
+                 caller: str = Depends(require_session)) -> dict:
         # Each item shape: {"entry": <signed entry>, "seq": <per-thread seq>}.
         # Matches the WS push payload — clients write one merge / dedup path
         # over both channels (client-spec §4.1).
+        # v0.4.27: audience-scoped threads return an empty entries list
+        # to non-audience callers. The hub doesn't 404 the thread name
+        # (that would leak existence); it just looks empty.
+        if not _caller_in_thread_audience(thread, caller):
+            return {"thread": thread, "since": since, "entries": []}
         entries = [
             {"entry": _entry_to_dict(ev), "seq": s}
             for ev, s in store.since_with_seq(thread, since)
@@ -313,16 +347,25 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         return "archive" in directory.caller_capabilities(pubkey)
 
     @api.get("/threads")
-    def get_threads(_caller: str = Depends(require_session)) -> dict:
+    def get_threads(caller: str = Depends(require_session)) -> dict:
         archived_threads = store.archive_state_per_thread(_has_archive_capability)
-        return {
-            "threads": [
-                {"thread": t, "entry_count": n, "latest_seq": s,
-                 "parent_thread": parent,
-                 "archived": archived_threads.get(t, False)}
-                for t, n, s, parent in overview.thread_summaries()
-            ],
-        }
+        audience_by_thread = store.threads_with_audience()
+        rows = []
+        for t, n, s, parent in overview.thread_summaries():
+            # v0.4.27: hide audience-scoped threads from non-audience
+            # callers. Public threads stay visible to everyone.
+            aud = audience_by_thread.get(t)
+            if aud is not None and caller not in (aud.pubkeys or []):
+                continue
+            rows.append({
+                "thread": t, "entry_count": n, "latest_seq": s,
+                "parent_thread": parent,
+                "archived": archived_threads.get(t, False),
+                "audience": (
+                    {"pubkeys": list(aud.pubkeys)} if aud is not None else None
+                ),
+            })
+        return {"threads": rows}
 
     # ---- GET /inbox (v0.4.19) ------------------------------------------
     # Landing view bundle: for every observed thread, return the latest
@@ -339,8 +382,15 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     @api.get("/inbox")
     def get_inbox(caller: str = Depends(require_session)) -> dict:
         archived_threads = store.archive_state_per_thread(_has_archive_capability)
+        audience_by_thread = store.threads_with_audience()
         rows = []
         for t, n, s, parent in overview.thread_summaries():
+            # v0.4.27: skip audience-scoped threads when caller not in
+            # the audience. They don't get a row, not even an "archived
+            # but hidden" placeholder — the thread is invisible.
+            aud = audience_by_thread.get(t)
+            if aud is not None and caller not in (aud.pubkeys or []):
+                continue
             latest = store.latest_non_receipt(t)
             high_water = store.caller_receipt_high_water(t, caller)
             preview_entry = None
@@ -374,6 +424,9 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                 "my_high_water": high_water,
                 "latest_entry": preview_entry,
                 "archived": archived_threads.get(t, False),
+                "audience": (
+                    {"pubkeys": list(aud.pubkeys)} if aud is not None else None
+                ),
             })
         return {"threads": rows}
 
@@ -456,10 +509,13 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             token = hdr.split(" ", 1)[1].strip()
         if not token:
             token = ws.query_params.get("token")
-        if not token or auth.resolve_session(token) is None:
+        caller_pubkey = auth.resolve_session(token) if token else None
+        if caller_pubkey is None:
             await ws.close(code=1008, reason="auth required")
             return
-        await fanout.register(ws)
+        # v0.4.27: bind the subscriber's pubkey so the fanout layer can
+        # filter audience-scoped entry pushes.
+        await fanout.register(ws, caller_pubkey)
         try:
             # We don't act on client-sent messages in v1; we just hold the
             # connection open until the client disconnects. receive_text()
@@ -740,7 +796,8 @@ class _Forbidden(Exception):
 
 
 _CONTENT_FIELDS = {"thread", "author", "kind", "created_at", "parents",
-                   "body", "blobs", "supersedes", "receipt", "branch_thread"}
+                   "body", "blobs", "supersedes", "receipt", "branch_thread",
+                   "audience"}
 
 
 def _entry_from_dict(d: dict) -> Entry:
@@ -756,6 +813,8 @@ def _entry_from_dict(d: dict) -> Entry:
     fields["blobs"] = blobs
     if fields.get("receipt") is not None:
         fields["receipt"] = Receipt(**fields["receipt"])
+    if fields.get("audience") is not None:
+        fields["audience"] = Audience(**fields["audience"])
     ev = Entry(**fields)
     ev.id = d.get("id")
     ev.sig = d.get("sig")

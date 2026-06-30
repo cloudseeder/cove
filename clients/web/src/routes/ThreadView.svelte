@@ -63,7 +63,10 @@
   // v0.4.25: hide kind='archive' / 'reopen' too. They're governance
   // metadata, surfaced via the archive banner above the feed. Still in
   // app.entries + the log — the verification reveal exposes them.
-  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen']);
+  // v0.4.27: 'audience' joins the governance-metadata kinds hidden
+  // from the chronological feed (they're surfaced via the audience
+  // chip in the header instead).
+  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen', 'audience']);
   const topLevel = $derived(
     app.entries.filter((ve) =>
       ve.entry.parents.length === 0 && !_HIDDEN_KINDS.has(ve.entry.kind),
@@ -98,6 +101,46 @@
       archiveRationale.trim(),
     );
     archiveDialog = null;
+  }
+
+  /** v0.4.27: audience chip + edit affordance. The chip shows when the
+   *  current thread is audience-scoped (server only surfaces scoped
+   *  threads to members, so "audience !== null" = "I'm in it"). The
+   *  edit dialog lets any in-audience member rewrite the audience —
+   *  same authority rule the hub enforces. */
+  const audience = $derived(app.threadAudience(app.thread));
+  const myPk = $derived(
+    app.authStatus.kind === 'authenticated' ? app.authStatus.pubkey : '',
+  );
+  let audienceDialog = $state<{ selected: Set<string> } | null>(null);
+  function openAudienceDialog() {
+    audienceDialog = {
+      selected: new Set(audience?.pubkeys ?? []),
+    };
+  }
+  function closeAudienceDialog() {
+    audienceDialog = null;
+  }
+  function toggleAudiencePubkey(pk: string) {
+    if (!audienceDialog) return;
+    const next = new Set(audienceDialog.selected);
+    if (next.has(pk)) next.delete(pk);
+    else next.add(pk);
+    audienceDialog = { selected: next };
+  }
+  async function submitAudience() {
+    if (!audienceDialog) return;
+    // Force the caller in — UI doesn't let them remove themselves
+    // unintentionally. (Slack lets you leave a private channel; we
+    // can add an explicit "leave" later.)
+    const pubkeys = new Set(audienceDialog.selected);
+    pubkeys.add(myPk);
+    await app.setThreadAudience(app.thread, Array.from(pubkeys));
+    audienceDialog = null;
+  }
+  function nameForPubkey(pk: string): string {
+    const att = app.members.find((m) => m.member_pubkey === pk);
+    return att?.display_name ?? (pk.slice(0, 8) + '…');
   }
   function replyCountFor(parentId: string | null): number {
     if (!parentId) return 0;
@@ -156,11 +199,61 @@
         </div>
       </header>
 
+      {#if audience}
+        <button type="button" class="audience-chip"
+          title="Private thread — click to edit who can see it"
+          onclick={openAudienceDialog}>
+          <span aria-hidden="true">👥</span>
+          <span class="names">
+            {#each audience.pubkeys as pk, i (pk)}
+              <span class="name">{nameForPubkey(pk)}</span>{#if i < audience.pubkeys.length - 1}<span class="comma">,</span> {/if}
+            {/each}
+          </span>
+          <span class="edit-hint">edit</span>
+        </button>
+      {/if}
+
       {#if archived}
         <div class="archive-banner" role="status">
           <span aria-hidden="true">📁</span>
           <span>This thread is archived — read-only by convention.
             Posts still work; clients hide it from Inbox until reopened.</span>
+        </div>
+      {/if}
+
+      {#if audienceDialog}
+        <div class="audience-dialog">
+          <h3>Edit audience for <code>{app.thread}</code></h3>
+          <p class="muted">
+            Anyone currently in the audience can change it. You'll
+            stay in the audience automatically — to leave a thread,
+            you'd ask another member to remove you.
+          </p>
+          <ul class="audience-edit-list">
+            {#each app.members as m (m.member_pubkey)}
+              {@const isSelf = m.member_pubkey === myPk}
+              <li>
+                <label>
+                  <input type="checkbox"
+                    checked={audienceDialog.selected.has(m.member_pubkey) || isSelf}
+                    disabled={isSelf}
+                    onchange={() => toggleAudiencePubkey(m.member_pubkey)} />
+                  <span class="name">{m.display_name}</span>
+                  {#if isSelf}<span class="role-tag">you</span>{/if}
+                  {#if m.role !== 'member'}
+                    <span class="role-tag">{m.role}</span>
+                  {/if}
+                </label>
+              </li>
+            {/each}
+          </ul>
+          <div class="archive-actions">
+            <button type="button" class="ghost"
+              onclick={closeAudienceDialog}>Cancel</button>
+            <button type="button" onclick={submitAudience}>
+              Save audience
+            </button>
+          </div>
         </div>
       {/if}
 
@@ -368,6 +461,64 @@
     margin-top: 0.7rem;
   }
   button.archive-btn { padding: 0.32rem 0.85rem; font-size: 0.85rem; }
+
+  /* v0.4.27: audience chip + edit dialog. The chip sits above the
+     feed (next to the archive banner slot) so the audience is the
+     first thing read on opening a private thread. */
+  .audience-chip {
+    display: flex; align-items: center; gap: 0.5rem;
+    background: rgba(120, 180, 255, 0.08);
+    border: 1px solid rgba(120, 180, 255, 0.3);
+    border-radius: 8px;
+    padding: 0.5rem 0.85rem;
+    margin: 0 0 1rem;
+    cursor: pointer;
+    color: var(--fg);
+    text-align: left;
+    font-size: 0.88rem;
+    width: 100%;
+  }
+  .audience-chip:hover {
+    background: rgba(120, 180, 255, 0.12);
+  }
+  .audience-chip .names { flex: 1; }
+  .audience-chip .name { font-weight: 500; }
+  .audience-chip .comma { color: var(--muted); }
+  .audience-chip .edit-hint {
+    color: var(--muted); font-size: 0.78rem;
+    flex-shrink: 0;
+  }
+  .audience-dialog {
+    border: 1px dashed rgba(120, 180, 255, 0.4);
+    border-radius: 10px;
+    padding: 1rem 1.2rem;
+    background: var(--panel);
+    margin: 0 0 1rem;
+  }
+  .audience-dialog h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+  .audience-dialog .muted {
+    color: var(--muted); margin: 0 0 0.85rem; font-size: 0.86rem;
+  }
+  .audience-edit-list {
+    list-style: none; margin: 0 0 0.5rem; padding: 0;
+    max-height: 14rem; overflow-y: auto;
+  }
+  .audience-edit-list li {
+    padding: 0.1rem 0;
+  }
+  .audience-edit-list label {
+    display: flex; align-items: center; gap: 0.55rem;
+    margin: 0; cursor: pointer;
+    font-size: 0.9rem;
+  }
+  .audience-edit-list label .name { font-weight: 500; }
+  .audience-edit-list label .role-tag {
+    font-size: 0.7rem; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--muted);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    padding: 0.05rem 0.4rem; border-radius: 999px;
+  }
   .empty {
     color: var(--muted);
     text-align: center;

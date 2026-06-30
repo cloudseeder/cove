@@ -26,7 +26,7 @@ from cove import crypto
 from cove.api import create_app
 from cove.auth import AuthService
 from cove.blobs import BlobStore
-from cove.entry import BlobRef, Entry, Receipt, sign_entry, verify_entry
+from cove.entry import Audience, BlobRef, Entry, Receipt, sign_entry, verify_entry
 from cove.identity import (
     Attestation, Directory, Revocation, hash_manifest,
     issue_attestation, issue_directory,
@@ -536,6 +536,267 @@ def test_archive_entry_from_non_archive_capability_role_is_ignored(hub):
 def test_inbox_requires_auth(hub):
     unauth = TestClient(hub["app"])
     assert unauth.get("/inbox").status_code == 401
+
+
+# ---- /audience (v0.4.27) ---------------------------------------------
+
+def _attest_extra_member(hub, role: str = "member", *,
+                         display_name: str, affiliation: str,
+                         issued_at: str = "2026-06-29T00:00:00+00:00",
+                         updated_at: str = "2026-06-29T00:00:01+00:00"):
+    """Attest a freshly-generated keypair under `hub`'s root and return
+    (priv, pub) of the new member. Builds + posts the manifest update
+    inline so the rest of the test reads top-down."""
+    priv, pub = crypto.generate_keypair()
+    current = hub["directory"].manifest
+    new_att = issue_attestation(
+        hub["root_priv"], member_pubkey=pub, display_name=display_name,
+        affiliation=affiliation, role=role, issuer_pubkey=hub["root_pub"],
+        issued_at=issued_at,
+    )
+    new_manifest = _chained(
+        hub,
+        attestations=list(current.attestations) + [new_att],
+        revocations=list(current.revocations),
+        updated_at=updated_at,
+    )
+    r = hub["client"].post(
+        "/admin/attest", json={"manifest": _manifest_dict(new_manifest)})
+    assert r.status_code == 200, r.text
+    return priv, pub
+
+
+def _authed_client(hub, priv: str, pub: str) -> TestClient:
+    c = TestClient(hub["app"])
+    ch = c.post("/auth/challenge").json()
+    sig = crypto.sign(priv, ch["nonce"].encode())
+    sess = c.post("/auth/verify", json={
+        "pubkey": pub, "nonce": ch["nonce"], "sig": sig,
+    }).json()
+    c.headers["Authorization"] = f"Bearer {sess['token']}"
+    return c
+
+
+def _post_audience_entry(hub_or_client, *, priv: str, pub: str,
+                         thread: str, pubkeys: list[str]):
+    """Post a kind='audience' entry scoping `thread` to `pubkeys`. Returns
+    the post response. Either pass the full hub dict (uses hub['client'])
+    or a specific TestClient."""
+    client = hub_or_client["client"] if isinstance(hub_or_client, dict) \
+        else hub_or_client
+    ev = Entry(
+        thread=thread, author=pub, kind="audience",
+        created_at="2026-06-29T00:00:00Z", body="",
+        audience=Audience(pubkeys=list(pubkeys)),
+    )
+    sign_entry(ev, priv)
+    return client.post("/entries", json=_entry_payload(ev))
+
+
+def test_audience_less_thread_is_visible_to_every_attested_member(hub):
+    """Baseline: a thread with no audience entry is public. /threads,
+    /inbox, /sync all show it to every authenticated member."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                      thread="public-room", body="anyone here?")
+    hub["client"].post("/entries", json=_entry_payload(ev))
+
+    # Both members see it everywhere.
+    for client in (hub["client"], bob):
+        thread_rows = client.get("/threads").json()["threads"]
+        assert any(r["thread"] == "public-room" for r in thread_rows)
+        inbox_rows = client.get("/inbox").json()["threads"]
+        assert any(r["thread"] == "public-room" for r in inbox_rows)
+        sync_entries = client.get(
+            "/sync", params={"thread": "public-room", "since": -1},
+        ).json()["entries"]
+        assert any(e["entry"]["body"] == "anyone here?" for e in sync_entries)
+
+
+def test_audience_scoped_thread_hides_from_non_audience_callers(hub):
+    """Alice scopes 'private-room' to {Alice, Bob} via a kind='audience'
+    entry. Carol — attested, just not in the audience — gets nothing
+    from /threads, /inbox, or /sync for that thread name."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    carol_priv, carol_pub = _attest_extra_member(
+        hub, role="member", display_name="Carol", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    carol = _authed_client(hub, carol_priv, carol_pub)
+
+    # Alice (the default fixture member) scopes the thread.
+    r = _post_audience_entry(
+        hub, priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="private-room",
+        pubkeys=[hub["member_pub"], bob_pub],
+    )
+    assert r.status_code == 200, r.text
+    # Alice posts content.
+    msg = _signed_post(hub["member_priv"], hub["member_pub"],
+                       thread="private-room", body="audience-only")
+    hub["client"].post("/entries", json=_entry_payload(msg))
+
+    # Alice + Bob see the thread normally.
+    for client in (hub["client"], bob):
+        rows = client.get("/threads").json()["threads"]
+        match = next((r for r in rows if r["thread"] == "private-room"), None)
+        assert match is not None
+        assert match["audience"] is not None
+        assert set(match["audience"]["pubkeys"]) == {hub["member_pub"], bob_pub}
+
+        inbox = client.get("/inbox").json()["threads"]
+        assert any(r["thread"] == "private-room" for r in inbox)
+
+        sync = client.get(
+            "/sync", params={"thread": "private-room", "since": -1},
+        ).json()["entries"]
+        assert any(e["entry"]["body"] == "audience-only" for e in sync)
+
+    # Carol gets nothing across all three endpoints.
+    rows = carol.get("/threads").json()["threads"]
+    assert not any(r["thread"] == "private-room" for r in rows)
+    inbox = carol.get("/inbox").json()["threads"]
+    assert not any(r["thread"] == "private-room" for r in inbox)
+    sync = carol.get(
+        "/sync", params={"thread": "private-room", "since": -1},
+    ).json()["entries"]
+    assert sync == []
+
+
+def test_audience_update_from_non_member_is_ignored(hub):
+    """Carol (not in audience) posts a kind='audience' entry trying to
+    add herself. The hub accepts the signed entry at the protocol layer
+    (no judgmental filtering) but the audience-computation walks past
+    it because she wasn't in the audience at the time."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    carol_priv, carol_pub = _attest_extra_member(
+        hub, role="member", display_name="Carol", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    carol = _authed_client(hub, carol_priv, carol_pub)
+
+    # Alice scopes thread to {Alice, Bob}.
+    _post_audience_entry(
+        hub, priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="private-room", pubkeys=[hub["member_pub"], bob_pub],
+    )
+    # Carol attempts to add herself.
+    sneaky = _post_audience_entry(
+        carol, priv=carol_priv, pub=carol_pub,
+        thread="private-room",
+        pubkeys=[hub["member_pub"], bob_pub, carol_pub],
+    )
+    assert sneaky.status_code == 200, sneaky.text  # protocol accepts
+
+    # But /threads still hides the thread from Carol — her audience
+    # entry wasn't applied because she wasn't in the audience.
+    rows = carol.get("/threads").json()["threads"]
+    assert not any(r["thread"] == "private-room" for r in rows)
+
+    # And /threads-as-Alice still shows the original audience pair.
+    rows = hub["client"].get("/threads").json()["threads"]
+    match = next(r for r in rows if r["thread"] == "private-room")
+    assert set(match["audience"]["pubkeys"]) == {hub["member_pub"], bob_pub}
+
+
+def test_audience_update_from_existing_member_takes_effect(hub):
+    """Bob (in audience) adds Carol. The new audience replaces the old;
+    Carol can now see the thread."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    carol_priv, carol_pub = _attest_extra_member(
+        hub, role="member", display_name="Carol", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    carol = _authed_client(hub, carol_priv, carol_pub)
+
+    _post_audience_entry(
+        hub, priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="private-room", pubkeys=[hub["member_pub"], bob_pub],
+    )
+    msg = _signed_post(hub["member_priv"], hub["member_pub"],
+                       thread="private-room", body="hi bob")
+    hub["client"].post("/entries", json=_entry_payload(msg))
+
+    # Before Bob's update Carol can't see it.
+    assert carol.get("/threads").json()["threads"] == [] or \
+        not any(r["thread"] == "private-room"
+                for r in carol.get("/threads").json()["threads"])
+
+    # Bob updates the audience to add Carol.
+    r = _post_audience_entry(
+        bob, priv=bob_priv, pub=bob_pub,
+        thread="private-room",
+        pubkeys=[hub["member_pub"], bob_pub, carol_pub],
+    )
+    assert r.status_code == 200, r.text
+
+    # Carol now sees the thread AND its entire history (retroactive).
+    rows = carol.get("/threads").json()["threads"]
+    assert any(r["thread"] == "private-room" for r in rows)
+    sync = carol.get(
+        "/sync", params={"thread": "private-room", "since": -1},
+    ).json()["entries"]
+    assert any(e["entry"]["body"] == "hi bob" for e in sync)
+
+
+def test_audience_scoped_stream_pushes_skip_non_audience_subscribers(hub):
+    """A WS /stream subscriber gets entry pushes only for threads they
+    can see. Carol's socket stays silent when Alice posts in the
+    private-room she's not in."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    carol_priv, carol_pub = _attest_extra_member(
+        hub, role="member", display_name="Carol", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    carol = _authed_client(hub, carol_priv, carol_pub)
+
+    _post_audience_entry(
+        hub, priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="private-room", pubkeys=[hub["member_pub"], bob_pub],
+    )
+
+    with bob.websocket_connect("/stream") as bob_ws, \
+         carol.websocket_connect("/stream") as carol_ws:
+        msg = _signed_post(hub["member_priv"], hub["member_pub"],
+                           thread="private-room", body="audience-only push")
+        r = hub["client"].post("/entries", json=_entry_payload(msg))
+        assert r.status_code == 200
+
+        # Bob receives the push.
+        push = bob_ws.receive_json()
+        assert push["type"] == "entry"
+        assert push["entry"]["body"] == "audience-only push"
+
+        # Carol should NOT get this push. Force the channel forward by
+        # posting a PUBLIC entry; that one IS broadcast to everyone, so
+        # whatever Carol receives first must be the public one — if she
+        # got the private push, it'd arrive before this and the
+        # assertion below would fail.
+        public = _signed_post(hub["member_priv"], hub["member_pub"],
+                              thread="public-room", body="open mic")
+        hub["client"].post("/entries", json=_entry_payload(public))
+        carol_push = carol_ws.receive_json()
+        assert carol_push["entry"]["body"] == "open mic", (
+            f"Carol got an audience-scoped push she shouldn't have: {carol_push}"
+        )
 
 
 # ---- /admin/* (§7, §7.2.2) -------------------------------------------

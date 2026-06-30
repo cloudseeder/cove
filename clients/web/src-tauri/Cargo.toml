@@ -1,6 +1,6 @@
 [package]
 name = "cove-web"
-version = "0.4.26"
+version = "0.4.27"
 description = "Cove — Tauri desktop/mobile shell"
 edition = "2021"
 

@@ -21,16 +21,22 @@ import { sha256 } from '@noble/hashes/sha256';
 
 // ---- entry (§3) -------------------------------------------------------
 const KINDS = new Set([
-  'notice', 'post', 'reply', 'supersede', 'membership', 'receipt', 'revoke', 'branch',
+  'notice', 'post', 'reply', 'supersede', 'membership', 'receipt', 'revoke',
+  'branch', 'archive', 'reopen', 'audience',
 ]);
 
 const NON_CONTENT = new Set(['id', 'sig']);
 
-/** content() — the dict the id + sig commit to: every field but id and sig. */
+/** content() — the dict the id + sig commit to: every field but id and sig.
+ *  v0.4.27: audience is conditionally omitted when null/undefined,
+ *  mirroring Python Entry.content(), so adding the field doesn't
+ *  break verification of older entries. */
 export function entryContent(ev: Entry): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(ev)) {
-    if (!NON_CONTENT.has(k)) out[k] = v;
+    if (NON_CONTENT.has(k)) continue;
+    if (k === 'audience' && (v === null || v === undefined)) continue;
+    out[k] = v;
   }
   return out;
 }

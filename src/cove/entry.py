@@ -28,7 +28,7 @@ from . import crypto
 # entry per thread wins. Non-board archive entries land in the log
 # but are ignored by the visibility-state computation.
 KINDS = {"notice", "post", "reply", "supersede", "membership", "receipt",
-         "revoke", "branch", "archive", "reopen"}
+         "revoke", "branch", "archive", "reopen", "audience"}
 
 # Fields excluded from the content that id/sig commit to.
 _NON_CONTENT = {"id", "sig"}
@@ -40,6 +40,24 @@ class BlobRef:
     media_type: str
     size: int
     name: str
+
+
+@dataclass
+class Audience:
+    """v0.4.27: per-thread audience scope (kind='audience').
+
+    `pubkeys` is the closed list of attested members allowed to /sync,
+    /threads-list, /inbox-list, and receive /stream pushes for this
+    thread. An audience-less thread (no audience entry ever posted)
+    behaves as before: public to every authed member.
+
+    Update rule (computed by store.thread_audience): walk audience
+    entries forward in seq order; the FIRST one establishes the
+    audience by any author; subsequent ones are honored only if the
+    author was in the audience at the time. Latest accepted entry
+    wins (replaces — not unions).
+    """
+    pubkeys: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -72,6 +90,11 @@ class Entry:
                                         # names the spawned sub-thread.
                                         # Part of canonical content, so
                                         # signature covers the link.
+    audience: Optional[Audience] = None # set for kind='audience' (v0.4.27);
+                                        # conditionally omitted from
+                                        # canonical content so adding the
+                                        # field doesn't invalidate every
+                                        # pre-v0.4.27 entry's signature.
     id: Optional[str] = None       # set by compute_id
     sig: Optional[str] = None      # set by sign
 
@@ -80,6 +103,13 @@ class Entry:
         d = asdict(self)
         for k in _NON_CONTENT:
             d.pop(k, None)
+        # v0.4.27: byte-identical-when-absent rule for the audience
+        # field, mirroring DirectoryManifest.default_thread /
+        # capabilities_by_role. asdict() always emits {'audience':
+        # None} for pre-v0.4.27 entries; strip it so their signatures
+        # still verify against the canonical form they signed.
+        if d.get("audience") is None:
+            d.pop("audience", None)
         return d
 
 
