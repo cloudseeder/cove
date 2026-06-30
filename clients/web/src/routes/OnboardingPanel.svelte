@@ -27,6 +27,10 @@
 
   let hubUrl = $state('https://cove.oap.dev');
   let nameHint = $state('');
+  // v0.4.33: invite code is required. The keymaster mints it via
+  // AdminPanel and delivers it out-of-band (text / Signal / paper);
+  // no code, no /pending entry, no spam queue.
+  let invite = $state('');
   // Default thread for the new member's first landing. Priority:
   //   1. v0.4.13+ hub-side default_thread hint from /directory
   //   2. localStorage cove.thread (this device's prior Cove history)
@@ -46,7 +50,7 @@
   );
 
   async function start() {
-    if (!nameHint.trim()) return;
+    if (!nameHint.trim() || !invite.trim()) return;
     const url = hubUrl.trim();
     // Try the v0.4.13+ hub hint. Best-effort: if the hub is older, the
     // network is flaky, or the response isn't shaped as expected, fall
@@ -68,6 +72,7 @@
       hubUrl: url,
       nameHint: nameHint.trim(),
       thread: sanitizeThreadName(chosenThread) || 'general',
+      invite: invite.trim(),
     });
   }
 
@@ -101,6 +106,14 @@
     </p>
 
     <label>
+      <span>Invite code</span>
+      <input type="text" bind:value={invite}
+        placeholder="Ask your keymaster for one"
+        autocapitalize="off" autocorrect="off" spellcheck="false"
+        disabled={isGenerating} />
+    </label>
+
+    <label>
       <span>Your name</span>
       <input type="text" bind:value={nameHint}
         placeholder="How you want to appear in the directory"
@@ -123,7 +136,7 @@
         I already have a key
       </button>
       <button type="button" onclick={start}
-        disabled={isGenerating || !nameHint.trim() || !hubUrl.trim()}>
+        disabled={isGenerating || !nameHint.trim() || !hubUrl.trim() || !invite.trim()}>
         {isGenerating ? 'Generating…' : 'Get started'}
       </button>
     </div>

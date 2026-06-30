@@ -24,7 +24,7 @@ import {
 } from './verify';
 import type {
   Attestation, BlobRef, DirectoryManifest, Entry, InboxRow, InclusionProof,
-  Revocation, STH, ThreadSummary,
+  Invite, Revocation, STH, ThreadSummary,
 } from './types';
 
 /**
@@ -274,10 +274,15 @@ export class Client {
   /** v0.4.0: POST /pending — public, no auth required. The device
    *  surfaces itself in the keymaster's queue. Throws on 409
    *  already_attested so the caller can short-circuit straight to
-   *  the auth flow (the pubkey is already in the directory). */
+   *  the auth flow (the pubkey is already in the directory).
+   *
+   *  v0.4.33: `invite` is REQUIRED. The hub returns 401 with reason
+   *  invite_required / invite_unusable if missing or invalid; the
+   *  caller surfaces the specific reason in the onboarding UI. */
   async registerPending(opts: {
     pubkey: string;
     nameHint: string;
+    invite: string;
     requestedAt?: string;
   }): Promise<void> {
     const resp = await this.fetchImpl(this.hubUrl + '/pending', {
@@ -287,10 +292,22 @@ export class Client {
         pubkey: opts.pubkey,
         name_hint: opts.nameHint,
         requested_at: opts.requestedAt ?? new Date().toISOString(),
+        invite: opts.invite,
       }),
     });
     if (resp.status === 409) {
       throw new ClientError('already_attested');
+    }
+    if (resp.status === 401) {
+      const body = await safeJson(resp);
+      // v0.4.33: surface the precise reason so the onboarding UI can
+      // pick the right message ("ask keymaster for a new code" vs
+      // "code already used by someone" vs "code expired").
+      throw new ClientError(
+        body?.reason
+          ? `invite_${body.reason}`
+          : (body?.error ?? 'invite_required'),
+      );
     }
     if (resp.status !== 200) {
       const body = await safeJson(resp);
@@ -413,6 +430,55 @@ export class Client {
   }): Promise<{ pubkey: string; tier: string }> {
     this.requireAuth();
     return await this.requestJson('POST', '/admin/limits', opts);
+  }
+
+  /** v0.4.33: POST /admin/invites — root-signed mint of a single-use,
+   *  time-limited invite code. The keymaster delivers the returned
+   *  code out-of-band (text / in-person / Signal) to the prospective
+   *  member; the member enters it in "Get started" to admit themselves
+   *  to the queue. */
+  async submitInviteMint(opts: {
+    payload: { ttl_seconds: number; name_hint?: string };
+    sig: string;
+  }): Promise<Invite> {
+    this.requireAuth();
+    return await this.requestJson('POST', '/admin/invites', opts);
+  }
+
+  /** v0.4.33: GET /admin/invites — admin-cap-gated list of currently
+   *  active (unused, unrevoked, unexpired) codes. The admin panel
+   *  surfaces this so the keymaster can see what's outstanding and
+   *  revoke any that shouldn't be. */
+  async fetchInvites(): Promise<Invite[]> {
+    this.requireAuth();
+    const data = await this.requestJson('GET', '/admin/invites');
+    return data.invites as Invite[];
+  }
+
+  /** v0.4.33: DELETE /admin/invites/{code} — root-signed revoke.
+   *  payload.code MUST equal the URL path (binds the sig to the
+   *  specific code, not a generic 'revoke' action). */
+  async submitInviteRevoke(opts: {
+    code: string;
+    payload: { code: string };
+    sig: string;
+  }): Promise<Invite> {
+    this.requireAuth();
+    const resp = await this.authedFetch(
+      `${this.hubUrl}/admin/invites/${encodeURIComponent(opts.code)}`,
+      {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ payload: opts.payload, sig: opts.sig }),
+      },
+    );
+    if (resp.status !== 200) {
+      const body = await safeJson(resp);
+      throw new ClientError(
+        `revoke invite failed: ${resp.status} ${JSON.stringify(body)}`,
+      );
+    }
+    return await resp.json();
   }
 
   async fetchSth(): Promise<STH> {

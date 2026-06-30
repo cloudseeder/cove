@@ -34,6 +34,7 @@ from .identity import (
     manifest_from_dict, manifest_to_dict,
 )
 from .index import Ledger, Overview
+from .invites import Invite, InviteRegistry, InviteUnusable
 from .pending import PendingRegistry
 from .pipeline import AcceptanceError, Pipeline
 from .store import EventStore
@@ -117,6 +118,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                fanout: Optional[FanOut] = None,
                blobs: Optional[BlobStore] = None,
                pending: Optional[PendingRegistry] = None,
+               invites: Optional[InviteRegistry] = None,
                config: HubConfig = DEFAULT) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
@@ -135,6 +137,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         fanout = FanOut()
     if pending is None:
         pending = PendingRegistry()
+    if invites is None:
+        invites = InviteRegistry()
     # /admin/limits applies overrides to the same Throttler the pipeline uses;
     # default to pipeline.throttler so existing callers don't need to pass it.
     if throttler is None:
@@ -600,6 +604,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         pubkey = body.get("pubkey")
         name_hint = body.get("name_hint")
         requested_at = body.get("requested_at")
+        invite_code = body.get("invite")
         if not (isinstance(pubkey, str) and len(pubkey) == 64
                 and all(c in "0123456789abcdef" for c in pubkey)):
             return _err(400, error="bad_request",
@@ -610,13 +615,29 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         if not isinstance(requested_at, str) or not requested_at:
             return _err(400, error="bad_request",
                         detail="requested_at required (rfc3339)")
+        # v0.4.33: invite-code admission gate. Without a valid unused
+        # code, the request gets a 401 immediately and never lands in
+        # the keymaster's queue. Codes are minted via /admin/invites
+        # and delivered out-of-band, same channel as the fingerprint
+        # verification.
+        if not isinstance(invite_code, str) or not invite_code:
+            return _err(401, error="invite_required",
+                        detail="invite code required")
         # If the pubkey is already attested, return 409 so the client
         # transitions to the auth flow instead of waiting for a push
         # that will never come (the /admin/attest hook only fires for
-        # NEWLY-attested keys).
+        # NEWLY-attested keys). Check BEFORE consuming the invite —
+        # a re-onboard attempt by an already-attested member shouldn't
+        # burn a code.
         if directory.resolve(pubkey) is not None:
             return _err(409, error="already_attested",
                         detail="pubkey is already in the directory")
+        # Atomic check-and-consume: if two parallel posts use the same
+        # code, exactly one wins. The other gets 'already_used'.
+        try:
+            invites.consume(invite_code)
+        except InviteUnusable as e:
+            return _err(401, error="invite_unusable", reason=str(e))
         pending.register(pubkey=pubkey, name_hint=name_hint.strip(),
                          requested_at=requested_at)
         return {"pubkey": pubkey}
@@ -786,6 +807,94 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         except ValueError as e:
             return _err(400, error="bad_tier", detail=str(e))
         return {"pubkey": pubkey, "tier": tier}
+
+    # ---- /admin/invites (v0.4.33) ---------------------------------------
+    # Without an admission gate, POST /pending is wide open and the
+    # keymaster's queue is spam-bait. Invites are a binary structural
+    # gate — have a valid unused code, get queued; don't, get rejected.
+    # See cove/invites.py for the threat-model rationale.
+    #
+    # Mint + revoke are root-signed payloads (same security model as
+    # /admin/limits). List is admin-capability-gated.
+
+    def _invite_to_dict(inv: Invite) -> dict:
+        # v0.4.33: monotonic seconds aren't meaningful on the wire.
+        # Send expires_in_seconds (relative to the hub's now) so the
+        # client can render "expires in N hours" without knowing when
+        # the hub process started. created_at + consumed_at + revoked_at
+        # stay in monotonic terms; they're only meaningful when compared
+        # against each other or expires_at within this same response.
+        import time as _time
+        now = _time.monotonic()
+        return {
+            "code": inv.code,
+            "expires_at": inv.expires_at,
+            "expires_in_seconds": max(0, int(inv.expires_at - now)),
+            "created_at": inv.created_at,
+            "name_hint": inv.name_hint,
+            "consumed_at": inv.consumed_at,
+            "revoked_at": inv.revoked_at,
+        }
+
+    @api.post("/admin/invites")
+    def admin_invites_mint(body: dict = Body(...)):
+        """Mint an invite. payload = {ttl_seconds: int, name_hint?: str}.
+        Root-signed (the keymaster has root.priv off-hub)."""
+        if directory is None or directory.manifest is None:
+            return _err(503, error="no_directory")
+        payload = body.get("payload")
+        sig = body.get("sig")
+        if not isinstance(payload, dict) or not isinstance(sig, str):
+            return _err(400, error="bad_request",
+                        detail="payload (object) and sig (hex) required")
+        root_pub = directory.manifest.org
+        if not crypto.verify(root_pub, sig, crypto.canonicalize(payload)):
+            return _err(401, error="invalid_signature")
+        ttl = payload.get("ttl_seconds")
+        name_hint = payload.get("name_hint")
+        if not isinstance(ttl, int):
+            return _err(400, error="bad_payload",
+                        detail="ttl_seconds (int) required in payload")
+        if name_hint is not None and not isinstance(name_hint, str):
+            return _err(400, error="bad_payload",
+                        detail="name_hint must be a string when present")
+        try:
+            inv = invites.mint(ttl_seconds=ttl, name_hint=name_hint)
+        except ValueError as e:
+            return _err(400, error="bad_ttl", detail=str(e))
+        return _invite_to_dict(inv)
+
+    @api.get("/admin/invites")
+    def admin_invites_list(_caller: str = Depends(require_capability("admin"))):
+        """List currently-active invites (unused, unrevoked, unexpired).
+        Admin-capability-gated; the codes themselves are just routing
+        metadata until they're presented at /pending, but consolidating
+        the view to the admin panel reduces accidental disclosure."""
+        return {"invites": [_invite_to_dict(i) for i in invites.list_active()]}
+
+    @api.delete("/admin/invites/{code}")
+    def admin_invites_revoke(code: str, body: dict = Body(...)):
+        """Revoke an unused invite. payload = {code: str} (must match the
+        path param — keeps the sig binding to the specific code, not just
+        to a generic 'revoke' action). Root-signed."""
+        if directory is None or directory.manifest is None:
+            return _err(503, error="no_directory")
+        payload = body.get("payload")
+        sig = body.get("sig")
+        if not isinstance(payload, dict) or not isinstance(sig, str):
+            return _err(400, error="bad_request",
+                        detail="payload (object) and sig (hex) required")
+        root_pub = directory.manifest.org
+        if not crypto.verify(root_pub, sig, crypto.canonicalize(payload)):
+            return _err(401, error="invalid_signature")
+        if payload.get("code") != code:
+            return _err(400, error="bad_payload",
+                        detail="payload.code must match the URL path")
+        try:
+            inv = invites.revoke(code)
+        except InviteUnusable as e:
+            return _err(400, error="invite_unusable", reason=str(e))
+        return _invite_to_dict(inv)
 
     return api
 

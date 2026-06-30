@@ -77,10 +77,12 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
     auth = AuthService(directory=directory)
     blobs = BlobStore(str(tmp_path / "blobs"))
 
+    from cove.invites import InviteRegistry
+    invites = InviteRegistry()
     app = create_app(pipeline=pipeline, store=store, translog=translog,
                      overview=overview, ledger=ledger,
                      directory=directory, directory_manifest=manifest,
-                     auth=auth, blobs=blobs)
+                     auth=auth, blobs=blobs, invites=invites)
 
     client = TestClient(app)
     ch = client.post("/auth/challenge").json()
@@ -104,4 +106,5 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
         "blobs": blobs,
         "att_member": att_member,
         "session_token": sess["token"],
+        "invites": invites,
     }

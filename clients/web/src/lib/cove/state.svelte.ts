@@ -15,7 +15,7 @@ import {
   type AvailableUpdate,
 } from './tauri';
 import type {
-  Attestation, DirectoryManifest, InboxRow, ThreadSummary,
+  Attestation, DirectoryManifest, InboxRow, Invite, ThreadSummary,
 } from './types';
 import { DEFAULT_CAPABILITIES_BY_ROLE } from './types';
 import type { RevokedEntry } from './client';
@@ -597,6 +597,73 @@ export class AppState {
     }
   }
 
+  /** v0.4.33: invites — admin operations + loaded list. The keymaster
+   *  mints a code, delivers it out-of-band, the member uses it on
+   *  /pending. The list state is what AdminPanel renders. */
+  invites = $state<Invite[]>([]);
+  invitesStatus = $state<{ kind: 'idle' } | { kind: 'loading' }
+    | { kind: 'error'; message: string }>({ kind: 'idle' });
+
+  async loadInvites(): Promise<void> {
+    if (this.client === null) return;
+    this.invitesStatus = { kind: 'loading' };
+    try {
+      this.invites = await this.client.fetchInvites();
+      this.invitesStatus = { kind: 'idle' };
+    } catch (err) {
+      this.invitesStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
+  /** Mint a single invite. Returns the minted code so the UI can
+   *  immediately show "Copy" / "Share" without waiting for a refetch. */
+  async mintInvite(opts: {
+    ttlSeconds: number;
+    nameHint?: string;
+  }): Promise<Invite | null> {
+    if (this.client === null || !this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: this.client
+          ? 'Root key not loaded.'
+          : 'Not connected.',
+      };
+      return null;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    try {
+      const payload: { ttl_seconds: number; name_hint?: string } = {
+        ttl_seconds: opts.ttlSeconds,
+      };
+      if (opts.nameHint && opts.nameHint.trim()) {
+        payload.name_hint = opts.nameHint.trim();
+      }
+      const sig = await rootKeychain.signMessage(canonicalize(payload));
+      const inv = await this.client.submitInviteMint({ payload, sig });
+      this.adminStatus = { kind: 'idle' };
+      // Optimistic insert so the panel updates immediately.
+      this.invites = [...this.invites, inv];
+      return inv;
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+      return null;
+    }
+  }
+
+  async revokeInvite(code: string): Promise<void> {
+    if (this.client === null || !this.rootKeysPresent) return;
+    this.adminStatus = { kind: 'submitting' };
+    try {
+      const payload = { code };
+      const sig = await rootKeychain.signMessage(canonicalize(payload));
+      await this.client.submitInviteRevoke({ code, payload, sig });
+      this.adminStatus = { kind: 'idle' };
+      this.invites = this.invites.filter((i) => i.code !== code);
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
   /** v0.4.13: keymaster sets (or clears) the org's default landing
    *  thread for new members. Re-issues the directory manifest with the
    *  same attestations + revocations but an updated default_thread,
@@ -836,39 +903,73 @@ export class AppState {
    * Tauri-only — the whole point is OS-keychain custody from the moment
    * the priv exists. In browser mode the user falls back to paste.
    */
+  /** v0.4.33: held transiently when the PWA generates a keypair
+   *  in-JS during onboarding. Carries the priv from generateAndPair
+   *  through to the post-attestation connect() call so the new identity
+   *  works for the rest of the session. localStorage / IndexedDB
+   *  persistence is the v0.4.31 vault slice (deferred). */
+  private pwaTransientPriv: string | null = null;
+
   async generateAndPair(opts: {
     hubUrl: string;
     nameHint: string;
     thread: string;
+    invite: string;       // v0.4.33: required for /pending
   }): Promise<void> {
-    if (!this.inTauri) {
-      this.onboardStatus = {
-        kind: 'error',
-        message: 'Onboarding requires the Tauri shell — use paste mode in the browser.',
-      };
-      return;
-    }
     this.onboardStatus = { kind: 'generating' };
     let pubkey: string;
-    try {
-      pubkey = await keychain.generate();
-    } catch (err) {
-      this.onboardStatus = {
-        kind: 'error',
-        message: `Key generation failed: ${errMsg(err)}`,
-      };
-      return;
+    let privForPaste: string | null = null;
+
+    // v0.4.33: two key-generation paths.
+    //  - Tauri: keychain.generate() puts the priv straight into
+    //    Mac/Windows/Linux keychain; pubkey returned, priv never
+    //    crosses the JS boundary.
+    //  - Browser / PWA: generate via @noble/curves in JS heap and
+    //    hand the priv to the post-attestation connect() via the
+    //    transient field. Loses persistence (clear on tab close)
+    //    until the IndexedDB+passphrase vault slice ships.
+    if (this.inTauri) {
+      try {
+        pubkey = await keychain.generate();
+      } catch (err) {
+        this.onboardStatus = {
+          kind: 'error',
+          message: `Key generation failed: ${errMsg(err)}`,
+        };
+        return;
+      }
+      await this.refreshKeychain();
+    } else {
+      try {
+        const { ed25519 } = await import('@noble/curves/ed25519');
+        const { bytesToHex } = await import('@noble/hashes/utils');
+        const privBytes = ed25519.utils.randomPrivateKey();
+        const pubBytes = ed25519.getPublicKey(privBytes);
+        privForPaste = bytesToHex(privBytes);
+        pubkey = bytesToHex(pubBytes);
+        this.pwaTransientPriv = privForPaste;
+      } catch (err) {
+        this.onboardStatus = {
+          kind: 'error',
+          message: `Key generation failed: ${errMsg(err)}`,
+        };
+        return;
+      }
     }
-    await this.refreshKeychain();
 
     // Stand up a transient Client (no auth yet — registerPending is
     // public, watchPending is public) to talk to the hub.
     const client = new Client({
       hubUrl: opts.hubUrl, publicKey: pubkey,
-      signer: new TauriKeychainSigner(),
+      signer: this.inTauri
+        ? new TauriKeychainSigner()
+        : undefined,
+      privateKey: this.inTauri ? undefined : privForPaste ?? undefined,
     });
     try {
-      await client.registerPending({ pubkey, nameHint: opts.nameHint });
+      await client.registerPending({
+        pubkey, nameHint: opts.nameHint, invite: opts.invite,
+      });
     } catch (err) {
       // 409 already_attested → fast-forward to the normal connect flow.
       // The pubkey is already in the directory; no waiting required.
@@ -876,7 +977,9 @@ export class AppState {
         this.onboardStatus = { kind: 'attested', pubkey };
         await this.connect({
           hubUrl: opts.hubUrl, publicKey: pubkey,
-          thread: opts.thread, mode: 'keychain',
+          thread: opts.thread,
+          mode: this.inTauri ? 'keychain' : 'paste',
+          privateKey: privForPaste ?? undefined,
         });
         return;
       }
@@ -904,8 +1007,11 @@ export class AppState {
       this.onboardStatus = { kind: 'attested', pubkey };
       await this.connect({
         hubUrl: opts.hubUrl, publicKey: pubkey,
-        thread: opts.thread, mode: 'keychain',
+        thread: opts.thread,
+        mode: this.inTauri ? 'keychain' : 'paste',
+        privateKey: privForPaste ?? undefined,
       });
+      this.pwaTransientPriv = null;
     } catch (err) {
       // Only surface as error if not cancelled by the user.
       if (this.watchCancel !== null) {

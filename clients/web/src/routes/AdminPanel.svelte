@@ -276,7 +276,62 @@
     await app.refreshRootKeychain();
     await app.loadPendingQueue();
     await loadDefaultThread();
+    // v0.4.33: invites are admin-cap-gated; load them so the panel
+    // shows outstanding codes the moment it opens.
+    if (app.hasCapability('admin')) {
+      void app.loadInvites();
+    }
   });
+
+  // v0.4.33: invite mint dialog state.
+  let mintDialog = $state<{
+    ttlSeconds: number;
+    nameHint: string;
+    submitting: boolean;
+  } | null>(null);
+  let lastMinted = $state<{ code: string; expires_at: number } | null>(null);
+  let copied = $state<string | null>(null);
+
+  function openMintDialog() {
+    mintDialog = { ttlSeconds: 86400, nameHint: '', submitting: false };
+    lastMinted = null;
+  }
+  function closeMintDialog() {
+    mintDialog = null;
+  }
+  async function submitMint() {
+    if (!mintDialog) return;
+    mintDialog = { ...mintDialog, submitting: true };
+    const inv = await app.mintInvite({
+      ttlSeconds: mintDialog.ttlSeconds,
+      nameHint: mintDialog.nameHint,
+    });
+    if (inv) {
+      lastMinted = { code: inv.code, expires_at: inv.expires_at };
+      mintDialog = null;
+    } else if (mintDialog) {
+      mintDialog = { ...mintDialog, submitting: false };
+    }
+  }
+  async function copyInviteCode(code: string) {
+    try {
+      await navigator.clipboard.writeText(code);
+      copied = code;
+      setTimeout(() => { if (copied === code) copied = null; }, 1500);
+    } catch { /* clipboard unavailable; code is visible */ }
+  }
+  async function handleRevoke(code: string) {
+    if (!confirm('Revoke this invite? The recipient will get an "invalid code" error if they try to use it.')) return;
+    await app.revokeInvite(code);
+    if (lastMinted?.code === code) lastMinted = null;
+  }
+  function formatExpiresIn(seconds: number): string {
+    if (seconds <= 0) return 'expired';
+    if (seconds < 60) return `expires in ${seconds}s`;
+    if (seconds < 3600) return `expires in ${Math.round(seconds / 60)}m`;
+    if (seconds < 86400) return `expires in ${Math.round(seconds / 3600)}h`;
+    return `expires in ${Math.round(seconds / 86400)}d`;
+  }
 
   function startApprove(row: { pubkey: string; name_hint: string }) {
     approvingPubkey = row.pubkey;
@@ -677,6 +732,115 @@
       </div>
     </section>
 
+    <!-- v0.4.33: invite codes — admission gate for POST /pending.
+         The keymaster mints time-limited single-use codes here and
+         delivers them out-of-band (text / Signal / paper). Without
+         a valid code, /pending submissions get a 401 and never reach
+         the queue. See cove/invites.py for the rationale. -->
+    <section class="invites">
+      <header class="invites-header">
+        <div>
+          <h2>Invites</h2>
+          <p class="muted">
+            Mint a single-use code; share it out-of-band with the new
+            member. Without a code, /pending submissions are rejected
+            — keeps the queue spam-free.
+          </p>
+        </div>
+        <button type="button" onclick={openMintDialog}>+ Mint invite</button>
+      </header>
+
+      {#if lastMinted}
+        <div class="last-minted">
+          <p class="muted small">
+            Fresh code — share with the new member by text or in person.
+            They enter it in their "Get started" screen.
+          </p>
+          <div class="code-row">
+            <code class="big-code">{lastMinted.code}</code>
+            <button type="button" class="ghost"
+              onclick={() => copyInviteCode(lastMinted!.code)}>
+              {copied === lastMinted.code ? 'Copied!' : 'Copy'}
+            </button>
+          </div>
+        </div>
+      {/if}
+
+      {#if app.invitesStatus.kind === 'loading'}
+        <p class="muted small">Loading invites…</p>
+      {:else if app.invitesStatus.kind === 'error'}
+        <p class="failure" role="alert">⚠ {app.invitesStatus.message}</p>
+      {:else if app.invites.length === 0}
+        <p class="muted small">No active invites. Mint one to admit a new member.</p>
+      {:else}
+        <ul class="invite-list">
+          {#each app.invites as inv (inv.code)}
+            <li>
+              <div class="invite-row">
+                <code class="invite-code">{inv.code}</code>
+                <div class="invite-meta">
+                  {#if inv.name_hint}
+                    <span class="hint">for {inv.name_hint}</span>
+                  {/if}
+                  <span class="ttl">{formatExpiresIn(inv.expires_in_seconds)}</span>
+                </div>
+                <div class="invite-actions">
+                  <button type="button" class="ghost"
+                    onclick={() => copyInviteCode(inv.code)}>
+                    {copied === inv.code ? 'Copied' : 'Copy'}
+                  </button>
+                  <button type="button" class="danger"
+                    onclick={() => handleRevoke(inv.code)}>Revoke</button>
+                </div>
+              </div>
+            </li>
+          {/each}
+        </ul>
+        <p class="muted small">
+          Codes are process-local on the hub — they evaporate on
+          restart. Active outstanding codes from a prior process are
+          unrecoverable; mint fresh ones if needed.
+        </p>
+      {/if}
+    </section>
+
+    {#if mintDialog}
+      <div class="modal-backdrop" onclick={closeMintDialog} role="presentation"></div>
+      <div class="modal" role="dialog" aria-label="Mint invite">
+        <h3>Mint invite</h3>
+        <p class="muted small">
+          Pick a validity window. Shorter is safer (less time for a
+          leaked code to be used by the wrong person).
+        </p>
+        <label>
+          <span>Expires in</span>
+          <select bind:value={mintDialog.ttlSeconds}
+            disabled={mintDialog.submitting}>
+            <option value={3600}>1 hour</option>
+            <option value={86400}>24 hours</option>
+            <option value={604800}>7 days</option>
+          </select>
+        </label>
+        <label>
+          <span>For whom? (optional — your own notes)</span>
+          <input type="text" bind:value={mintDialog.nameHint}
+            placeholder="Carol's daughter"
+            disabled={mintDialog.submitting} />
+        </label>
+        {#if app.adminStatus.kind === 'error'}
+          <p class="failure" role="alert">{app.adminStatus.message}</p>
+        {/if}
+        <div class="modal-actions">
+          <button type="button" class="ghost" onclick={closeMintDialog}
+            disabled={mintDialog.submitting}>Cancel</button>
+          <button type="button" onclick={submitMint}
+            disabled={mintDialog.submitting}>
+            {mintDialog.submitting ? 'Minting…' : 'Mint'}
+          </button>
+        </div>
+      </div>
+    {/if}
+
     <!-- v0.4.25: org-defined role → capability map. The default
          mapping (board → admin + archive) is what kicks in when this
          field is absent — that matches pre-v0.4.25 behavior, including
@@ -1076,6 +1240,74 @@
 
   /* v0.4.25: roles × capabilities matrix. Small enough that a flat
      table reads better than a grid of cards. */
+  /* v0.4.33: invites section. Sits between Org settings and Roles
+     so the keymaster's day-to-day operations (mint invite, attest)
+     live in adjacent UI surfaces. */
+  .invites {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .invites-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 1rem; margin-bottom: 0.85rem;
+  }
+  .invites-header h2 { margin: 0 0 0.3rem; }
+  .invites-header p { margin: 0; font-size: 0.85rem; }
+  .last-minted {
+    border: 1px solid rgba(212, 175, 55, 0.4);
+    background: rgba(212, 175, 55, 0.08);
+    border-radius: 10px;
+    padding: 0.9rem 1.1rem;
+    margin: 0 0 1rem;
+  }
+  .code-row {
+    display: flex; align-items: center; gap: 0.7rem;
+    margin-top: 0.5rem;
+  }
+  .big-code {
+    flex: 1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 1.1rem;
+    background: var(--bg);
+    color: #e8c96b;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.55rem 0.75rem;
+    letter-spacing: 0.04em;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .invite-list {
+    list-style: none; margin: 0; padding: 0;
+  }
+  .invite-list li {
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); padding: 0.7rem 0.9rem;
+    margin: 0 0 0.5rem;
+  }
+  .invite-row {
+    display: flex; align-items: center; gap: 0.85rem; flex-wrap: wrap;
+  }
+  .invite-code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.84rem;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.25rem 0.55rem;
+    overflow-x: auto;
+    max-width: 100%;
+  }
+  .invite-meta {
+    display: flex; gap: 0.5rem; align-items: center;
+    color: var(--muted); font-size: 0.82rem;
+    flex: 1; min-width: 0;
+  }
+  .invite-meta .hint { color: var(--fg); font-weight: 500; }
+  .invite-actions { display: flex; gap: 0.4rem; }
+
   .roles {
     margin-top: 2rem;
     border-top: 1px solid var(--border);

@@ -95,6 +95,24 @@ export interface InboxRow {
   audience: Audience | null;
 }
 
+/** v0.4.33: an outstanding invite code. Carries enough metadata for
+ *  the admin panel to render a row (when minted, when it expires, why
+ *  the keymaster created it, current status). The code itself is the
+ *  only field that matters for the wire — everything else is
+ *  bookkeeping. */
+export interface Invite {
+  code: string;
+  /** Seconds remaining until expiry — server-computed at fetch time
+   *  so the client doesn't need to know the hub's process-start
+   *  monotonic origin. */
+  expires_in_seconds: number;
+  created_at: number;     // monotonic; only useful relative to other fields
+  expires_at: number;     // same clock
+  name_hint: string | null;
+  consumed_at: number | null;
+  revoked_at: number | null;
+}
+
 export interface InboxPreviewEntry {
   id: string;
   seq: number;
