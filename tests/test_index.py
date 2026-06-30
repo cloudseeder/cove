@@ -135,6 +135,28 @@ def test_status_when_nobody_has_acked(ledger):
     assert sorted(s["not_acked"]) == ["alice", "bob"]
 
 
+def test_status_treats_author_as_acked_by_construction(ledger):
+    """The author signed the entry — that's stronger evidence of "seen"
+    than a receipt would be. Author short-circuit must move them into
+    acked even when they have no receipt for their own entry."""
+    # Alice authored the entry at seq=10. She has never receipted t1.
+    ledger.apply_receipt("bob", "t1", 10, (20, "r"))
+    s = ledger.status(
+        "t1", required_seq=10, members=["alice", "bob", "carol"], author="alice",
+    )
+    assert sorted(s["acked"])     == ["alice", "bob"]
+    assert sorted(s["not_acked"]) == ["carol"]
+
+
+def test_status_author_optional_defaults_to_old_behavior(ledger):
+    """Omitting author preserves the pre-author-fix partitioning so any
+    caller that doesn't yet pass it gets the same answer as before."""
+    ledger.apply_receipt("alice", "t1", 10, (20, "r"))
+    s = ledger.status("t1", required_seq=10, members=["alice", "bob"])
+    assert s["acked"] == ["alice"]
+    assert s["not_acked"] == ["bob"]
+
+
 # ---- §6.4.3 equivocation detection via receipt-carried STH --------------
 
 def test_observed_sths_collects_distinct_heads(ledger):

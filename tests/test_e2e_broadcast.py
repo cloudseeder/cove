@@ -369,10 +369,10 @@ def test_broadcast_notice_path_end_to_end(tmp_path, root_keypair, hub_keypair):
     ledger_resp = board_client.get("/ledger", params={"entry": notice.id})
     assert ledger_resp.status_code == 200
     status = ledger_resp.json()
-    assert sorted(status["acked"]) == sorted([alice_pub, bob_pub])
-    # The board itself sent the notice but never acked it — that's
-    # the expected partition. (A real client would skip self-ack.)
-    assert board_pub in status["not_acked"]
+    # v0.4.36: the entry's author is acked-by-construction — the signature
+    # is stronger evidence of "seen" than a receipt would be.
+    assert sorted(status["acked"]) == sorted([alice_pub, bob_pub, board_pub])
+    assert board_pub not in status["not_acked"]
 
     # =========================================================
     # 10. Consistency proof across the rest of the session — the log
@@ -459,17 +459,17 @@ def test_silent_member_is_provably_in_not_acked(tmp_path, root_keypair, hub_keyp
                       observed_size=observed.tree_size,
                       observed_root=observed.root_hash)
 
-    # The actionable partition.
+    # The actionable partition. v0.4.36: the entry's author is treated as
+    # acked by construction — the signature on the entry is stronger
+    # evidence of "seen" than a receipt would be.
     status = board_client.get("/ledger", params={"entry": notice.id}).json()
-    assert sorted(status["acked"]) == sorted([alice_pub, bob_pub])
+    assert sorted(status["acked"]) == sorted([alice_pub, bob_pub, board_pub])
     # carol is the headline assertion — attested in the manifest, NEVER
     # connected, surfaced in not_acked by mechanical partition over the
     # signed receipts that exist (or don't).
     assert carol_pub in status["not_acked"]
-    # board self-author is also in not_acked (didn't ack itself). The
-    # client-side render filters self-author; the substrate's partition
-    # is mechanical and documents that here.
-    assert board_pub in status["not_acked"]
+    # board self-author no longer appears in not_acked: author short-circuit.
+    assert board_pub not in status["not_acked"]
 
     # The receipts log proves carol's absence is REAL — no entry in the
     # store is authored by carol against this thread, period.
@@ -574,7 +574,7 @@ def test_equivocation_substrate_fires_on_divergent_observed_sths(tmp_path, root_
     # acked. The equivocation evidence is surfaced separately, where it
     # belongs (a governance signal, not an ack signal).
     status = board_client.get("/ledger", params={"entry": notice.id}).json()
-    assert sorted(status["acked"]) == sorted([alice_pub, bob_pub])
+    assert sorted(status["acked"]) == sorted([alice_pub, bob_pub, board_pub])
 
 
 def test_revocation_mid_session_immediately_cuts_off_revoked_member(
@@ -676,7 +676,7 @@ def test_revocation_mid_session_immediately_cuts_off_revoked_member(
     pre_status = board_client.get(
         "/ledger", params={"entry": notice.id},
     ).json()
-    assert sorted(pre_status["acked"]) == sorted([alice_pub, bob_pub])
+    assert sorted(pre_status["acked"]) == sorted([alice_pub, bob_pub, board_pub])
 
     # === Admin pushes a chained, root-signed manifest that revokes bob ===
     current = directory.manifest
@@ -756,7 +756,7 @@ def test_revocation_mid_session_immediately_cuts_off_revoked_member(
     post_status = board_client.get(
         "/ledger", params={"entry": notice.id},
     ).json()
-    assert sorted(post_status["acked"]) == sorted([alice_pub, bob_pub])
+    assert sorted(post_status["acked"]) == sorted([alice_pub, bob_pub, board_pub])
 
     # === Invariant 6: board and alice are unaffected ===
     assert board_client.get("/directory").status_code == 200
@@ -945,9 +945,12 @@ def test_hub_state_survives_full_restart(tmp_path, root_keypair, hub_keypair):
         status = client.get(
             "/ledger", params={"entry": notice.id},
         ).json()
-        # Without ledger-reconcile-from-store, acked is empty post-restart.
-        # The cryptographic evidence (the receipt entries themselves) is
-        # still durable in the store and inclusion-provable.
-        assert status["acked"] == []
+        # Without ledger-reconcile-from-store, the per-recipient high-water
+        # cache is empty post-restart. The cryptographic evidence (the
+        # receipt entries themselves) is still durable in the store and
+        # inclusion-provable. v0.4.36: the author short-circuit is
+        # stateless — it reads from the entry itself, so the author
+        # remains in acked after restart.
+        assert status["acked"] == [board_pub]
         for r in (receipts["alice"], receipts["bob"]):
             assert hub_b["store"].exists(r.id)

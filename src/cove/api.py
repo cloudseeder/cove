@@ -505,7 +505,10 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         if target is None or seq is None:
             return _err(404, error="not_found", entry=entry)
         members = directory.attested_keys() if directory is not None else []
-        return ledger.status(target.thread, required_seq=seq, members=members)
+        return ledger.status(
+            target.thread, required_seq=seq, members=members,
+            author=target.author,
+        )
 
     # ---- WS /stream (§7, §7.1 step 10) ---------------------------------
     @api.websocket("/stream")

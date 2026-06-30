@@ -152,16 +152,25 @@ class Ledger:
         return self._high_water.get((recipient, thread), -1)
 
     def status(self, thread: str, *, required_seq: int,
-               members: Iterable[str]) -> dict:
+               members: Iterable[str], author: str | None = None) -> dict:
         """{'acked': [...], 'not_acked': [...]} for a given broadcast position. §8.
 
         A member is 'acked' iff their high-water in `thread` is at or past
-        `required_seq`. The not_acked list is the actionable one — that's the
-        feature email structurally cannot offer.
+        `required_seq`, OR they are the entry's `author` — the signature on
+        the entry is stronger evidence of "they've seen it" than a receipt
+        would be. Without the author short-circuit, every author would
+        appear in not_acked for their own entries until they happened to
+        re-sync the thread, which is nonsense.
+
+        The not_acked list is the actionable one — that's the feature email
+        structurally cannot offer.
         """
         acked, not_acked = [], []
         for m in members:
-            (acked if self.high_water(m, thread) >= required_seq else not_acked).append(m)
+            if m == author or self.high_water(m, thread) >= required_seq:
+                acked.append(m)
+            else:
+                not_acked.append(m)
         return {"acked": acked, "not_acked": not_acked}
 
     def observed_sths(self, recipient: str, thread: str) -> set[tuple[int, str]]:
