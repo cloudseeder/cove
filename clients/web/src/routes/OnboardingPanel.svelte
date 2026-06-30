@@ -31,6 +31,25 @@
   // AdminPanel and delivers it out-of-band (text / Signal / paper);
   // no code, no /pending entry, no spam queue.
   let invite = $state('');
+  // v0.4.34: passphrase for the encrypted IndexedDB vault. Only used
+  // in browser / PWA mode (Tauri uses OS keychain). Min 12 chars.
+  let passphrase = $state('');
+  let passphraseConfirm = $state('');
+  let showPassphrase = $state(false);
+  const needPassphrase = $derived(!app.inTauri);
+  const passphraseValid = $derived(
+    !needPassphrase || (
+      passphrase.length >= 12 && passphrase === passphraseConfirm
+    ),
+  );
+  const passphraseMessage = $derived.by(() => {
+    if (!needPassphrase) return '';
+    if (passphrase.length === 0) return '';
+    if (passphrase.length < 12) return 'At least 12 characters.';
+    if (passphraseConfirm.length === 0) return '';
+    if (passphrase !== passphraseConfirm) return "Doesn't match.";
+    return '';
+  });
   // Default thread for the new member's first landing. Priority:
   //   1. v0.4.13+ hub-side default_thread hint from /directory
   //   2. localStorage cove.thread (this device's prior Cove history)
@@ -51,6 +70,7 @@
 
   async function start() {
     if (!nameHint.trim() || !invite.trim()) return;
+    if (needPassphrase && !passphraseValid) return;
     const url = hubUrl.trim();
     // Try the v0.4.13+ hub hint. Best-effort: if the hub is older, the
     // network is flaky, or the response isn't shaped as expected, fall
@@ -73,6 +93,7 @@
       nameHint: nameHint.trim(),
       thread: sanitizeThreadName(chosenThread) || 'general',
       invite: invite.trim(),
+      passphrase: needPassphrase ? passphrase : undefined,
     });
   }
 
@@ -126,6 +147,52 @@
         placeholder="https://cove.oap.dev" disabled={isGenerating} />
     </label>
 
+    {#if needPassphrase}
+      <!-- v0.4.34: PWA / browser path. Passphrase encrypts the
+           generated priv into IndexedDB so the user doesn't re-onboard
+           on every tab close. Tauri path skips this — keychain owns
+           it. -->
+      <label>
+        <span>Passphrase (encrypts your key on this device)</span>
+        <div class="passphrase-row">
+          <input
+            type={showPassphrase ? 'text' : 'password'}
+            bind:value={passphrase}
+            placeholder="At least 12 characters"
+            autocapitalize="off" autocorrect="off" spellcheck="false"
+            autocomplete="new-password"
+            disabled={isGenerating} />
+          <button type="button" class="reveal"
+            onclick={() => (showPassphrase = !showPassphrase)}
+            tabindex="-1"
+            aria-label={showPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+            disabled={isGenerating}>
+            {showPassphrase ? '🙈' : '👁'}
+          </button>
+        </div>
+      </label>
+
+      <label>
+        <span>Confirm passphrase</span>
+        <input
+          type={showPassphrase ? 'text' : 'password'}
+          bind:value={passphraseConfirm}
+          placeholder="Type it again"
+          autocapitalize="off" autocorrect="off" spellcheck="false"
+          autocomplete="new-password"
+          disabled={isGenerating} />
+      </label>
+
+      {#if passphraseMessage}
+        <p class="muted small">{passphraseMessage}</p>
+      {/if}
+
+      <p class="muted small">
+        We can't recover this passphrase if you forget it. You'd need
+        to onboard again with a fresh code from your keymaster.
+      </p>
+    {/if}
+
     {#if isError && status.kind === 'error'}
       <p class="failure" role="alert">{status.message}</p>
     {/if}
@@ -136,7 +203,8 @@
         I already have a key
       </button>
       <button type="button" onclick={start}
-        disabled={isGenerating || !nameHint.trim() || !hubUrl.trim() || !invite.trim()}>
+        disabled={isGenerating || !nameHint.trim() || !hubUrl.trim()
+          || !invite.trim() || (needPassphrase && !passphraseValid)}>
         {isGenerating ? 'Generating…' : 'Get started'}
       </button>
     </div>
@@ -256,6 +324,28 @@
   .qr :global(svg) {
     border-radius: 12px;
     box-shadow: 0 0 0 1px var(--border);
+  }
+  .passphrase-row {
+    display: flex; gap: 0.4rem; align-items: stretch;
+  }
+  .passphrase-row input { flex: 1; }
+  .reveal {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0 0.8rem;
+    font-size: 1rem;
+    flex: 0 0 auto;
+  }
+  .reveal:hover:not(:disabled) {
+    border-color: rgba(212, 175, 55, 0.5);
+    color: var(--fg);
+  }
+  .small {
+    font-size: 0.82rem;
+    margin: 0.35rem 0 0.4rem;
   }
   .link-row {
     display: flex;

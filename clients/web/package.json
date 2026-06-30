@@ -1,6 +1,6 @@
 {
   "name": "cove-web",
-  "version": "0.4.33",
+  "version": "0.4.34",
   "private": true,
   "type": "module",
   "description": "Cove — Tauri + SvelteKit client. The PWA-shell + native desktop/mobile target.",
@@ -18,8 +18,8 @@
     "@noble/hashes": "^1.5.0",
     "@tauri-apps/api": "^2.1.0",
     "@tauri-apps/plugin-notification": "^2.0.0",
-    "@tauri-apps/plugin-updater": "^2.0.0",
     "@tauri-apps/plugin-process": "^2.0.0",
+    "@tauri-apps/plugin-updater": "^2.0.0",
     "qrcode-generator": "^1.4.4"
   },
   "devDependencies": {
@@ -28,6 +28,7 @@
     "@sveltejs/vite-plugin-svelte": "^4.0.0",
     "@tauri-apps/cli": "^2.1.0",
     "@types/node": "^22.0.0",
+    "fake-indexeddb": "^6.2.5",
     "svelte": "^5.0.0",
     "svelte-check": "^4.0.0",
     "typescript": "^5.6.0",

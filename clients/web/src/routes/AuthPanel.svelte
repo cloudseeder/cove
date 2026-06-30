@@ -26,6 +26,11 @@
   let pub = $state('');
   let importing = $state(false);
   let importError = $state<string | null>(null);
+  // v0.4.34: pwa-unlock passphrase + error state.
+  let vaultPassphrase = $state('');
+  let showVaultPassphrase = $state(false);
+  let vaultUnlocking = $state(false);
+  let vaultUnlockError = $state<string | null>(null);
   /** v0.1.3: opt out of the keychain path inside Tauri and use the JS
    *  signer for the session instead. Useful when the OS keychain
    *  refuses writes (e.g. unsigned macOS builds), and as an explicit
@@ -117,15 +122,40 @@
   );
 
   // ---- which view? ----
-  //   - In Tauri w/ keys already in keychain → unlock.
-  //   - In Tauri, no stored keys, NOT opted into paste → import (default).
+  //   - In Tauri w/ keys already in keychain → tauri-unlock.
+  //   - In Tauri, no stored keys, NOT opted into paste → tauri-import.
   //   - In Tauri, opted into paste → paste (uses InJSSigner this session).
-  //   - In browser → paste.
-  let mode = $derived<'tauri-unlock' | 'tauri-import' | 'paste'>(
+  //   - In browser/PWA w/ vault → pwa-unlock (v0.4.34).
+  //   - In browser/PWA, no vault → paste (or Get started via onOnboard).
+  let mode = $derived<'tauri-unlock' | 'tauri-import' | 'pwa-unlock' | 'paste'>(
     app.inTauri && !useTauriPaste
       ? (app.storedPublicKey ? 'tauri-unlock' : 'tauri-import')
-      : 'paste',
+      : (app.vaultStatus.exists ? 'pwa-unlock' : 'paste'),
   );
+
+  async function unlockVault() {
+    vaultUnlockError = null;
+    vaultUnlocking = true;
+    try {
+      await app.unlockFromVault({
+        passphrase: vaultPassphrase,
+        hubUrl,
+        thread: defaultThread(),
+      });
+      vaultPassphrase = '';
+    } catch (err) {
+      vaultUnlockError = (err as Error).message;
+    } finally {
+      vaultUnlocking = false;
+    }
+  }
+
+  async function forgetVaultAndStartOver() {
+    if (!confirm("Wipe this device's stored key and start over with a fresh keypair? Your existing identity stays on the hub — you'd need a new invite from the keymaster to re-attest the fresh key.")) return;
+    await app.forgetVault();
+    vaultPassphrase = '';
+    vaultUnlockError = null;
+  }
 </script>
 
 <section class="auth" ondrop={dropKeyfile} ondragover={preventDefault}
@@ -153,6 +183,63 @@
       <button type="button" class="ghost" onclick={forgetKeys}>Use a different key</button>
       <button type="button" onclick={connectKeychain} disabled={connecting}>
         {connecting ? 'Connecting…' : 'Unlock'}
+      </button>
+    </div>
+
+  {:else if mode === 'pwa-unlock'}
+    <!-- v0.4.34: returning PWA user. Vault exists; passphrase
+         decrypts it locally and connects. -->
+    <h1>Welcome back</h1>
+    <p class="muted">
+      Your key is on this device, encrypted with your passphrase.
+      Enter it to sign in — it's never sent anywhere.
+    </p>
+
+    <div class="field">
+      <span class="field-label">Public key (from this device)</span>
+      <code class="readonly">{app.vaultStatus.pubkey}</code>
+    </div>
+
+    <label>
+      <span>Hub URL</span>
+      <input type="url" bind:value={hubUrl}
+        placeholder="https://cove.oap.dev"
+        disabled={vaultUnlocking} />
+    </label>
+
+    <label>
+      <span>Passphrase</span>
+      <div class="passphrase-row">
+        <input
+          type={showVaultPassphrase ? 'text' : 'password'}
+          bind:value={vaultPassphrase}
+          placeholder="The one you set during Get started"
+          autocapitalize="off" autocorrect="off" spellcheck="false"
+          autocomplete="current-password"
+          disabled={vaultUnlocking}
+          onkeydown={(e) => { if (e.key === 'Enter') unlockVault(); }} />
+        <button type="button" class="reveal"
+          onclick={() => (showVaultPassphrase = !showVaultPassphrase)}
+          tabindex="-1"
+          aria-label={showVaultPassphrase ? 'Hide passphrase' : 'Show passphrase'}
+          disabled={vaultUnlocking}>
+          {showVaultPassphrase ? '🙈' : '👁'}
+        </button>
+      </div>
+    </label>
+
+    {#if vaultUnlockError}
+      <p class="failure" role="alert">{vaultUnlockError}</p>
+    {/if}
+
+    <div class="actions">
+      <button type="button" class="ghost" onclick={forgetVaultAndStartOver}
+        disabled={vaultUnlocking}>
+        Use a different key
+      </button>
+      <button type="button" onclick={unlockVault}
+        disabled={vaultUnlocking || vaultPassphrase.length === 0}>
+        {vaultUnlocking ? 'Unlocking…' : 'Unlock'}
       </button>
     </div>
 
@@ -430,5 +517,24 @@
   .muted.small {
     font-size: 0.82rem;
     margin: 0.6rem 0 0;
+  }
+  /* v0.4.34: passphrase + eye-toggle row. */
+  .passphrase-row {
+    display: flex; gap: 0.4rem; align-items: stretch;
+  }
+  .passphrase-row input { flex: 1; }
+  .reveal {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0 0.8rem;
+    font-size: 1rem;
+    flex: 0 0 auto;
+  }
+  .reveal:hover:not(:disabled) {
+    border-color: rgba(212, 175, 55, 0.5);
+    color: var(--fg);
   }
 </style>

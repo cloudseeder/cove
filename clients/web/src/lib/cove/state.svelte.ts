@@ -20,6 +20,11 @@ import type {
 import { DEFAULT_CAPABILITIES_BY_ROLE } from './types';
 import type { RevokedEntry } from './client';
 import { hashManifest } from './verify';
+import {
+  clearVault, requestPersistentStorage, storeKey as storeVaultKey,
+  unlockKey as unlockVaultKey, vaultStatus as readVaultStatus,
+  type VaultStatus,
+} from './vault';
 
 // Tauri's invoke() rejects with a raw string when the Rust side returns
 // Err(String) (which all our #[tauri::command] handlers do). Casting that
@@ -111,6 +116,12 @@ export class AppState {
   /** Public key stored in the OS keychain (Tauri only). When set,
    *  AuthPanel shows 'Unlock' rather than the import form. */
   storedPublicKey = $state<string | null>(null);
+  /** v0.4.34: passphrase-encrypted vault status (PWA / browser-only
+   *  path). When .exists, AuthPanel shows the pwa-unlock form
+   *  ("Welcome back, 9add…2c1, enter passphrase"). Populated from
+   *  IndexedDB by refreshVaultStatus() on construct + after vault
+   *  mutations. */
+  vaultStatus = $state<VaultStatus>({ exists: false });
   /** Updater status — drives the quiet 'Update available' affordance.
    *  Set by checkForUpdate(); resolution by installUpdate(). */
   updateStatus = $state<UpdateStatus>({ kind: 'idle' });
@@ -147,6 +158,19 @@ export class AppState {
     // Resolve the bundle version asynchronously. The webview can render
     // before this lands — the version line is just blank until then.
     appVersion().then((v) => { this.appVersion = v; });
+    // v0.4.34: vault is PWA / browser only. Read its status so
+    // AuthPanel can pick pwa-unlock vs Get started immediately. Also
+    // request persistent storage so the OS doesn't evict the vault
+    // under storage pressure.
+    if (!this.inTauri) {
+      void this.refreshVaultStatus();
+      void requestPersistentStorage();
+    }
+  }
+
+  /** v0.4.34: read the IndexedDB vault status into reactive state. */
+  async refreshVaultStatus(): Promise<void> {
+    this.vaultStatus = await readVaultStatus();
   }
   /** v0.4.0: cached pending queue for AdminPanel. Refreshed by
    *  loadPendingQueue() — also re-fetched after every approve/reject. */
@@ -915,6 +939,12 @@ export class AppState {
     nameHint: string;
     thread: string;
     invite: string;       // v0.4.33: required for /pending
+    /** v0.4.34: PWA / browser path. When provided, the generated priv
+     *  is encrypted under this passphrase and stored in IndexedDB
+     *  BEFORE the /pending POST — so a reload during the waiting
+     *  screen still recovers the keys via the unlock flow. Tauri
+     *  path ignores this (OS keychain owns the priv). */
+    passphrase?: string;
   }): Promise<void> {
     this.onboardStatus = { kind: 'generating' };
     let pubkey: string;
@@ -954,6 +984,25 @@ export class AppState {
           message: `Key generation failed: ${errMsg(err)}`,
         };
         return;
+      }
+
+      // v0.4.34: encrypt + persist the priv BEFORE the /pending POST.
+      // A reload during the waiting screen would otherwise lose the
+      // keys (they'd live only in pwaTransientPriv). With the vault,
+      // the user just re-unlocks with their passphrase on next launch.
+      if (opts.passphrase && privForPaste) {
+        try {
+          await this.storeKeyInVault({
+            priv: privForPaste, pub: pubkey,
+            passphrase: opts.passphrase,
+          });
+        } catch (err) {
+          this.onboardStatus = {
+            kind: 'error',
+            message: `Could not store key in this browser: ${errMsg(err)}`,
+          };
+          return;
+        }
       }
     }
 
@@ -1035,6 +1084,47 @@ export class AppState {
       this.watchCancel = null;
     }
     this.onboardStatus = { kind: 'idle' };
+  }
+
+  /**
+  /** v0.4.34: PWA / browser-only — decrypt the vault with the user's
+   *  passphrase and connect. Wrong passphrase throws (surfaced
+   *  inline in AuthPanel). After successful unlock the priv lives in
+   *  JS heap (same lifetime as paste mode) until tab close. */
+  async unlockFromVault(opts: {
+    passphrase: string;
+    hubUrl: string;
+    thread: string;
+  }): Promise<void> {
+    if (!this.vaultStatus.exists) {
+      throw new Error('no vault on this device');
+    }
+    const { priv, pub } = await unlockVaultKey(opts.passphrase);
+    await this.connect({
+      hubUrl: opts.hubUrl, privateKey: priv, publicKey: pub,
+      thread: opts.thread, mode: 'paste',
+    });
+  }
+
+  /** v0.4.34: persist a freshly-generated keypair under a passphrase.
+   *  Called by OnboardingPanel in PWA mode AFTER key generation but
+   *  BEFORE the /pending POST — so a reload during the
+   *  "Waiting for approval" wait doesn't lose the keys. */
+  async storeKeyInVault(opts: {
+    priv: string;
+    pub: string;
+    passphrase: string;
+  }): Promise<void> {
+    await storeVaultKey(opts);
+    await this.refreshVaultStatus();
+  }
+
+  /** v0.4.34: wipe the vault. AuthPanel's "Use a different key" calls
+   *  this when the user wants to start over with a fresh keypair
+   *  (forgot passphrase / really left the org / etc.). */
+  async forgetVault(): Promise<void> {
+    await clearVault();
+    await this.refreshVaultStatus();
   }
 
   /**
