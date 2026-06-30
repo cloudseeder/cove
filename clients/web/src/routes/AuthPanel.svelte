@@ -221,7 +221,7 @@
          - Tauri w/ useTauriPaste opt-in: an explicit fallback when
            keychain custody isn't available (unsigned macOS) or the
            user wants to opt out of OS-level storage. -->
-    {#if app.inPWA && onOnboard}
+    {#if onOnboard}
       <h1>Welcome to Cove</h1>
       <p class="muted">
         First time on this device? Generate a key here and have your
