@@ -172,9 +172,9 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         # rebuilds the things that don't.
         translog.rebuild(store.iter_global())
         overview.rebuild(store.iter_overview_seed())
-        # v0.4.37: rebuild each ephemeral thread's per-thread log from
-        # the store. Live threads only — tombstoned ones (37b) will be
-        # skipped when the tombstone bit is set.
+        # v0.4.37: rebuild each live ephemeral thread's per-thread log
+        # from the store. Tombstoned threads are skipped — their
+        # sealed STH lives in ephemeral_final_sths, not the log.
         if ephemeral_translog is not None:
             for rec in store.all_ephemeral():
                 if rec["tombstoned_at"] is not None:
@@ -393,6 +393,131 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             })
         return {"threads": rows}
 
+    # v0.4.38: shared seal ceremony. Manual (POST
+    # /threads/{T}/tombstone) and auto (TTL background task) both call
+    # this. Under the ephemeral log's lock we:
+    #   1) close_thread → final EphemeralSTH
+    #   2) save_final_sth so the sealed head survives entry deletion
+    #   3) mark_tombstoned so subsequent /entries no longer route here
+    #   4) delete ephemeral entries (the leaves are gone; the
+    #      commitment survives in the STH)
+    #   5) publish the tombstone entry to the MAIN log via a direct
+    #      store.append_atomic + translog.append (bypasses pipeline
+    #      throttle/ACL — the entry was already verified at open time
+    #      or manual-seal request time, and quota accounting for a
+    #      hub-driven auto-seal isn't the creator's burden)
+    #   6) broadcast thread_tombstoned to WS subscribers
+    # Idempotent: calling twice returns the same seq/STH; the store
+    # helpers use IF-NULL / INSERT OR IGNORE semantics.
+    def _reconstruct_tombstone_entry(rec: dict) -> Entry:
+        """Rebuild the stored tombstone Entry from its JCS content bytes
+        + sig. Mirrors store._row_to_entry's shape but takes an
+        ephemeral_threads row rather than an entries row."""
+        import json
+        content = json.loads(rec["tombstone_entry_content"])
+        blobs_data = content.pop("blobs", []) or []
+        blobs = [BlobRef(**b) for b in blobs_data]
+        receipt_dict = content.pop("receipt", None)
+        receipt = Receipt(**receipt_dict) if receipt_dict is not None else None
+        audience_dict = content.pop("audience", None)
+        audience = (
+            Audience(**audience_dict) if audience_dict is not None else None
+        )
+        ev = Entry(blobs=blobs, receipt=receipt, audience=audience, **content)
+        ev.id = crypto.content_id(ev.content())
+        ev.sig = rec["tombstone_entry_sig"]
+        return ev
+
+    async def _seal_ephemeral_thread(
+        thread: str, *, override_entry: Optional[Entry] = None,
+    ) -> dict:
+        """Run the seal ceremony. Returns a payload matching the
+        WS thread_tombstoned event body (also returned by the manual
+        endpoint). `override_entry` is a fresh tombstone Entry from a
+        manual-seal request; if omitted, the pre-signed entry stored
+        at open time is used."""
+        if ephemeral_translog is None:
+            return {"error": "no_ephemeral_log"}
+        rec = store.get_ephemeral(thread)
+        if rec is None:
+            return {"error": "not_found"}
+        if rec["tombstoned_at"] is not None:
+            # Idempotent: return the already-sealed head so the caller
+            # sees a consistent result on retries.
+            final = store.get_final_sth(thread)
+            return {
+                "thread": thread,
+                "tombstoned_at": rec["tombstoned_at"],
+                "final_sth": final,
+                "already_sealed": True,
+            }
+
+        publish_entry = override_entry or _reconstruct_tombstone_entry(rec)
+        if not verify_entry(publish_entry):
+            # Defense in depth: refuse to publish a tombstone whose
+            # signature doesn't verify. If this fires the DB is corrupt.
+            return {"error": "tombstone_signature_invalid"}
+
+        # 1) freeze the ephemeral tree
+        final_sth = ephemeral_translog.close_thread(thread)
+
+        # 2) pin the sealed STH so it survives leaf deletion
+        store.save_final_sth(
+            thread=thread,
+            tree_size=final_sth.tree_size,
+            root_hash=final_sth.root_hash,
+            prev_sth_hash=final_sth.prev_sth_hash,
+            timestamp=final_sth.timestamp,
+            hub_key=final_sth.hub_key,
+            sig=final_sth.sig,
+        )
+
+        # 3) mark tombstoned BEFORE deleting entries so an in-flight
+        # /entries POST that raced the seal sees is_ephemeral==False and
+        # tries the main log, where it will 409 on the fresh tombstone.
+        tombstoned_at = _now_utc().isoformat()
+        store.mark_tombstoned(thread, tombstoned_at)
+
+        # 4) delete the leaves; the sealed STH is the commitment
+        store.delete_ephemeral_entries(thread)
+
+        # 5) publish tombstone Entry to the main log. Bypasses pipeline
+        # throttle/ACL — see comment on this block.
+        seq = store.append_atomic(publish_entry)
+        translog.append(publish_entry.id, seq)
+        main_sth = translog.current_sth()
+        overview.add(
+            publish_entry.thread, publish_entry.id, publish_entry.parents, seq,
+        )
+
+        payload = {
+            "thread": thread,
+            "tombstoned_at": tombstoned_at,
+            "final_sth": store.get_final_sth(thread),
+            "tombstone_entry": {
+                **publish_entry.content(),
+                "id": publish_entry.id,
+                "sig": publish_entry.sig,
+            },
+            "main_seq": seq,
+            "main_sth": asdict(main_sth),
+        }
+
+        # 6) fan out. Wrap in a try — fanout push failure must not
+        # roll back the durable seal.
+        if fanout is not None:
+            try:
+                await fanout.broadcast({
+                    "type": "thread_tombstoned",
+                    "thread": thread,
+                    "tombstoned_at": tombstoned_at,
+                    "final_sth": payload["final_sth"],
+                })
+            except Exception:
+                pass
+
+        return payload
+
     # ---- POST /threads/ephemeral (v0.4.37 / v0.4.38 shape) --------------
     # Register a thread as ephemeral with a TTL. The caller submits a
     # PRE-SIGNED tombstone Entry (kind='tombstone', author=caller,
@@ -510,6 +635,75 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             "ttl_seconds": ttl_seconds,
             "expires_at": expected_valid_after,
         }
+
+    # ---- POST /threads/{thread}/tombstone (v0.4.38) --------------------
+    # Manual seal. Creator submits a fresh tombstone Entry with
+    # valid_after ≤ now; hub verifies and runs the shared seal
+    # ceremony. This is the path to seal EARLY (before TTL); the
+    # auto-seal task uses the pre-signed entry stored at open time.
+    # Only the thread's creator can seal (per the v0.4.37 decision
+    # to keep the surface minimal — board still recovers via
+    # revocation of the creator, which is a separate governance act).
+    @api.post("/threads/{thread}/tombstone")
+    async def post_tombstone(thread: str, body: dict = Body(...),
+                             caller: str = Depends(require_session)):
+        if ephemeral_translog is None:
+            return _err(503, error="no_ephemeral_log")
+        rec = store.get_ephemeral(thread)
+        if rec is None:
+            return _err(404, error="not_found", thread=thread)
+        if rec["tombstoned_at"] is not None:
+            return _err(409, error="already_tombstoned",
+                        tombstoned_at=rec["tombstoned_at"])
+        if caller != rec["creator_pubkey"]:
+            return _err(403, error="forbidden",
+                        reason="only the thread creator can tombstone")
+
+        ts_body = body.get("tombstone_entry")
+        if not isinstance(ts_body, dict):
+            return _err(400, error="bad_request",
+                        reason="tombstone_entry required")
+        try:
+            ts_ev = _entry_from_dict(ts_body)
+        except (TypeError, ValueError) as e:
+            return _err(400, error="bad_request",
+                        reason=f"tombstone_entry: {e}")
+        if ts_ev.kind != "tombstone":
+            return _err(400, error="bad_request",
+                        reason="tombstone_entry.kind must be 'tombstone'")
+        if ts_ev.author != caller:
+            return _err(400, error="bad_request",
+                        reason="tombstone_entry.author must equal caller")
+        if ts_ev.thread != thread:
+            return _err(400, error="bad_request",
+                        reason="tombstone_entry.thread must equal path thread")
+        if not verify_entry(ts_ev):
+            return _err(400, error="bad_request",
+                        reason="tombstone_entry signature does not verify")
+        if not isinstance(ts_ev.tombstone_valid_after, str):
+            return _err(400, error="bad_request",
+                        reason="tombstone_entry.tombstone_valid_after required")
+        try:
+            valid_after = _parse_iso(ts_ev.tombstone_valid_after)
+        except ValueError as e:
+            return _err(400, error="bad_request", reason=str(e))
+        now = _now_utc()
+        # Manual seal permits valid_after ≤ now + 60s (same skew
+        # tolerance as the open endpoint). Prevents scheduling a seal
+        # into the future via the manual path — auto-seal is for that.
+        if (valid_after - now).total_seconds() > 60:
+            return _err(
+                400, error="bad_request",
+                reason=(
+                    f"tombstone_valid_after {ts_ev.tombstone_valid_after} is "
+                    f"in the future; manual seal requires valid_after ≤ now"
+                ),
+            )
+
+        result = await _seal_ephemeral_thread(thread, override_entry=ts_ev)
+        if "error" in result:
+            return _err(500, error=result["error"])
+        return result
 
     # ---- GET /inbox (v0.4.19) ------------------------------------------
     # Landing view bundle: for every observed thread, return the latest

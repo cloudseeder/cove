@@ -2152,3 +2152,128 @@ def test_ledger_works_for_ephemeral_entries_unchanged(hub):
     assert r.status_code == 200
     # Author short-circuit (v0.4.36) puts the poster in acked-by-construction.
     assert hub["member_pub"] in r.json()["acked"]
+
+
+# ---- v0.4.38: POST /threads/{T}/tombstone (manual seal) ----------------
+
+def _sign_manual_tombstone(*, priv: str, pub: str, thread: str,
+                           valid_after: str | None = None) -> Entry:
+    """Fresh tombstone Entry with valid_after ≤ now for manual seal."""
+    from datetime import datetime, timezone
+    if valid_after is None:
+        valid_after = datetime.now(timezone.utc).isoformat()
+    return sign_entry(Entry(
+        thread=thread, author=pub, kind="tombstone",
+        created_at="2026-07-01T00:00:00Z", body="",
+        tombstone_valid_after=valid_after,
+    ), priv)
+
+
+def _open_and_post(hub, thread: str, ttl: int, *, body_text: str = "hi") -> Entry:
+    """Open an ephemeral thread and post one entry into it. Returns the
+    posted entry so tests can reference its id/seq."""
+    hub["client"].post("/threads/ephemeral", json=_open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=ttl,
+    ))
+    ev = sign_entry(Entry(
+        thread=thread, author=hub["member_pub"], kind="post",
+        created_at="2026-07-01T00:00:00Z", body=body_text,
+    ), hub["member_priv"])
+    hub["client"].post("/entries", json=_entry_json(ev))
+    return ev
+
+
+def test_manual_tombstone_seals_the_thread(hub):
+    thread = "beach-recital"
+    ev = _open_and_post(hub, thread, ttl=30 * 86400, body_text="see you there")
+
+    ts = _sign_manual_tombstone(
+        priv=hub["member_priv"], pub=hub["member_pub"], thread=thread,
+    )
+    r = hub["client"].post(f"/threads/{thread}/tombstone", json={
+        "tombstone_entry": _entry_json(ts),
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["thread"] == thread
+    assert body["final_sth"]["tree_size"] == 1
+    assert body["final_sth"]["thread"] == thread
+
+    # Ephemeral entries are gone from the store; the sealed STH survives.
+    assert hub["store"].exists(ev.id) is False
+    assert hub["store"].get_final_sth(thread) is not None
+    # is_ephemeral flips to False for the tombstoned thread.
+    assert hub["store"].is_ephemeral(thread) is False
+
+
+def test_manual_tombstone_publishes_tombstone_entry_to_main_log(hub):
+    thread = "trail"
+    _open_and_post(hub, thread, ttl=7 * 86400)
+    ts = _sign_manual_tombstone(
+        priv=hub["member_priv"], pub=hub["member_pub"], thread=thread,
+    )
+    r = hub["client"].post(f"/threads/{thread}/tombstone", json={
+        "tombstone_entry": _entry_json(ts),
+    })
+    body = r.json()
+
+    # The tombstone entry is now in the main store + main translog.
+    assert hub["store"].exists(ts.id) is True
+    main_sth = hub["translog"].current_sth()
+    assert main_sth.tree_size == body["main_seq"] + 1
+
+
+def test_manual_tombstone_rejects_future_valid_after(hub):
+    """Manual seal requires valid_after ≤ now. Future timestamp → 400."""
+    from datetime import datetime, timedelta, timezone
+    thread = "beach"
+    _open_and_post(hub, thread, ttl=30 * 86400)
+    future = (
+        datetime.now(timezone.utc) + timedelta(days=10)
+    ).isoformat()
+    ts = _sign_manual_tombstone(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, valid_after=future,
+    )
+    r = hub["client"].post(f"/threads/{thread}/tombstone", json={
+        "tombstone_entry": _entry_json(ts),
+    })
+    assert r.status_code == 400
+    assert "future" in r.json()["reason"]
+
+
+def test_manual_tombstone_is_idempotent(hub):
+    """Retrying the seal after it completed returns the already-sealed
+    result rather than corrupting state."""
+    thread = "beach"
+    _open_and_post(hub, thread, ttl=30 * 86400)
+    ts = _sign_manual_tombstone(
+        priv=hub["member_priv"], pub=hub["member_pub"], thread=thread,
+    )
+    r1 = hub["client"].post(f"/threads/{thread}/tombstone", json={
+        "tombstone_entry": _entry_json(ts),
+    })
+    assert r1.status_code == 200
+    first_final = r1.json()["final_sth"]
+
+    # A second attempt hits the already-tombstoned guard.
+    ts2 = _sign_manual_tombstone(
+        priv=hub["member_priv"], pub=hub["member_pub"], thread=thread,
+    )
+    r2 = hub["client"].post(f"/threads/{thread}/tombstone", json={
+        "tombstone_entry": _entry_json(ts2),
+    })
+    assert r2.status_code == 409
+    assert r2.json()["tombstoned_at"] is not None
+    assert hub["store"].get_final_sth(thread)["root_hash"] == first_final["root_hash"]
+
+
+def test_manual_tombstone_unknown_thread_returns_404(hub):
+    ts = _sign_manual_tombstone(
+        priv=hub["member_priv"], pub=hub["member_pub"], thread="not-a-thread",
+    )
+    r = hub["client"].post("/threads/not-a-thread/tombstone", json={
+        "tombstone_entry": _entry_json(ts),
+    })
+    assert r.status_code == 404
