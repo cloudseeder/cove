@@ -618,6 +618,87 @@ export class Client {
     return resp.seq as number;
   }
 
+  /** v0.4.38: open a new ephemeral thread with a TTL. Builds and signs
+   *  the pre-signed tombstone Entry the hub will hold for auto-seal at
+   *  TTL expiration. Returns the server's open response
+   *  ({thread, creator_pubkey, created_at, ttl_seconds, expires_at}). */
+  async openEphemeralThread(opts: {
+    thread: string;
+    ttlSeconds: number;
+  }): Promise<{
+    thread: string;
+    creator_pubkey: string;
+    created_at: string;
+    ttl_seconds: number;
+    expires_at: string;
+  }> {
+    this.requireAuth();
+    const nowIso = new Date().toISOString();
+    const validAfterIso = new Date(
+      Date.now() + opts.ttlSeconds * 1000,
+    ).toISOString();
+    const ts = await this.signEntry({
+      thread: opts.thread,
+      author: this.publicKey,
+      kind: 'tombstone',
+      created_at: nowIso,
+      parents: [],
+      body: '',
+      blobs: [],
+      supersedes: null,
+      receipt: null,
+      branch_thread: null,
+      audience: null,
+      tombstone_valid_after: validAfterIso,
+      id: null,
+      sig: null,
+    });
+    return await this.requestJson('POST', '/threads/ephemeral', {
+      thread: opts.thread,
+      ttl_seconds: opts.ttlSeconds,
+      tombstone_entry: ts,
+    });
+  }
+
+  /** v0.4.38: seal an ephemeral thread early. Builds a fresh tombstone
+   *  Entry with valid_after = now (hub accepts ≤ now + 60s skew) and
+   *  POSTs it. Returns the seal payload — final STH plus the
+   *  tombstone entry as published in the main log. */
+  async tombstoneThread(thread: string): Promise<unknown> {
+    this.requireAuth();
+    const nowIso = new Date().toISOString();
+    const ts = await this.signEntry({
+      thread, author: this.publicKey, kind: 'tombstone',
+      created_at: nowIso, parents: [], body: '',
+      blobs: [], supersedes: null, receipt: null,
+      branch_thread: null, audience: null,
+      tombstone_valid_after: nowIso, id: null, sig: null,
+    });
+    return await this.requestJson(
+      'POST', `/threads/${encodeURIComponent(thread)}/tombstone`,
+      { tombstone_entry: ts },
+    );
+  }
+
+  /** v0.4.38: fetch the sealed EphemeralSTH for a tombstoned thread.
+   *  Returns null on 404. */
+  async fetchFinalSth(thread: string): Promise<{
+    thread: string; tree_size: number; root_hash: string;
+    prev_sth_hash: string; timestamp: string; hub_key: string; sig: string;
+  } | null> {
+    this.requireAuth();
+    const params = new URLSearchParams({ thread });
+    const resp = await this.authedFetch(
+      this.hubUrl + '/ephemeral/final_sth?' + params, { method: 'GET' },
+    );
+    if (resp.status === 404) return null;
+    if (resp.status >= 400) {
+      const err = await safeJson(resp);
+      throw new ClientError(`/ephemeral/final_sth returned ${resp.status}: ${JSON.stringify(err)}`);
+    }
+    return await resp.json();
+  }
+
   // ---- blobs (§4) ----------------------------------------------------
   /** Upload raw bytes to /blobs and assemble a BlobRef from the server
    *  response (which carries the content-addressed hash) plus the
@@ -778,6 +859,9 @@ export class Client {
       // verifiability under the new client. Conditional omission keeps
       // canonicalization stable.
       if (k === 'audience' && (v === null || v === undefined)) continue;
+      // v0.4.38: same byte-identical-when-null rule for
+      // tombstone_valid_after. Only kind='tombstone' entries carry it.
+      if (k === 'tombstone_valid_after' && (v === null || v === undefined)) continue;
       content[k] = v;
     }
     const canonical = canonicalize(content);

@@ -40,7 +40,7 @@ export interface Audience {
 export interface Entry {
   thread: string;
   author: string; // ed25519 pubkey hex
-  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch' | 'archive' | 'reopen' | 'audience';
+  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch' | 'archive' | 'reopen' | 'audience' | 'tombstone';
   created_at: string; // rfc3339
   parents: string[];
   body: string;
@@ -52,6 +52,9 @@ export interface Entry {
    *  from canonical content when null so adding the field doesn't
    *  invalidate every pre-v0.4.27 signature. */
   audience?: Audience | null;
+  /** v0.4.38: RFC3339 not-before on kind='tombstone' entries. Same
+   *  byte-identical-when-null rule as audience. */
+  tombstone_valid_after?: string | null;
   id: string | null;
   sig: string | null;
 }
@@ -75,6 +78,29 @@ export interface ThreadSummary {
    *  in the audience, so receiving a non-null `audience` here means
    *  "I'm a member of this private thread." */
   audience: Audience | null;
+  /** v0.4.38: thread lifecycle type.
+   *   - "permanent"  — the default. Follows the main tamper-evident log.
+   *   - "ephemeral"  — live thread with a TTL; deletes at expires_at.
+   *   - "tombstoned" — sealed ephemeral. Entries are gone; final_sth
+   *                    is the surviving commitment. */
+  type?: 'permanent' | 'ephemeral' | 'tombstoned';
+  expires_at?: string | null;      // ephemeral only
+  creator_pubkey?: string;          // ephemeral only
+  tombstoned_at?: string;           // tombstoned only
+  final_sth?: EphemeralSTHWire | null; // tombstoned only
+}
+
+/** v0.4.38: per-thread ephemeral STH — same shape as STH plus a
+ *  `thread` field bound into the signature. Cross-tree substitution
+ *  fails because the signing payload includes the thread name. */
+export interface EphemeralSTHWire {
+  thread: string;
+  tree_size: number;
+  root_hash: string;
+  prev_sth_hash: string;
+  timestamp: string;
+  hub_key: string;
+  sig: string;
 }
 
 /** v0.4.19: returned by GET /inbox — one row per observed thread,

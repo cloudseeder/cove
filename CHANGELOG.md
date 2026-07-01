@@ -4,6 +4,53 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.38] — 2026-07-01
+
+**Ephemeral threads — deletion + client UI.** Builds on the 37a
+substrate. A thread's creator can now open an ephemeral thread with
+a TTL from the new-thread dialog, and the hub auto-seals it at TTL
+expiration. The seal ceremony deletes the entries from the hub and
+publishes a signed tombstone to the main log with the sealed
+ephemeral STH preserved forever.
+
+### Added
+- New `tombstone` entry kind + optional `tombstone_valid_after`
+  field with the byte-identical-when-absent rule so every prior
+  entry's signature stays valid.
+- `EphemeralTransLog.close_thread(t)` — freezes the tree, returns
+  the final STH, refuses further appends, idempotent for retry
+  safety.
+- `POST /threads/{T}/tombstone` — manual early seal. Only the
+  thread creator can seal; requires a fresh tombstone Entry with
+  `valid_after ≤ now`.
+- Auto-seal background task — polls every
+  `ephemeral_seal_check_seconds` (default 60s) and seals any live
+  thread past its TTL, using the pre-signed tombstone entry stored
+  at open time. Hub still holds no member keys.
+- `GET /ephemeral/final_sth?thread=T` — returns the sealed STH for
+  a tombstoned thread. Anyone who kept a copy of an entry can prove
+  inclusion by reconstructing the leaf.
+- `/threads` rows carry `type`, `expires_at`, and `final_sth`.
+- WebSocket `thread_tombstoned` event; clients purge local entries
+  for the sealed thread and refresh their listings.
+- New-thread dialog: Retention section with `Permanent` / `Ephemeral`
+  toggle; TTL presets 7d/30d/90d + a custom 1–365d field.
+- Thread list: ⏳ badge with relative expiry on live ephemeral
+  threads; ⚰ on tombstoned.
+- Thread view: persistent ephemeral banner with a `Seal now` action
+  for the creator; tombstone card after sealing.
+- Client methods: `openEphemeralThread`, `tombstoneThread`,
+  `fetchFinalSth`.
+
+### Changed
+- `POST /threads/ephemeral` now takes a full signed tombstone Entry
+  (kind='tombstone', author=caller, thread=<T>,
+  `tombstone_valid_after`=created_at+ttl) instead of the 37a
+  `delete_authorization` dict. One verification path
+  (`verify_entry`) replaces the bespoke JCS reconstruction. Wire
+  break vs 37a; only the pilot hub was running 37a and it had no
+  live ephemeral threads.
+
 ## [0.4.37] — 2026-07-01
 
 **Ephemeral threads substrate.** Hub gains the machinery for threads that
@@ -97,6 +144,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.38]: https://github.com/cloudseeder/cove/releases/tag/v0.4.38
 [0.4.37]: https://github.com/cloudseeder/cove/releases/tag/v0.4.37
 [0.4.36]: https://github.com/cloudseeder/cove/releases/tag/v0.4.36
 [0.4.35]: https://github.com/cloudseeder/cove/releases/tag/v0.4.35

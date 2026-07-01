@@ -86,6 +86,25 @@
   let archiveDialog = $state<{ kind: 'archive' | 'reopen' } | null>(null);
   let archiveRationale = $state('');
 
+  /** v0.4.38: lookup the /threads row for the current thread so we
+   *  can render the ephemeral banner or the tombstone card. Null if
+   *  the row hasn't arrived yet (freshly-typed name that the hub has
+   *  never seen), in which case both branches are skipped. */
+  const ephemeralRow = $derived(
+    app.threads.find((t) => t.thread === app.thread) ?? null,
+  );
+
+  async function sealNow() {
+    if (!app.client) return;
+    if (!confirm(`Seal "${app.thread}" now? Its entries will be deleted from the hub immediately.`)) return;
+    try {
+      await app.client.tombstoneThread(app.thread);
+      // WS thread_tombstoned event will fire and drive the purge.
+    } catch (err) {
+      alert(`Seal failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   function openArchiveDialog(kind: 'archive' | 'reopen') {
     archiveDialog = { kind };
     archiveRationale = '';
@@ -218,6 +237,37 @@
           <span aria-hidden="true">📁</span>
           <span>This thread is archived — read-only by convention.
             Posts still work; clients hide it from Inbox until reopened.</span>
+        </div>
+      {/if}
+
+      {#if ephemeralRow && ephemeralRow.type === 'ephemeral'}
+        <div class="ephemeral-banner" role="status">
+          <span aria-hidden="true">⏳</span>
+          <span>Ephemeral thread — deletes on
+            <strong>{ephemeralRow.expires_at}</strong>. Save anything
+            you want to keep.</span>
+          {#if app.authStatus.kind === 'authenticated' && ephemeralRow.creator_pubkey === app.authStatus.pubkey}
+            <button type="button" class="seal-now" onclick={sealNow}>
+              Seal now
+            </button>
+          {/if}
+        </div>
+      {:else if ephemeralRow && ephemeralRow.type === 'tombstoned'}
+        <div class="tombstone-card" role="status">
+          <span aria-hidden="true">⚰</span>
+          <div>
+            <p><strong>This thread was sealed on {ephemeralRow.tombstoned_at}.</strong></p>
+            {#if ephemeralRow.final_sth}
+              <p class="muted small">
+                Final tree_size: <code>{ephemeralRow.final_sth.tree_size}</code>,
+                root_hash: <code>{ephemeralRow.final_sth.root_hash.slice(0, 16)}…</code>
+              </p>
+            {/if}
+            <p class="muted small">
+              The entries are gone from the hub. Anyone who kept a
+              local copy can prove it existed against the final STH.
+            </p>
+          </div>
         </div>
       {/if}
 
@@ -399,6 +449,45 @@
       </div>
     {/if}
 
+    <fieldset class="scope">
+      <legend>Retention</legend>
+      <label class="radio">
+        <input type="radio" name="retention"
+          checked={!d.ephemeral}
+          onchange={() => { d.ephemeral = false; }} />
+        <span>Permanent — governance-grade record</span>
+      </label>
+      <label class="radio">
+        <input type="radio" name="retention"
+          checked={d.ephemeral}
+          onchange={() => {
+            d.ephemeral = true;
+            d.scope = 'public';   // ephemeral + private not supported this ship
+            d.selected.clear();
+          }} />
+        <span>Ephemeral — deletes after a TTL</span>
+      </label>
+      {#if d.ephemeral}
+        <div class="ttl-row">
+          <span>Delete after</span>
+          <button type="button" class="ttl-preset" class:selected={d.ttlDays === 7}
+            onclick={() => (d.ttlDays = 7)}>7d</button>
+          <button type="button" class="ttl-preset" class:selected={d.ttlDays === 30}
+            onclick={() => (d.ttlDays = 30)}>30d</button>
+          <button type="button" class="ttl-preset" class:selected={d.ttlDays === 90}
+            onclick={() => (d.ttlDays = 90)}>90d</button>
+          <input type="number" min="1" max="365"
+            bind:value={d.ttlDays} class="ttl-custom" />
+          <span>days</span>
+        </div>
+        <p class="muted small">
+          Fully accountable while alive. On expiration the hub deletes
+          the entries and records a signed tombstone. Once gone, the
+          content is gone.
+        </p>
+      {/if}
+    </fieldset>
+
     <label>
       <span>First message</span>
       <textarea bind:value={d.message} rows="3"
@@ -478,6 +567,60 @@
   }
   label.radio input { margin: 0; }
   label.radio span { display: inline; font-size: inherit; color: inherit; }
+  /* v0.4.38: TTL picker inside the Retention fieldset. */
+  .ttl-row {
+    display: flex; align-items: center; gap: 0.4rem;
+    margin: 0.5rem 0 0.15rem;
+    font-size: 0.85rem;
+  }
+  .ttl-preset {
+    background: transparent; color: var(--fg);
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.15rem 0.6rem; cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .ttl-preset.selected {
+    background: rgba(212, 175, 55, 0.15);
+    border-color: rgba(212, 175, 55, 0.5);
+    color: #e8c96b;
+  }
+  .ttl-custom {
+    width: 4rem;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.15rem 0.4rem; font: inherit; font-size: 0.85rem;
+  }
+  .muted.small { color: var(--muted); font-size: 0.78rem; margin: 0.3rem 0 0; }
+  /* v0.4.38: ephemeral banner + tombstone card. */
+  .ephemeral-banner {
+    display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.5rem 0.85rem; margin: 0.6rem 0;
+    background: rgba(212, 175, 55, 0.08);
+    border: 1px solid rgba(212, 175, 55, 0.35);
+    border-radius: 8px;
+    font-size: 0.88rem;
+  }
+  .ephemeral-banner .seal-now {
+    margin-left: auto;
+    background: transparent; color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.2rem 0.65rem; cursor: pointer;
+    font-size: 0.82rem;
+  }
+  .ephemeral-banner .seal-now:hover {
+    border-color: rgba(212, 175, 55, 0.6); color: #e8c96b;
+  }
+  .tombstone-card {
+    display: flex; gap: 0.7rem; align-items: flex-start;
+    padding: 0.85rem 1rem; margin: 0.6rem 0;
+    background: rgba(120, 120, 120, 0.05);
+    border: 1px solid var(--border); border-radius: 8px;
+  }
+  .tombstone-card p { margin: 0.2rem 0; }
+  .tombstone-card code {
+    font-size: 0.75rem; background: var(--bg);
+    padding: 0.05rem 0.3rem; border-radius: 4px;
+  }
   .audience-list {
     border: 1px dashed var(--border);
     border-radius: 8px;

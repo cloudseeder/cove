@@ -40,6 +40,8 @@
     thread: string;
     entry_count: number;
     latest_seq: number;
+    type?: 'permanent' | 'ephemeral' | 'tombstoned';
+    expires_at?: string | null;
     children: ThreadNode[];
   };
   const activeThreads = $derived(app.threads.filter((t) => !t.archived));
@@ -53,6 +55,8 @@
         thread: t.thread,
         entry_count: t.entry_count,
         latest_seq: t.latest_seq,
+        type: t.type,
+        expires_at: t.expires_at,
         children: [],
       });
     }
@@ -65,6 +69,21 @@
     }
     return roots;
   });
+
+  /** v0.4.38: short human relative-time label for the ephemeral badge.
+   *  "3d" for days, "5h" for hours, "just now" if past-due (auto-seal
+   *  will catch up shortly). */
+  function relativeExpiry(iso: string | null | undefined): string {
+    if (!iso) return '';
+    const ms = new Date(iso).getTime() - Date.now();
+    if (ms <= 0) return 'expired';
+    const days = Math.floor(ms / 86_400_000);
+    if (days >= 2) return `${days}d`;
+    const hours = Math.floor(ms / 3_600_000);
+    if (hours >= 2) return `${hours}h`;
+    const mins = Math.max(1, Math.floor(ms / 60_000));
+    return `${mins}m`;
+  }
 
   async function handleSwitch(name: string) {
     await app.switchThread(name);
@@ -123,9 +142,16 @@
 
   {#snippet threadNode(node: ThreadNode)}
     {@const isActive = app.route === 'thread' && node.thread === app.thread}
-    <li class:active={isActive}>
+    <li class:active={isActive} class:ephemeral={node.type === 'ephemeral'} class:tombstoned={node.type === 'tombstoned'}>
       <button type="button" onclick={() => handleSwitch(node.thread)}>
         <span class="name">{node.thread}</span>
+        {#if node.type === 'ephemeral'}
+          <span class="eph-badge" title="Ephemeral — deletes on {node.expires_at}">
+            ⏳ {relativeExpiry(node.expires_at)}
+          </span>
+        {:else if node.type === 'tombstoned'}
+          <span class="eph-badge tombstoned" title="Tombstoned">⚰</span>
+        {/if}
         <span class="count">{node.entry_count}</span>
       </button>
       {#if isActive}
@@ -383,6 +409,27 @@
     font-size: 0.78rem;
     color: var(--muted);
     font-variant-numeric: tabular-nums;
+  }
+  /* v0.4.38: ephemeral / tombstoned pills next to the thread name. */
+  .eph-badge {
+    font-size: 0.7rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: 999px;
+    background: rgba(212, 175, 55, 0.12);
+    color: #e8c96b;
+    border: 1px solid rgba(212, 175, 55, 0.35);
+    white-space: nowrap;
+  }
+  .eph-badge.tombstoned {
+    background: rgba(120, 120, 120, 0.15);
+    color: var(--muted);
+    border-color: var(--border);
+  }
+  li.ephemeral > button > .name {
+    font-style: italic;
+  }
+  li.tombstoned > button {
+    opacity: 0.7;
   }
   form {
     display: flex;

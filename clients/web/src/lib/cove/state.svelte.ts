@@ -774,6 +774,13 @@ export class AppState {
     message: string;
     submitting: boolean;
     error: string | null;
+    /** v0.4.38: opt in to an ephemeral thread with a TTL. When true,
+     *  submitNewThread routes through openEphemeralThread instead of
+     *  createDirectThread / switchThread. Ephemeral + private is not
+     *  supported in this ship (audience-scope kind is rejected in
+     *  ephemeral threads); the dialog forces scope back to 'public'. */
+    ephemeral: boolean;
+    ttlDays: number;
   } | null>(null);
 
   openNewThreadDialog(): void {
@@ -784,6 +791,8 @@ export class AppState {
       message: '',
       submitting: false,
       error: null,
+      ephemeral: false,
+      ttlDays: 30,
     };
   }
 
@@ -817,7 +826,18 @@ export class AppState {
     };
     try {
       const d = this.newThreadDialog;
-      if (d.scope === 'private') {
+      if (d.ephemeral) {
+        // v0.4.38: ephemeral thread creation. TTL in days → seconds.
+        // Backend clamps to [1d, 365d]; the dialog UX presets to
+        // 7/30/90 with a free-form field for anything else.
+        if (this.client === null) throw new Error('not connected');
+        const ttlSeconds = Math.max(1, Math.round(d.ttlDays)) * 86400;
+        await this.client.openEphemeralThread({
+          thread: sanitized, ttlSeconds,
+        });
+        await this.switchThread(sanitized);
+        if (d.message.trim()) await this.post(d.message);
+      } else if (d.scope === 'private') {
         await this.createDirectThread({
           thread: sanitized,
           pubkeys: Array.from(d.selected),
@@ -1273,6 +1293,20 @@ export class AppState {
         // so the preview can go stale. Refetch if we're currently
         // showing the inbox (cheap; otherwise it'll repopulate on the
         // next goToInbox).
+        if (this.route === 'inbox') void this.loadInbox();
+        return;
+      }
+      // v0.4.38: an ephemeral thread was sealed. Purge any local
+      // in-memory entries for that thread (the hub deleted them
+      // durably) and refresh /threads + /inbox so the UI reflects
+      // the new tombstoned state.
+      if (msg.type === 'thread_tombstoned') {
+        const t = msg.thread as string;
+        if (this.thread === t) {
+          this.entries = [];
+          this.seenIds.clear();
+        }
+        void this.loadThreads();
         if (this.route === 'inbox') void this.loadInbox();
         return;
       }
