@@ -14,6 +14,7 @@ from cove.pipeline import Pipeline
 from cove.store import EventStore
 from cove.throttle import Throttler
 from cove.translog import TamperEvidentLog
+from cove.translog_ephemeral import EphemeralTransLog
 
 
 @pytest.fixture
@@ -68,12 +69,14 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
 
     store = EventStore(str(tmp_path / "hub.db"))
     translog = TamperEvidentLog(hub_priv, hub_pub)
+    ephemeral_translog = EphemeralTransLog(hub_priv, hub_pub)
     overview = Overview()
     ledger = Ledger()
     directory = Directory.from_manifest(manifest)
     throttler = Throttler()
     pipeline = Pipeline(store=store, directory=directory, translog=translog,
-                        overview=overview, ledger=ledger, throttler=throttler)
+                        overview=overview, ledger=ledger, throttler=throttler,
+                        ephemeral_translog=ephemeral_translog)
     auth = AuthService(directory=directory)
     blobs = BlobStore(str(tmp_path / "blobs"))
 
@@ -82,7 +85,8 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
     app = create_app(pipeline=pipeline, store=store, translog=translog,
                      overview=overview, ledger=ledger,
                      directory=directory, directory_manifest=manifest,
-                     auth=auth, blobs=blobs, invites=invites)
+                     auth=auth, blobs=blobs, invites=invites,
+                     ephemeral_translog=ephemeral_translog)
 
     client = TestClient(app)
     ch = client.post("/auth/challenge").json()
@@ -100,6 +104,7 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
         "revoked_pub": revoked_pub,
         "hub_pub": hub_pub,
         "store": store, "translog": translog,
+        "ephemeral_translog": ephemeral_translog,
         "overview": overview, "ledger": ledger,
         "auth": auth, "directory": directory,
         "throttler": throttler,

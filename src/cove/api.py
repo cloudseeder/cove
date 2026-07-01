@@ -40,6 +40,7 @@ from .pipeline import AcceptanceError, Pipeline
 from .store import EventStore
 from .throttle import ThrottleError, Throttler
 from .translog import TamperEvidentLog
+from .translog_ephemeral import EphemeralTransLog
 
 
 # ---- WebSocket fan-out (§7.1 step 10) -----------------------------------
@@ -119,6 +120,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                blobs: Optional[BlobStore] = None,
                pending: Optional[PendingRegistry] = None,
                invites: Optional[InviteRegistry] = None,
+               ephemeral_translog: Optional[EphemeralTransLog] = None,
                config: HubConfig = DEFAULT) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
@@ -149,6 +151,11 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     # end-to-end through POST /entries.
     if blobs is not None and pipeline.blobs is None:
         pipeline.blobs = blobs
+    # v0.4.37: same shape for the ephemeral translog. Callers building
+    # the API commonly pass the log here rather than into the Pipeline
+    # constructor; wire it through so pipeline routing works end-to-end.
+    if ephemeral_translog is not None and pipeline.ephemeral_translog is None:
+        pipeline.ephemeral_translog = ephemeral_translog
     # Persist the seed manifest on the Directory so subsequent /directory
     # reads and /admin/* updates use a single source of truth.
     if directory is not None and directory_manifest is not None and directory.manifest is None:
@@ -165,6 +172,17 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         # rebuilds the things that don't.
         translog.rebuild(store.iter_global())
         overview.rebuild(store.iter_overview_seed())
+        # v0.4.37: rebuild each ephemeral thread's per-thread log from
+        # the store. Live threads only — tombstoned ones (37b) will be
+        # skipped when the tombstone bit is set.
+        if ephemeral_translog is not None:
+            for rec in store.all_ephemeral():
+                if rec["tombstoned_at"] is not None:
+                    continue
+                ephemeral_translog.open_thread(rec["thread"])
+                ephemeral_translog.rebuild(
+                    rec["thread"], store.iter_ephemeral_entries(rec["thread"]),
+                )
         yield
 
     api = FastAPI(title="Cove Hub", version="0.1.0", lifespan=lifespan)
@@ -374,6 +392,93 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                 ),
             })
         return {"threads": rows}
+
+    # ---- POST /threads/ephemeral (v0.4.37) -----------------------------
+    # Register a thread as ephemeral with a TTL. The caller pre-signs a
+    # delete_authorization ({kind, thread, ttl_seconds}); the hub verifies
+    # it against the caller's pubkey and persists it. At TTL expiration
+    # (v0.4.37b) the hub uses the stored authorization as the member-signed
+    # half of the tombstone entry — the hub itself holds no member keys
+    # and cannot fabricate one.
+    #
+    # No governance kinds are permitted in the resulting thread (pipeline
+    # enforces this structurally). Cross-tree substitution is prevented
+    # at the STH layer by binding the thread name into the ephemeral
+    # STH signing payload (translog_ephemeral.EphemeralSTH).
+    @api.post("/threads/ephemeral")
+    def post_threads_ephemeral(body: dict = Body(...),
+                               caller: str = Depends(require_session)):
+        if ephemeral_translog is None:
+            return _err(503, error="no_ephemeral_log")
+
+        thread = body.get("thread")
+        ttl_seconds = body.get("ttl_seconds")
+        auth_block = body.get("delete_authorization") or {}
+        auth_content = auth_block.get("content")
+        auth_sig = auth_block.get("sig")
+
+        if not isinstance(thread, str) or not thread:
+            return _err(400, error="bad_request", reason="thread required")
+        if not isinstance(ttl_seconds, int):
+            return _err(400, error="bad_request", reason="ttl_seconds must be int")
+        if not (config.ephemeral_ttl_min_seconds
+                <= ttl_seconds
+                <= config.ephemeral_ttl_max_seconds):
+            return _err(
+                400, error="bad_request",
+                reason=(
+                    f"ttl_seconds must be in "
+                    f"[{config.ephemeral_ttl_min_seconds}, "
+                    f"{config.ephemeral_ttl_max_seconds}]"
+                ),
+            )
+        if not isinstance(auth_content, dict) or not isinstance(auth_sig, str):
+            return _err(
+                400, error="bad_request",
+                reason="delete_authorization.{content,sig} required",
+            )
+        # The signed content must exactly match what the request declares.
+        # Preventing a bait-and-switch where the client signs one thread /
+        # TTL and the hub records another.
+        expected = {
+            "kind": "delete_authorization",
+            "thread": thread,
+            "ttl_seconds": ttl_seconds,
+        }
+        if auth_content != expected:
+            return _err(
+                400, error="bad_request",
+                reason="delete_authorization.content does not match request",
+            )
+        if not crypto.verify(
+            caller, auth_sig, crypto.canonicalize(expected),
+        ):
+            return _err(
+                400, error="bad_request",
+                reason="delete_authorization signature does not verify",
+            )
+
+        from datetime import datetime, timezone
+        created_at = datetime.now(timezone.utc).isoformat()
+        try:
+            store.open_ephemeral(
+                thread=thread,
+                creator_pubkey=caller,
+                created_at=created_at,
+                ttl_seconds=ttl_seconds,
+                delete_auth_content=crypto.canonicalize(expected),
+                delete_auth_sig=auth_sig,
+            )
+        except ValueError as e:
+            return _err(409, error="conflict", reason=str(e))
+        ephemeral_translog.open_thread(thread)
+
+        return {
+            "thread": thread,
+            "creator_pubkey": caller,
+            "created_at": created_at,
+            "ttl_seconds": ttl_seconds,
+        }
 
     # ---- GET /inbox (v0.4.19) ------------------------------------------
     # Landing view bundle: for every observed thread, return the latest

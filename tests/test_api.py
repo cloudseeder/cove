@@ -1883,3 +1883,160 @@ def test_startup_reconciles_in_memory_translog_with_on_disk_store(
             body.pop("sth", None)  # v0.4.31: bundled, discarded here
             proof = InclusionProof(**body)
             assert verify_inclusion(entry_id, seq, proof, sth) is True
+
+
+# ---- v0.4.37: POST /threads/ephemeral -----------------------------------
+
+def _sign_delete_auth(*, priv: str, thread: str, ttl_seconds: int) -> tuple[dict, str]:
+    """Build + sign the delete_authorization payload the endpoint expects.
+    Returns (content_dict, hex_sig)."""
+    content = {
+        "kind": "delete_authorization",
+        "thread": thread,
+        "ttl_seconds": ttl_seconds,
+    }
+    sig = crypto.sign(priv, crypto.canonicalize(content))
+    return content, sig
+
+
+def test_post_threads_ephemeral_opens_the_thread(hub):
+    thread = "beach-recital"
+    ttl = 30 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    r = hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["thread"] == thread
+    assert body["ttl_seconds"] == ttl
+    assert body["creator_pubkey"] == hub["member_pub"]
+    # Store row exists; log knows the thread.
+    assert hub["store"].is_ephemeral(thread) is True
+    # The ephemeral log has the thread opened with tree_size 0.
+    esth = hub["ephemeral_translog"].current_sth(thread)
+    assert esth.tree_size == 0
+    assert esth.thread == thread
+
+
+def test_post_threads_ephemeral_rejects_bad_signature(hub):
+    thread = "trail"
+    ttl = 7 * 86400
+    content, _ = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    r = hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": "00" * 64},
+    })
+    assert r.status_code == 400
+    assert "signature" in r.json()["reason"]
+    assert hub["store"].is_ephemeral(thread) is False
+
+
+def test_post_threads_ephemeral_rejects_content_mismatch(hub):
+    """Bait-and-switch: caller signs one thread name but claims another."""
+    real_thread = "trail"
+    ttl = 7 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=real_thread, ttl_seconds=ttl,
+    )
+    r = hub["client"].post("/threads/ephemeral", json={
+        "thread": "different-thread", "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+    assert r.status_code == 400
+    assert "does not match" in r.json()["reason"]
+
+
+def test_post_threads_ephemeral_rejects_out_of_range_ttl(hub):
+    """TTL must be within [ephemeral_ttl_min_seconds, ephemeral_ttl_max_seconds]."""
+    thread = "lake"
+    bad_ttl = 10  # way below the 1-day floor
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=bad_ttl,
+    )
+    r = hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": bad_ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+    assert r.status_code == 400
+    assert "ttl_seconds" in r.json()["reason"]
+
+
+def test_post_threads_ephemeral_rejects_duplicate(hub):
+    thread = "beach"
+    ttl = 30 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    body = {"thread": thread, "ttl_seconds": ttl,
+            "delete_authorization": {"content": content, "sig": sig}}
+    r1 = hub["client"].post("/threads/ephemeral", json=body)
+    assert r1.status_code == 200
+    r2 = hub["client"].post("/threads/ephemeral", json=body)
+    assert r2.status_code == 409
+    assert "already" in r2.json()["reason"]
+
+
+def test_ephemeral_entries_land_only_in_the_per_thread_log(hub):
+    """End-to-end: open ephemeral thread, POST an entry, confirm the main
+    STH doesn't see it and the per-thread STH does."""
+    thread = "beach"
+    ttl = 30 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+
+    ev = sign_entry(Entry(
+        thread=thread, author=hub["member_pub"], kind="post",
+        created_at="2026-07-01T00:00:00Z", body="hey",
+    ), hub["member_priv"])
+    r = hub["client"].post("/entries", json=_entry_json(ev))
+    assert r.status_code == 200, r.text
+
+    # Main log: still empty (no permanent entries in this test).
+    main_sth = hub["translog"].current_sth()
+    assert main_sth.tree_size == 0
+    # Ephemeral log: has our leaf.
+    eph_sth = hub["ephemeral_translog"].current_sth(thread)
+    assert eph_sth.tree_size == 1
+
+
+def _entry_json(ev: Entry) -> dict:
+    """Wire form for POST /entries. Mirrors the client's serializer for
+    the fields the hub expects. Kept local here so this test module stays
+    self-contained without importing from api._entry_from_dict."""
+    from cove import crypto as _c
+    payload = ev.content()
+    payload["id"] = ev.id
+    payload["sig"] = ev.sig
+    return payload
+
+
+def test_ephemeral_notice_kind_rejected_via_pipeline(hub):
+    """Governance kinds must be refused when the thread is ephemeral.
+    Verified end-to-end through the API so the wire error is loud."""
+    thread = "beach"
+    ttl = 30 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+    bad = sign_entry(Entry(
+        thread=thread, author=hub["member_pub"], kind="notice",
+        created_at="2026-07-01T00:00:00Z", body="this should not land",
+    ), hub["member_priv"])
+    r = hub["client"].post("/entries", json=_entry_json(bad))
+    assert r.status_code == 400
+    assert "not permitted" in r.text
