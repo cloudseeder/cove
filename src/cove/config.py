@@ -62,6 +62,12 @@ class HubConfig:
     # 7d/30d/90d, so this only bites free-form values.
     ephemeral_ttl_max_seconds: int = 365 * 24 * 3600
     ephemeral_ttl_min_seconds: int = 1 * 24 * 3600
+    # v0.4.38: how often the auto-seal task walks the live ephemeral
+    # threads looking for expired TTLs. 0 disables the loop (tests
+    # drive the seal via the manual endpoint or the internal helper).
+    # Default 60s: cheap in production, granular enough that a thread
+    # never lives more than a minute past its declared expiry.
+    ephemeral_seal_check_seconds: int = 60
 
     def tier_for_role(self, role: str) -> Tier:
         # board and broadcast identities share the "board" tier; unknown roles default to member.

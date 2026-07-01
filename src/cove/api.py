@@ -183,7 +183,24 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                 ephemeral_translog.rebuild(
                     rec["thread"], store.iter_ephemeral_entries(rec["thread"]),
                 )
-        yield
+        # v0.4.38: auto-seal background task. Fires every
+        # ephemeral_seal_check_seconds; seals any live thread whose
+        # created_at + ttl_seconds has elapsed. When the check
+        # interval is 0 the loop is disabled (tests can drive the
+        # seal manually via _seal_ephemeral_thread).
+        seal_task: Optional[asyncio.Task] = None
+        if (ephemeral_translog is not None
+                and config.ephemeral_seal_check_seconds > 0):
+            seal_task = asyncio.create_task(_auto_seal_loop())
+        try:
+            yield
+        finally:
+            if seal_task is not None:
+                seal_task.cancel()
+                try:
+                    await seal_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     api = FastAPI(title="Cove Hub", version="0.1.0", lifespan=lifespan)
 
@@ -376,6 +393,14 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     def get_threads(caller: str = Depends(require_session)) -> dict:
         archived_threads = store.archive_state_per_thread(_has_archive_capability)
         audience_by_thread = store.threads_with_audience()
+        # v0.4.38: ephemeral-thread lookup. Every row from
+        # overview.thread_summaries() carries a `type` field:
+        #   "permanent"  — default
+        #   "ephemeral"  — live ephemeral thread; carries `expires_at`
+        #   "tombstoned" — sealed ephemeral; carries `final_sth`
+        eph_by_thread: dict[str, dict] = {
+            rec["thread"]: rec for rec in store.all_ephemeral()
+        }
         rows = []
         for t, n, s, parent in overview.thread_summaries():
             # v0.4.27: hide audience-scoped threads from non-audience
@@ -383,13 +408,56 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             aud = audience_by_thread.get(t)
             if aud is not None and caller not in (aud.pubkeys or []):
                 continue
-            rows.append({
+            row: dict = {
                 "thread": t, "entry_count": n, "latest_seq": s,
                 "parent_thread": parent,
                 "archived": archived_threads.get(t, False),
                 "audience": (
                     {"pubkeys": list(aud.pubkeys)} if aud is not None else None
                 ),
+                "type": "permanent",
+            }
+            rec = eph_by_thread.get(t)
+            if rec is not None:
+                if rec["tombstoned_at"] is not None:
+                    row["type"] = "tombstoned"
+                    row["tombstoned_at"] = rec["tombstoned_at"]
+                    row["final_sth"] = store.get_final_sth(t)
+                else:
+                    row["type"] = "ephemeral"
+                    try:
+                        expires = _add_seconds_iso(
+                            _parse_iso(rec["created_at"]), rec["ttl_seconds"],
+                        )
+                    except ValueError:
+                        expires = None
+                    row["expires_at"] = expires
+                    row["creator_pubkey"] = rec["creator_pubkey"]
+            rows.append(row)
+        # v0.4.38: also surface freshly-opened ephemeral threads that
+        # have no entries yet — otherwise a just-created thread stays
+        # invisible to /threads until someone posts. Overview's
+        # thread_summaries() derives from entries; these are the ones
+        # with entry_count == 0 that don't show up there.
+        seen = {r["thread"] for r in rows}
+        for thread, rec in eph_by_thread.items():
+            if thread in seen:
+                continue
+            if rec["tombstoned_at"] is not None:
+                continue  # tombstoned-but-never-had-entries is hidden
+            try:
+                expires = _add_seconds_iso(
+                    _parse_iso(rec["created_at"]), rec["ttl_seconds"],
+                )
+            except ValueError:
+                expires = None
+            rows.append({
+                "thread": thread, "entry_count": 0, "latest_seq": -1,
+                "parent_thread": None,
+                "archived": False, "audience": None,
+                "type": "ephemeral",
+                "expires_at": expires,
+                "creator_pubkey": rec["creator_pubkey"],
             })
         return {"threads": rows}
 
@@ -517,6 +585,33 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                 pass
 
         return payload
+
+    async def _auto_seal_loop() -> None:
+        """Poll every ephemeral_seal_check_seconds. Seal any live
+        ephemeral thread whose created_at + ttl_seconds has elapsed.
+        The loop swallows per-iteration errors so one bad row doesn't
+        wedge the whole task."""
+        while True:
+            try:
+                await asyncio.sleep(config.ephemeral_seal_check_seconds)
+                now = _now_utc()
+                for rec in store.all_ephemeral():
+                    if rec["tombstoned_at"] is not None:
+                        continue
+                    try:
+                        created = _parse_iso(rec["created_at"])
+                    except ValueError:
+                        continue
+                    if (now - created).total_seconds() < rec["ttl_seconds"]:
+                        continue
+                    await _seal_ephemeral_thread(rec["thread"])
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Never let a bug in one iteration kill the loop —
+                # the next tick tries again. The seal ceremony itself
+                # is idempotent so a partial-then-retry is safe.
+                pass
 
     # ---- POST /threads/ephemeral (v0.4.37 / v0.4.38 shape) --------------
     # Register a thread as ephemeral with a TTL. The caller submits a
@@ -704,6 +799,19 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         if "error" in result:
             return _err(500, error=result["error"])
         return result
+
+    # ---- GET /ephemeral/final_sth (v0.4.38) ----------------------------
+    # After a thread is tombstoned, its ephemeral entries are gone from
+    # the store — but the sealed STH survives here so any member who
+    # kept a copy of an entry can prove inclusion by reconstructing
+    # the leaf and running verify_inclusion_ephemeral against this STH.
+    @api.get("/ephemeral/final_sth")
+    def get_final_sth(thread: str = Query(...),
+                      _caller: str = Depends(require_session)):
+        row = store.get_final_sth(thread)
+        if row is None:
+            return _err(404, error="not_found", thread=thread)
+        return row
 
     # ---- GET /inbox (v0.4.19) ------------------------------------------
     # Landing view bundle: for every observed thread, return the latest
