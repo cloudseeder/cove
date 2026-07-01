@@ -1058,7 +1058,7 @@ class _Forbidden(Exception):
 
 _CONTENT_FIELDS = {"thread", "author", "kind", "created_at", "parents",
                    "body", "blobs", "supersedes", "receipt", "branch_thread",
-                   "audience"}
+                   "audience", "tombstone_valid_after"}
 
 
 def _entry_from_dict(d: dict) -> Entry:

@@ -233,3 +233,58 @@ def test_rebuild_of_one_thread_leaves_others_untouched(elog):
     elog.rebuild("beach", [(f"sha256:{i:064x}", i) for i in range(2)])
     lake_root_after = elog.current_sth("lake").root_hash
     assert lake_root_before == lake_root_after
+
+
+# ---- close_thread (v0.4.38 tombstone substrate) ------------------------
+
+def test_close_thread_returns_final_sth_matching_current_state(elog):
+    """Sealing must return the same STH the live log would have produced
+    at that instant — otherwise the tombstone commits to a different
+    history than what members saw."""
+    _open(elog, "beach")
+    _append_n(elog, "beach", 5)
+    live = elog.current_sth("beach")
+    final = elog.close_thread("beach")
+    assert final.tree_size == live.tree_size
+    assert final.root_hash == live.root_hash
+    assert final.thread == "beach"
+    assert verify_sth_ephemeral(final) is True
+
+
+def test_append_after_close_is_rejected(elog):
+    """Post-seal, the thread is frozen. Any further append must raise —
+    a message landing after the tombstone would silently escape the
+    accountability window."""
+    _open(elog, "beach")
+    _append_n(elog, "beach", 2)
+    elog.close_thread("beach")
+    with pytest.raises(Exception):
+        elog.append(thread="beach", entry_id="sha256:" + "ff" * 32, seq=99)
+
+
+def test_close_thread_is_idempotent(elog):
+    """Re-closing an already-closed thread returns the same final STH.
+    Enables the seal ceremony to be safely retried after a mid-flight
+    error without producing two conflicting tombstones."""
+    _open(elog, "beach")
+    _append_n(elog, "beach", 3)
+    first = elog.close_thread("beach")
+    second = elog.close_thread("beach")
+    assert first.root_hash == second.root_hash
+    assert first.tree_size == second.tree_size
+
+
+def test_close_thread_on_unopened_raises(elog):
+    with pytest.raises(Exception):
+        elog.close_thread("never-opened")
+
+
+def test_close_one_thread_leaves_others_writable(elog):
+    _open(elog, "beach")
+    _open(elog, "lake")
+    _append_n(elog, "beach", 2)
+    _append_n(elog, "lake", 2, offset=100)
+    elog.close_thread("beach")
+    # Lake is still writable and its STH still advances.
+    elog.append(thread="lake", entry_id=f"sha256:{999:064x}", seq=2)
+    assert elog.current_sth("lake").tree_size == 3

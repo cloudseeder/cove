@@ -77,12 +77,17 @@ def _sth_content(sth: EphemeralSTH) -> dict:
 class _ThreadState:
     """Isolated Merkle+chain state for a single ephemeral thread. Not exported
     — the EphemeralTransLog owns and multiplexes these."""
-    __slots__ = ("leaves", "index", "last_sth")
+    __slots__ = ("leaves", "index", "last_sth", "sealed_sth")
 
     def __init__(self) -> None:
         self.leaves: list[str] = []
         self.index: dict[str, int] = {}
         self.last_sth: EphemeralSTH | None = None
+        # v0.4.38: once close_thread runs, this pins the final STH and
+        # further appends raise. Re-closing an already-sealed thread
+        # returns this same STH so retrying a seal after a mid-flight
+        # error doesn't produce two conflicting tombstones.
+        self.sealed_sth: EphemeralSTH | None = None
 
 
 # ---- log -----------------------------------------------------------------
@@ -123,6 +128,10 @@ class EphemeralTransLog:
         next monotonic value within it."""
         with self._lock:
             state = self._require(thread)
+            if state.sealed_sth is not None:
+                raise ValueError(
+                    f"ephemeral thread {thread!r} is sealed — no further appends",
+                )
             state.leaves.append(hash_leaf(entry_id, seq))
             state.index[entry_id] = len(state.leaves) - 1
 
@@ -205,6 +214,21 @@ class EphemeralTransLog:
             )
             sth = self._current_sth_unlocked(thread)
         return proof, sth
+
+    # ---- seal (v0.4.38 tombstone substrate) ------------------------------
+    def close_thread(self, thread: str) -> EphemeralSTH:
+        """Seal the thread: compute + pin the final STH, refuse further
+        appends. Returns the sealed STH. Idempotent — a second call
+        returns the same STH so a retried seal ceremony (e.g. after a
+        mid-flight error between STH computation and tombstone
+        publication) doesn't produce two conflicting tombstones."""
+        with self._lock:
+            state = self._require(thread)
+            if state.sealed_sth is not None:
+                return state.sealed_sth
+            sth = self._current_sth_unlocked(thread)
+            state.sealed_sth = sth
+            return sth
 
     def consistency_proof(
         self, thread: str, first_size: int, second_size: int,

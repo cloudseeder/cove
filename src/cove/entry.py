@@ -27,8 +27,17 @@ from . import crypto
 # archived" — currently: the latest board-authored archive|reopen
 # entry per thread wins. Non-board archive entries land in the log
 # but are ignored by the visibility-state computation.
+# 'tombstone' (v0.4.38) — governance record that seals an ephemeral
+# thread. Author is the ephemeral thread's creator; the entry is
+# pre-signed at open time with `tombstone_valid_after` = created_at +
+# ttl_seconds and stored by the hub as the auto-seal token. Manual
+# seal accepts a fresh tombstone entry with any valid_after ≤ now.
+# Published to the MAIN log at seal time; the final ephemeral STH is
+# recorded separately in the ephemeral_final_sths table so the
+# tombstone entry's signature stays stable across the (unknown-at-sign
+# time) final tree state.
 KINDS = {"notice", "post", "reply", "supersede", "membership", "receipt",
-         "revoke", "branch", "archive", "reopen", "audience"}
+         "revoke", "branch", "archive", "reopen", "audience", "tombstone"}
 
 # Fields excluded from the content that id/sig commit to.
 _NON_CONTENT = {"id", "sig"}
@@ -95,6 +104,15 @@ class Entry:
                                         # canonical content so adding the
                                         # field doesn't invalidate every
                                         # pre-v0.4.27 entry's signature.
+    tombstone_valid_after: Optional[str] = None
+                                        # set for kind='tombstone' (v0.4.38);
+                                        # RFC3339 UTC 'not-before' timestamp.
+                                        # The hub only seals a thread once
+                                        # current_time >= this value.
+                                        # Conditionally omitted from
+                                        # canonical content (byte-identical
+                                        # rule) so adding the field doesn't
+                                        # break every prior entry's signature.
     id: Optional[str] = None       # set by compute_id
     sig: Optional[str] = None      # set by sign
 
@@ -110,6 +128,12 @@ class Entry:
         # still verify against the canonical form they signed.
         if d.get("audience") is None:
             d.pop("audience", None)
+        # v0.4.38: same byte-identical-when-absent rule for
+        # tombstone_valid_after. Only kind='tombstone' entries carry it;
+        # every prior entry has None here and must canonicalize as if
+        # the field never existed, or their signatures break.
+        if d.get("tombstone_valid_after") is None:
+            d.pop("tombstone_valid_after", None)
         return d
 
 
