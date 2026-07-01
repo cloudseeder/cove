@@ -87,6 +87,21 @@
 
   async function handleSwitch(name: string) {
     await app.switchThread(name);
+    // v0.4.45: on mobile, close the drawer after picking a thread so
+    // the newly-selected content is actually visible. Desktop keeps
+    // the sidebar open since it's inline.
+    if (typeof window !== 'undefined'
+        && window.matchMedia('(max-width: 640px)').matches) {
+      app.closeSidebar();
+    }
+  }
+
+  function handleInbox() {
+    app.goToInbox();
+    if (typeof window !== 'undefined'
+        && window.matchMedia('(max-width: 640px)').matches) {
+      app.closeSidebar();
+    }
   }
 
   async function handleNewThread(ev: SubmitEvent) {
@@ -176,7 +191,7 @@
 
   <ul>
     <li class:active={app.route === 'inbox'} class="inbox-tab">
-      <button type="button" onclick={() => app.goToInbox()}>
+      <button type="button" onclick={handleInbox}>
         <span class="name">Inbox</span>
         {#if inboxUnread > 0}
           <span class="count badge">{inboxUnread}</span>

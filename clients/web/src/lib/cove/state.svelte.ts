@@ -142,6 +142,26 @@ export class AppState {
     typeof localStorage !== 'undefined'
       && localStorage.getItem('cove.viewMode') === 'chat' ? 'chat' : 'cards',
   );
+
+  /** v0.4.45: whether the ThreadList sidebar is visible. Persisted to
+   *  localStorage. Defaults to closed on narrow (mobile) viewports and
+   *  open on wide (desktop) ones so a phone doesn't lose 240px of screen
+   *  real estate on first paint. The user's explicit choice — if any —
+   *  wins over the media-query default. */
+  sidebarOpen = $state<boolean>(
+    (() => {
+      if (typeof localStorage !== 'undefined') {
+        const saved = localStorage.getItem('cove.sidebarOpen');
+        if (saved === 'true') return true;
+        if (saved === 'false') return false;
+      }
+      // No stored preference — default by viewport width.
+      if (typeof window !== 'undefined' && window.matchMedia) {
+        return window.matchMedia('(min-width: 640px)').matches;
+      }
+      return true;
+    })(),
+  );
   /** v0.4.0: state of the on-device-keygen onboarding flow. The
    *  OnboardingPanel reads this directly; AuthPanel uses kind !== 'idle'
    *  to swap itself out for the onboarding view. */
@@ -1512,6 +1532,23 @@ export class AppState {
     this.viewMode = mode;
     if (typeof localStorage !== 'undefined') {
       localStorage.setItem('cove.viewMode', mode);
+    }
+  }
+
+  /** v0.4.45: toggle the sidebar. Persists the explicit choice so a
+   *  user who opened it on their phone keeps it open next time even
+   *  though the viewport-default would have closed it. */
+  toggleSidebar(): void {
+    this.sidebarOpen = !this.sidebarOpen;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('cove.sidebarOpen', String(this.sidebarOpen));
+    }
+  }
+  closeSidebar(): void {
+    if (!this.sidebarOpen) return;
+    this.sidebarOpen = false;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('cove.sidebarOpen', 'false');
     }
   }
 

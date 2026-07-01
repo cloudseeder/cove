@@ -190,7 +190,27 @@
   }
 </script>
 
-<div class="layout">
+<div class="layout" class:sidebar-open={app.sidebarOpen} class:sidebar-closed={!app.sidebarOpen}>
+  <!-- v0.4.45: sidebar toggle. Always visible; renders as a hamburger
+       when the sidebar is closed and a chevron when it's open. On
+       mobile it stays fixed at the top-left of the viewport so it's
+       reachable from any panel; on desktop the sidebar is usually
+       inline and the button collapses it back. -->
+  <button type="button" class="sidebar-toggle"
+    title={app.sidebarOpen ? 'Hide threads panel' : 'Show threads panel'}
+    aria-label={app.sidebarOpen ? 'Hide threads panel' : 'Show threads panel'}
+    aria-expanded={app.sidebarOpen}
+    onclick={() => app.toggleSidebar()}>
+    {#if app.sidebarOpen}‹{:else}☰{/if}
+  </button>
+
+  <!-- v0.4.45: mobile backdrop. Only visible when the sidebar is open
+       on a narrow viewport; tapping it closes the sidebar. CSS gates
+       the display via media query, so on desktop it stays hidden even
+       when sidebarOpen === true (the sidebar is always inline there). -->
+  <div class="sidebar-backdrop" role="presentation" aria-hidden="true"
+    onclick={() => app.closeSidebar()}></div>
+
   <ThreadList {app} />
 
   {#if app.route === 'inbox'}
@@ -804,13 +824,85 @@
     display: flex;
     height: 100vh;
     overflow: hidden;
+    position: relative;
+  }
+  /* v0.4.45: sidebar toggle button. Positioned in the top-left corner
+     of the layout container so it's reachable from any panel. Higher
+     z-index than the backdrop so it stays clickable. */
+  .sidebar-toggle {
+    position: absolute;
+    top: 0.6rem;
+    left: 0.6rem;
+    z-index: 20;
+    background: var(--panel);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.25rem 0.65rem;
+    font-size: 1.1rem;
+    line-height: 1;
+    cursor: pointer;
+    opacity: 0.75;
+    transition: opacity 120ms, border-color 120ms;
+  }
+  .sidebar-toggle:hover {
+    opacity: 1;
+    border-color: rgba(212, 175, 55, 0.5);
+  }
+  /* v0.4.45: mobile sidebar backdrop. Hidden on desktop; shown on
+     narrow viewports only when the sidebar is open. */
+  .sidebar-backdrop {
+    display: none;
+  }
+  /* v0.4.45: sidebar collapse. Uses width transition so the layout
+     doesn't jump. When collapsed, ThreadList's border-right is also
+     hidden via :global. */
+  :global(.layout.sidebar-closed > .thread-list) {
+    width: 0;
+    border-right: none;
+    overflow: hidden;
   }
   .thread {
     flex: 1;
     overflow-y: auto;
     padding: 1.5rem;
+    /* Leave headroom for the toggle button so the first line of the
+       header doesn't sit under it. */
+    padding-top: 2.75rem;
     /* The .feed + compose box are the centered column; the
        scrollable region itself stretches to fill the pane. */
+  }
+  /* On mobile, sidebar becomes an overlay drawer. Fixed position,
+     full height, slides in from the left. Backdrop dims the content. */
+  @media (max-width: 640px) {
+    :global(.layout > .thread-list) {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      z-index: 15;
+      width: 80vw;
+      max-width: 300px;
+      transition: transform 200ms ease;
+      transform: translateX(-100%);
+    }
+    :global(.layout.sidebar-open > .thread-list) {
+      transform: translateX(0);
+      width: 80vw;
+      border-right: 1px solid var(--border);
+    }
+    :global(.layout.sidebar-closed > .thread-list) {
+      transform: translateX(-100%);
+      width: 80vw;
+    }
+    .layout.sidebar-open .sidebar-backdrop {
+      display: block;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0, 0, 0, 0.5);
+      z-index: 12;
+    }
+    .thread {
+      padding: 2.75rem 0.9rem 1rem;
+    }
   }
   .thread > :global(*) {
     max-width: 720px;

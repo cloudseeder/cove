@@ -189,6 +189,12 @@
     padding: 1.4rem 2rem 1rem;
     border-bottom: 1px solid var(--border);
   }
+  /* v0.4.45: leave room for the sidebar-toggle button on mobile. */
+  @media (max-width: 640px) {
+    header {
+      padding: 1rem 1rem 0.7rem 3.2rem;
+    }
+  }
   header h1 {
     margin: 0 0 0.2rem 0;
     font-size: 1.4rem;

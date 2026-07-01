@@ -4,6 +4,26 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.45] — 2026-07-01
+
+### Added
+- Collapsible thread sidebar. First step in making the layout work on
+  a phone-sized screen. A small toggle button sits in the top-left
+  corner of the main content area — hamburger when the sidebar is
+  hidden, chevron when it's visible.
+  - **Desktop (viewport ≥ 640px):** the sidebar remains inline;
+    toggling shrinks it to zero width so the main pane gets the whole
+    viewport.
+  - **Mobile (viewport < 640px):** the sidebar becomes an overlay
+    drawer that slides in from the left over the content, with a
+    tinted backdrop. Tapping the backdrop or picking a thread /
+    Inbox closes the drawer so the newly-selected content is
+    actually visible.
+- Sidebar open/closed state persists to `localStorage`. First-launch
+  default is chosen from the viewport width: open on desktop, closed
+  on mobile. Once the user makes an explicit choice it wins over the
+  viewport default.
+
 ## [0.4.44] — 2026-07-01
 
 ### Changed
@@ -238,6 +258,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.45]: https://github.com/cloudseeder/cove/releases/tag/v0.4.45
 [0.4.44]: https://github.com/cloudseeder/cove/releases/tag/v0.4.44
 [0.4.43]: https://github.com/cloudseeder/cove/releases/tag/v0.4.43
 [0.4.42]: https://github.com/cloudseeder/cove/releases/tag/v0.4.42
