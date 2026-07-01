@@ -100,6 +100,51 @@ describe('verifyEntry (intrinsic id + sig)', () => {
     const ev = { ...content, id, sig } as unknown as Entry;
     expect(verifyEntry(ev)).toBe(true);
   });
+
+  /* v0.4.41 regression: entryContent must strip tombstone_valid_after
+   * when null so a plain post (which does not carry the field) verifies
+   * against exactly the bytes the client signed. If this test fails,
+   * every non-tombstone entry the client posts will fail verification
+   * on receive with "id/sig invalid". */
+  test('verifies a plain post whose signed bytes omit tombstone_valid_after', () => {
+    const privBytes = ed25519.utils.randomPrivateKey();
+    const priv = bytesToHex(privBytes);
+    const pub = bytesToHex(ed25519.getPublicKey(privBytes));
+    const content = {
+      thread: 't1', author: pub, kind: 'post',
+      created_at: '2026-06-27T00:00:00Z',
+      parents: [], body: 'hi', blobs: [],
+      supersedes: null, receipt: null, branch_thread: null,
+    };
+    // Sign over the shape WITHOUT tombstone_valid_after — matches
+    // what client.signEntry produces on a null field.
+    const id = contentId(content);
+    const sig = sign(priv, canonicalize(content));
+    // Reconstruct the Entry as the wire form INCLUDES the field as null
+    // (asdict on the Python side always emits it). Verifier must strip
+    // it before recomputing id + verifying sig.
+    const ev = {
+      ...content, tombstone_valid_after: null, id, sig,
+    } as unknown as Entry;
+    expect(verifyEntry(ev)).toBe(true);
+  });
+
+  test('verifies a well-formed kind=tombstone entry that includes valid_after', () => {
+    const privBytes = ed25519.utils.randomPrivateKey();
+    const priv = bytesToHex(privBytes);
+    const pub = bytesToHex(ed25519.getPublicKey(privBytes));
+    const content = {
+      thread: 'beach', author: pub, kind: 'tombstone',
+      created_at: '2026-07-01T00:00:00Z',
+      parents: [], body: '', blobs: [],
+      supersedes: null, receipt: null, branch_thread: null,
+      tombstone_valid_after: '2026-08-01T00:00:00Z',
+    };
+    const id = contentId(content);
+    const sig = sign(priv, canonicalize(content));
+    const ev = { ...content, id, sig } as unknown as Entry;
+    expect(verifyEntry(ev)).toBe(true);
+  });
 });
 
 describe('verifySth', () => {

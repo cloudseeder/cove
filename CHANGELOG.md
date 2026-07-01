@@ -4,6 +4,22 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.41] — 2026-07-01
+
+### Fixed
+- Client-side `verify.entryContent` now strips
+  `tombstone_valid_after` when null, mirroring `client.signEntry`.
+  Without this, every non-tombstone entry (posts, replies,
+  receipts) the client signed verified against different bytes
+  than it was signed over, and the UI rejected its own first
+  message in every thread with "id/sig invalid". The
+  `protocol_extensibility` memory calls this out explicitly:
+  "the TS-side `client.signEntry` and `verify.entryContent`
+  each have their own field-filter loop. Both must mirror the
+  Python conditional." Missed it during v0.4.38; now fixed.
+- Two regression tests pin the byte-identical rule for
+  tombstone_valid_after (plain post + kind=tombstone entry).
+
 ## [0.4.40] — 2026-07-01
 
 ### Fixed
@@ -168,6 +184,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.41]: https://github.com/cloudseeder/cove/releases/tag/v0.4.41
 [0.4.40]: https://github.com/cloudseeder/cove/releases/tag/v0.4.40
 [0.4.39]: https://github.com/cloudseeder/cove/releases/tag/v0.4.39
 [0.4.38]: https://github.com/cloudseeder/cove/releases/tag/v0.4.38

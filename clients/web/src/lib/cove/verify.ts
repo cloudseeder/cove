@@ -22,7 +22,7 @@ import { sha256 } from '@noble/hashes/sha256';
 // ---- entry (§3) -------------------------------------------------------
 const KINDS = new Set([
   'notice', 'post', 'reply', 'supersede', 'membership', 'receipt', 'revoke',
-  'branch', 'archive', 'reopen', 'audience',
+  'branch', 'archive', 'reopen', 'audience', 'tombstone',
 ]);
 
 const NON_CONTENT = new Set(['id', 'sig']);
@@ -30,12 +30,17 @@ const NON_CONTENT = new Set(['id', 'sig']);
 /** content() — the dict the id + sig commit to: every field but id and sig.
  *  v0.4.27: audience is conditionally omitted when null/undefined,
  *  mirroring Python Entry.content(), so adding the field doesn't
- *  break verification of older entries. */
+ *  break verification of older entries.
+ *  v0.4.38: same byte-identical-when-null rule for tombstone_valid_after.
+ *  MUST mirror client.ts:signEntry exactly — otherwise every entry the
+ *  client signs verifies against different bytes than it was signed
+ *  over, and the whole app rejects its own posts. */
 export function entryContent(ev: Entry): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(ev)) {
     if (NON_CONTENT.has(k)) continue;
     if (k === 'audience' && (v === null || v === undefined)) continue;
+    if (k === 'tombstone_valid_after' && (v === null || v === undefined)) continue;
     out[k] = v;
   }
   return out;
