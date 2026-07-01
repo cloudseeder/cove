@@ -31,6 +31,7 @@ from cove.pipeline import Pipeline                                    # noqa: E4
 from cove.store import EventStore                                     # noqa: E402
 from cove.throttle import Throttler                                   # noqa: E402
 from cove.translog import TamperEvidentLog                            # noqa: E402
+from cove.translog_ephemeral import EphemeralTransLog                 # noqa: E402
 
 
 def _read(path: Path) -> str:
@@ -64,6 +65,7 @@ def _build_app():
     store = EventStore(str(data / "cove.db"))
     blobs = BlobStore(str(data / "blobs"))
     translog = TamperEvidentLog(hub_priv, hub_pub)
+    ephemeral_translog = EphemeralTransLog(hub_priv, hub_pub)
     overview = Overview()
     ledger = Ledger()
 
@@ -82,12 +84,14 @@ def _build_app():
     pipeline = Pipeline(
         store=store, directory=directory, translog=translog,
         overview=overview, ledger=ledger, throttler=throttler, blobs=blobs,
+        ephemeral_translog=ephemeral_translog,
     )
     auth = AuthService(directory=directory)
     return create_app(
         pipeline=pipeline, store=store, translog=translog,
         overview=overview, ledger=ledger, directory=directory,
         directory_manifest=directory.manifest, auth=auth, blobs=blobs,
+        ephemeral_translog=ephemeral_translog,
     )
 
 

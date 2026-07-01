@@ -4,6 +4,16 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.40] — 2026-07-01
+
+### Fixed
+- `scripts/run_hub.py` (production bootstrap) now wires
+  `EphemeralTransLog` into both the pipeline and `create_app`.
+  Without this, `POST /threads/ephemeral` returned 503
+  `no_ephemeral_log` on the pilot hub — the API layer got the
+  parameter in v0.4.37 but the production runner was never
+  updated. Only the test conftest was passing the log through.
+
 ## [0.4.39] — 2026-07-01
 
 ### Fixed
@@ -158,6 +168,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.40]: https://github.com/cloudseeder/cove/releases/tag/v0.4.40
 [0.4.39]: https://github.com/cloudseeder/cove/releases/tag/v0.4.39
 [0.4.38]: https://github.com/cloudseeder/cove/releases/tag/v0.4.38
 [0.4.37]: https://github.com/cloudseeder/cove/releases/tag/v0.4.37
