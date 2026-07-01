@@ -4,6 +4,23 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.43] — 2026-07-01
+
+### Changed
+- "Seal now" is gone from the ephemeral banner. Replaced with a "…"
+  actions menu (creator-only) that opens an in-app confirmation
+  card asking to "Delete this thread now." The confirm card is
+  inline (no browser dialog) and shows a spinner while the seal
+  request is in flight, so a slow round-trip is visible instead of
+  looking like the button did nothing.
+
+### Fixed
+- Manual tombstone from the desktop app was silently failing because
+  `window.confirm()` on Tauri's WKWebView often returns `false`
+  without opening a dialog. The old "Seal now" button fired
+  `confirm()`, got false back, and never hit `tombstoneThread()`.
+  Removed all browser-dialog calls from the seal flow.
+
 ## [0.4.42] — 2026-07-01
 
 ### Fixed
@@ -203,6 +220,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.43]: https://github.com/cloudseeder/cove/releases/tag/v0.4.43
 [0.4.42]: https://github.com/cloudseeder/cove/releases/tag/v0.4.42
 [0.4.41]: https://github.com/cloudseeder/cove/releases/tag/v0.4.41
 [0.4.40]: https://github.com/cloudseeder/cove/releases/tag/v0.4.40

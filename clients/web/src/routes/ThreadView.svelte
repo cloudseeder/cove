@@ -94,14 +94,33 @@
     app.threads.find((t) => t.thread === app.thread) ?? null,
   );
 
-  async function sealNow() {
-    if (!app.client) return;
-    if (!confirm(`Seal "${app.thread}" now? Its entries will be deleted from the hub immediately.`)) return;
+  /* v0.4.43: ephemeral banner "…" menu + inline confirm.
+   * Previously we used window.confirm(), which on Tauri's WKWebView
+   * often returns false silently — the seal request never fired and
+   * the button looked broken. Now: the menu opens an in-app confirm
+   * card, no browser dialogs. */
+  let ephMenuOpen = $state(false);
+  let sealConfirm = $state<{ error: string | null; running: boolean } | null>(null);
+
+  function openSealConfirm() {
+    ephMenuOpen = false;
+    sealConfirm = { error: null, running: false };
+  }
+  function closeSealConfirm() {
+    sealConfirm = null;
+  }
+  async function confirmSealNow() {
+    if (!app.client || !sealConfirm) return;
+    sealConfirm = { ...sealConfirm, running: true, error: null };
     try {
       await app.client.tombstoneThread(app.thread);
-      // WS thread_tombstoned event will fire and drive the purge.
+      sealConfirm = null;
+      // WS thread_tombstoned event drives the purge + badge flip.
     } catch (err) {
-      alert(`Seal failed: ${err instanceof Error ? err.message : String(err)}`);
+      sealConfirm = {
+        error: err instanceof Error ? err.message : String(err),
+        running: false,
+      };
     }
   }
 
@@ -247,11 +266,51 @@
             <strong>{ephemeralRow.expires_at}</strong>. Save anything
             you want to keep.</span>
           {#if app.authStatus.kind === 'authenticated' && ephemeralRow.creator_pubkey === app.authStatus.pubkey}
-            <button type="button" class="seal-now" onclick={sealNow}>
-              Seal now
-            </button>
+            <div class="eph-menu-wrap">
+              <button type="button" class="eph-menu-btn"
+                title="Thread actions"
+                aria-haspopup="menu"
+                aria-expanded={ephMenuOpen}
+                onclick={() => (ephMenuOpen = !ephMenuOpen)}>⋯</button>
+              {#if ephMenuOpen}
+                <div class="eph-menu" role="menu">
+                  <button type="button" role="menuitem"
+                    class="eph-menu-item danger"
+                    onclick={openSealConfirm}>
+                    Delete this thread now
+                  </button>
+                </div>
+              {/if}
+            </div>
           {/if}
         </div>
+        {#if sealConfirm}
+          <div class="seal-confirm" role="alertdialog"
+            aria-label="Confirm delete this thread">
+            <p>
+              <strong>Delete <code>{app.thread}</code> now?</strong>
+              Its entries will be removed from the hub immediately. A
+              signed tombstone stays in the main log forever; the
+              sealed final STH is preserved so members who kept a
+              local copy can still prove what was there.
+            </p>
+            {#if sealConfirm.error}
+              <p class="failure" role="alert">
+                Seal failed: {sealConfirm.error}
+              </p>
+            {/if}
+            <div class="seal-confirm-actions">
+              <button type="button" class="ghost"
+                onclick={closeSealConfirm}
+                disabled={sealConfirm.running}>Cancel</button>
+              <button type="button" class="danger"
+                onclick={confirmSealNow}
+                disabled={sealConfirm.running}>
+                {sealConfirm.running ? 'Deleting…' : 'Delete now'}
+              </button>
+            </div>
+          </div>
+        {/if}
       {:else if ephemeralRow && ephemeralRow.type === 'tombstoned'}
         <div class="tombstone-card" role="status">
           <span aria-hidden="true">⚰</span>
@@ -600,15 +659,73 @@
     border-radius: 8px;
     font-size: 0.88rem;
   }
-  .ephemeral-banner .seal-now {
-    margin-left: auto;
+  /* v0.4.43: "…" menu inside the ephemeral banner. Only shown to the
+     creator. Opens an in-app confirm card, no browser dialogs. */
+  .eph-menu-wrap { margin-left: auto; position: relative; }
+  .eph-menu-btn {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.1rem 0.55rem; cursor: pointer;
+    font-size: 1rem; line-height: 1; letter-spacing: 0.1em;
+  }
+  .eph-menu-btn:hover { color: var(--fg); border-color: rgba(212, 175, 55, 0.5); }
+  .eph-menu {
+    position: absolute; top: 100%; right: 0;
+    margin-top: 0.35rem;
+    background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.3rem;
+    min-width: 12rem;
+    z-index: 10;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  }
+  .eph-menu-item {
+    display: block; width: 100%; text-align: left;
+    background: transparent; color: var(--fg);
+    border: none; border-radius: 6px;
+    padding: 0.4rem 0.6rem; cursor: pointer;
+    font: inherit; font-size: 0.88rem;
+  }
+  .eph-menu-item:hover { background: rgba(255, 255, 255, 0.04); }
+  .eph-menu-item.danger { color: #d97a7a; }
+  .eph-menu-item.danger:hover { background: rgba(220, 38, 38, 0.08); }
+  /* Inline confirm card (renders below the banner). */
+  .seal-confirm {
+    margin: 0.4rem 0 0.6rem;
+    padding: 0.8rem 1rem;
+    background: rgba(220, 38, 38, 0.05);
+    border: 1px solid rgba(220, 38, 38, 0.35);
+    border-radius: 8px;
+    font-size: 0.9rem;
+  }
+  .seal-confirm p { margin: 0 0 0.6rem; }
+  .seal-confirm code {
+    background: var(--bg); padding: 0.05rem 0.3rem;
+    border-radius: 4px; font-size: 0.85rem;
+  }
+  .seal-confirm .failure {
+    color: #d97a7a;
+    font-size: 0.85rem;
+  }
+  .seal-confirm-actions {
+    display: flex; gap: 0.5rem; justify-content: flex-end;
+  }
+  .seal-confirm-actions .ghost {
     background: transparent; color: var(--fg);
     border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.2rem 0.65rem; cursor: pointer;
-    font-size: 0.82rem;
+    padding: 0.35rem 0.8rem; cursor: pointer; font-size: 0.85rem;
   }
-  .ephemeral-banner .seal-now:hover {
-    border-color: rgba(212, 175, 55, 0.6); color: #e8c96b;
+  .seal-confirm-actions .danger {
+    background: rgba(220, 38, 38, 0.15); color: #f0a0a0;
+    border: 1px solid rgba(220, 38, 38, 0.5); border-radius: 6px;
+    padding: 0.35rem 0.9rem; cursor: pointer; font-size: 0.85rem;
+    font-weight: 500;
+  }
+  .seal-confirm-actions .danger:hover:not(:disabled) {
+    background: rgba(220, 38, 38, 0.25);
+  }
+  .seal-confirm-actions button:disabled {
+    opacity: 0.6; cursor: not-allowed;
   }
   .tombstone-card {
     display: flex; gap: 0.7rem; align-items: flex-start;
