@@ -158,6 +158,11 @@ export interface STH {
   timestamp: string;
   hub_key: string;
   sig: string;
+  /** v0.4.38: present ONLY on ephemeral per-thread STHs. The signing
+   *  payload includes it so an STH from thread A can't be relabeled
+   *  as B. Absent on main-log STHs — the byte-identical-when-absent
+   *  rule keeps verification stable across both shapes. */
+  thread?: string;
 }
 
 /** Mirrors cove.translog.InclusionProof. */

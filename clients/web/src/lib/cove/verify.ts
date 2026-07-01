@@ -61,14 +61,24 @@ export function verifyEntry(ev: Entry): boolean {
 }
 
 // ---- STH (§6.4.1) ----------------------------------------------------
+// v0.4.42: byte-identical-when-absent for the `thread` field. Ephemeral
+// per-thread STHs bind the thread name into the signing payload (see
+// cove.translog_ephemeral._sth_content); main-log STHs don't have the
+// field at all. Both shapes flow through this one verifier — include
+// `thread` only when the wire STH carries it, and the recomputed bytes
+// match whichever shape the hub signed. MUST mirror the two Python
+// _sth_content functions exactly.
 function sthContent(sth: STH): Record<string, unknown> {
-  return {
-    tree_size: sth.tree_size,
-    root_hash: sth.root_hash,
-    prev_sth_hash: sth.prev_sth_hash,
-    timestamp: sth.timestamp,
-    hub_key: sth.hub_key,
-  };
+  const out: Record<string, unknown> = {};
+  if (sth.thread !== undefined && sth.thread !== null) {
+    out.thread = sth.thread;
+  }
+  out.tree_size = sth.tree_size;
+  out.root_hash = sth.root_hash;
+  out.prev_sth_hash = sth.prev_sth_hash;
+  out.timestamp = sth.timestamp;
+  out.hub_key = sth.hub_key;
+  return out;
 }
 
 export function verifySth(sth: STH): boolean {

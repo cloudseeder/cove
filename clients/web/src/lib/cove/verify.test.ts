@@ -147,6 +147,51 @@ describe('verifyEntry (intrinsic id + sig)', () => {
   });
 });
 
+describe('verifySth (ephemeral thread binding)', () => {
+  /* v0.4.42 regression: hub signs an ephemeral per-thread STH over
+   * content that INCLUDES the `thread` field. Verifier must include
+   * `thread` in its recomputed bytes iff the wire STH carries it —
+   * byte-identical-when-absent, same rule as entryContent for
+   * audience / tombstone_valid_after. Without this, every ephemeral
+   * inclusion-proof check fails at the STH signature step and no
+   * ephemeral entry can be verified end-to-end. */
+  test('verifies an ephemeral STH whose signing payload binds thread', () => {
+    const privBytes = ed25519.utils.randomPrivateKey();
+    const priv = bytesToHex(privBytes);
+    const pub = bytesToHex(ed25519.getPublicKey(privBytes));
+    const signingPayload = {
+      thread: 'beach',
+      tree_size: 3,
+      root_hash: 'a'.repeat(64),
+      prev_sth_hash: 'sha256:' + '0'.repeat(64),
+      timestamp: '2026-07-01T00:00:00+00:00',
+      hub_key: pub,
+    };
+    const sig = sign(priv, canonicalize(signingPayload));
+    // Wire form is signingPayload + sig — same shape the hub returns.
+    const sth = { ...signingPayload, sig } as STH;
+    expect(verifySth(sth)).toBe(true);
+  });
+
+  test('rejects an ephemeral STH whose thread label was swapped', () => {
+    const privBytes = ed25519.utils.randomPrivateKey();
+    const priv = bytesToHex(privBytes);
+    const pub = bytesToHex(ed25519.getPublicKey(privBytes));
+    const signingPayload = {
+      thread: 'beach',
+      tree_size: 3,
+      root_hash: 'a'.repeat(64),
+      prev_sth_hash: 'sha256:' + '0'.repeat(64),
+      timestamp: '2026-07-01T00:00:00+00:00',
+      hub_key: pub,
+    };
+    const sig = sign(priv, canonicalize(signingPayload));
+    // Attacker relabels thread A's STH as thread B's — verifier must reject.
+    const forged = { ...signingPayload, thread: 'lake', sig } as STH;
+    expect(verifySth(forged)).toBe(false);
+  });
+});
+
 describe('verifySth', () => {
   test('accepts the hub-signed STH', () => {
     expect(verifySth(sth)).toBe(true);

@@ -4,6 +4,25 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.42] — 2026-07-01
+
+### Fixed
+- Client-side `verifySth` now includes the `thread` field in its
+  recomputed signing bytes when present. The hub signs ephemeral
+  per-thread STHs over content that binds the thread name (see
+  `translog_ephemeral._sth_content`); the client verifier omitted
+  the field, so its recomputed bytes didn't match what the hub
+  signed. Every ephemeral entry's inclusion-proof step failed at
+  the STH signature check with "STH signature invalid — pinned
+  hub key check failed", and no ephemeral message could be
+  verified end-to-end. Main-log STHs (no `thread` field on the
+  wire) continue to verify unchanged — byte-identical-when-absent
+  rule preserves both shapes through one verifier.
+- Two regression tests pin the invariant: an ephemeral STH
+  verifies through the shared verifier, and one whose thread
+  label was swapped fails (cross-tree substitution defense the
+  hub-side already had, now honored on the client too).
+
 ## [0.4.41] — 2026-07-01
 
 ### Fixed
@@ -184,6 +203,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.42]: https://github.com/cloudseeder/cove/releases/tag/v0.4.42
 [0.4.41]: https://github.com/cloudseeder/cove/releases/tag/v0.4.41
 [0.4.40]: https://github.com/cloudseeder/cove/releases/tag/v0.4.40
 [0.4.39]: https://github.com/cloudseeder/cove/releases/tag/v0.4.39
