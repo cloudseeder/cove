@@ -748,15 +748,23 @@ def test_revocation_mid_session_immediately_cuts_off_revoked_member(
     assert directory.is_revoked(bob_pub, as_of=bob_receipt.created_at) is False
     assert directory.is_revoked(bob_pub) is True
 
-    # === Invariant 5: /ledger still acks bob ===
-    # The ack partition is the set of signed receipts that exist; it
-    # is independent of who's currently attested. bob's signed ack
-    # against this notice will remain in 'acked' as long as the
-    # receipt entry is in the log.
+    # === Invariant 5: /ledger drops bob from the partition post-revocation ===
+    # v0.4.44: the delivery-card partition is filtered by CURRENT
+    # attestation. bob's signed receipt entry is still durable in the
+    # log — anyone auditing the receipt substrate directly can see
+    # what he acked before revocation — but the delivery UI shows only
+    # currently-attested members (a revoked pubkey with no name is
+    # useless noise and can't act anymore).
     post_status = board_client.get(
         "/ledger", params={"entry": notice.id},
     ).json()
-    assert sorted(post_status["acked"]) == sorted([alice_pub, bob_pub, board_pub])
+    assert sorted(post_status["acked"]) == sorted([alice_pub, board_pub])
+    assert bob_pub not in post_status["acked"]
+    assert bob_pub not in post_status["not_acked"]
+    # The receipt evidence is still in the store — durable substrate.
+    receipt_entries = [e for e in hub_["store"].since(THREAD, -1)
+                       if e.author == bob_pub and e.kind == "receipt"]
+    assert len(receipt_entries) >= 1
 
     # === Invariant 6: board and alice are unaffected ===
     assert board_client.get("/directory").status_code == 200

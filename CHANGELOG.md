@@ -4,6 +4,24 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.44] — 2026-07-01
+
+### Changed
+- Delivery card no longer shows currently-revoked members. `/ledger`
+  filters them out of both `acked` and `not_acked` before returning
+  the partition. Rationale: the client resolves names against the
+  current-members list (revoked keys have no display name there),
+  so a revoked pubkey rendered as `aa123456…` was useless noise —
+  and a revoked key can't ack anymore anyway. The receipt-substrate
+  history is preserved separately: any signed receipt a revoked
+  member posted before revocation is still durable in the log and
+  visible to anyone auditing the receipts directly. This is a
+  UI-facing filter, not a governance-log change.
+- One end-to-end assertion updated (`test_revocation_mid_session_
+  immediately_cuts_off_revoked_member`) — the new invariant is
+  "revoked disappears from the delivery partition, receipt evidence
+  remains in the store."
+
 ## [0.4.43] — 2026-07-01
 
 ### Changed
@@ -220,6 +238,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.44]: https://github.com/cloudseeder/cove/releases/tag/v0.4.44
 [0.4.43]: https://github.com/cloudseeder/cove/releases/tag/v0.4.43
 [0.4.42]: https://github.com/cloudseeder/cove/releases/tag/v0.4.42
 [0.4.41]: https://github.com/cloudseeder/cove/releases/tag/v0.4.41

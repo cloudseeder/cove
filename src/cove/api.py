@@ -988,6 +988,16 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             members = list(aud.pubkeys)
         else:
             members = directory.attested_keys() if directory is not None else []
+        # v0.4.44: filter out currently-revoked keys from the partition.
+        # attested_keys returns everyone ever attested (per §2.3 "sent
+        # before revocation is still owed"), and the ledger substrate
+        # still preserves the history of what any revoked member did
+        # while attested. But the delivery card is a "who has this
+        # been delivered to NOW" surface — a bare pubkey with no name
+        # for a long-departed member is useless noise, and it can't
+        # ack anymore anyway. Board's design call recorded v0.4.44.
+        if directory is not None:
+            members = [m for m in members if not directory.is_revoked(m)]
         return ledger.status(
             target.thread, required_seq=seq, members=members,
             author=target.author,

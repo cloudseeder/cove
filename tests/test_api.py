@@ -1763,7 +1763,12 @@ def test_ledger_partitions_members_into_acked_and_not(hub):
     assert r.status_code == 200
     payload = r.json()
     assert hub["member_pub"] in payload["acked"]
-    assert hub["revoked_pub"] in payload["not_acked"]
+    # v0.4.44: currently-revoked keys are filtered out of the delivery
+    # partition. The receipt-substrate history is preserved (a revoked
+    # member's ack still lives as a signed receipt entry in the log);
+    # only the UI-facing partition drops them.
+    assert hub["revoked_pub"] not in payload["not_acked"]
+    assert hub["revoked_pub"] not in payload["acked"]
 
 
 def test_receipt_entry_round_trip_through_store_preserves_payload(hub):
@@ -1800,6 +1805,26 @@ def test_post_entries_rejects_receipt_kind_without_payload(hub):
     r = hub["client"].post("/entries", json=_entry_payload(ev))
     assert r.status_code == 400
     assert "receipt" in r.json()["reason"].lower()
+
+
+def test_ledger_hides_currently_revoked_from_partition(hub):
+    """v0.4.44: /ledger drops currently-revoked keys from both acked
+    and not_acked. Rationale is UX: the delivery card renders a bare
+    pubkey with no name for a departed member (client resolves names
+    against currentMembers, which excludes revoked), and a revoked
+    key can't ack anymore anyway. The signed receipt-substrate
+    history is preserved separately in the log."""
+    # hub fixture already has one revoked member — hub["revoked_pub"].
+    notice = _signed_post(hub["member_priv"], hub["member_pub"], body="notice")
+    hub["client"].post("/entries", json=_entry_payload(notice))
+
+    r = hub["client"].get("/ledger", params={"entry": notice.id})
+    assert r.status_code == 200
+    body = r.json()
+    assert hub["revoked_pub"] not in body["acked"]
+    assert hub["revoked_pub"] not in body["not_acked"]
+    # Sanity: the current member IS visible.
+    assert hub["member_pub"] in (body["acked"] + body["not_acked"])
 
 
 def test_ledger_scopes_to_audience_on_private_threads(hub):
