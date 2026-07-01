@@ -55,6 +55,14 @@ class HubConfig:
     # §5 session token TTL (seconds)
     session_ttl_seconds: int = 3600
 
+    # v0.4.37 ephemeral threads: upper bound on the TTL a creator may
+    # request at POST /threads/ephemeral. Prevents a member from opening
+    # a "delete in 100 years" thread that quietly evades the ephemeral
+    # tier's whole point. Default 1 year; the creation UI's presets are
+    # 7d/30d/90d, so this only bites free-form values.
+    ephemeral_ttl_max_seconds: int = 365 * 24 * 3600
+    ephemeral_ttl_min_seconds: int = 1 * 24 * 3600
+
     def tier_for_role(self, role: str) -> Tier:
         # board and broadcast identities share the "board" tier; unknown roles default to member.
         return TIERS.get(role, TIERS["member"])

@@ -14,6 +14,7 @@ from .index import Overview, Ledger
 from .store import EventStore
 from .throttle import Throttler, check_structural
 from .translog import STH, TamperEvidentLog
+from .translog_ephemeral import EphemeralSTH, EphemeralTransLog
 
 
 class AcceptanceError(Exception):
@@ -24,10 +25,19 @@ class AcceptanceError(Exception):
     """
 
 
+# v0.4.37: entry kinds allowed inside an ephemeral thread. Everything not
+# in this set is a governance/permanent-shape kind and gets rejected
+# structurally when directed at an ephemeral thread — matches the user's
+# design decision that ephemeral threads carry only conversational payload,
+# never anything a governance decision depends on.
+_EPHEMERAL_ALLOWED_KINDS = frozenset({"post", "reply", "receipt"})
+
+
 class Pipeline:
     def __init__(self, store: EventStore, directory: Directory, translog: TamperEvidentLog,
                  overview: Overview, ledger: Ledger, throttler: Throttler,
-                 blobs: Optional[BlobStore] = None) -> None:
+                 blobs: Optional[BlobStore] = None,
+                 ephemeral_translog: Optional[EphemeralTransLog] = None) -> None:
         self.store = store
         self.directory = directory
         self.translog = translog
@@ -37,6 +47,11 @@ class Pipeline:
         # Optional in tests where the entry never references blobs; required
         # in production for the strict step-7 blob-presence check.
         self.blobs = blobs
+        # v0.4.37: ephemeral log. When None the pipeline still refuses
+        # entries directed at ephemeral threads (structural rejection is
+        # store-driven), so a caller that forgot to wire this up gets
+        # loud errors rather than silent single-tree accumulation.
+        self.ephemeral_translog = ephemeral_translog
 
     def accept(self, ev: Entry) -> int:
         """Run the §7.1 pipeline. Return assigned per-thread seq, or raise.
@@ -100,16 +115,41 @@ class Pipeline:
                 raise AcceptanceError(
                     f"branch_thread {ev.branch_thread!r} cannot equal thread")
 
+        # v0.4.37: ephemeral-thread routing decision + structural kind gate.
+        # Consulted before the translog write so the gate is store-driven
+        # and can't be bypassed by a pipeline caller that forgot to wire
+        # the ephemeral translog. Reject BEFORE seq allocation so a
+        # governance-kind attempt doesn't burn a seq number.
+        is_ephemeral = self.store.is_ephemeral(ev.thread)
+        if is_ephemeral and ev.kind not in _EPHEMERAL_ALLOWED_KINDS:
+            raise AcceptanceError(
+                f"kind {ev.kind!r} not permitted in ephemeral thread {ev.thread!r}",
+            )
+        if is_ephemeral and self.ephemeral_translog is None:
+            # Loud: the store says the thread is ephemeral but the
+            # pipeline was constructed without the ephemeral log wired
+            # up. Refuse rather than accepting into a mystery void.
+            raise AcceptanceError(
+                f"ephemeral thread {ev.thread!r} has no ephemeral translog wired",
+            )
+
         # 8. Assign per-thread seq, persist, extend translog, materialize the new STH.
         # Store-before-log because the entry store is source of truth (§9); the log
         # leaf commits to (id, per-thread seq) so the hub cannot later equivocate
         # about either the entry or the seq it assigned (§6.4.1).
         # append_atomic gives us (seq, persist) as one operation per §6 — a failed
         # persist cannot burn a seq number. A translog failure AFTER persist is
-        # recoverable via TamperEvidentLog.rebuild from store.iter_global.
+        # recoverable via TamperEvidentLog.rebuild from store.iter_global (or from
+        # store.iter_ephemeral_entries for ephemeral threads).
         seq = self.store.append_atomic(ev)
-        self.translog.append(ev.id, seq)
-        sth = self.translog.current_sth()
+        if is_ephemeral:
+            self.ephemeral_translog.append(  # type: ignore[union-attr]
+                thread=ev.thread, entry_id=ev.id, seq=seq,
+            )
+            sth = self.ephemeral_translog.current_sth(ev.thread)  # type: ignore[union-attr]
+        else:
+            self.translog.append(ev.id, seq)
+            sth = self.translog.current_sth()
         # Record blob references AFTER the entry is durably in the store
         # (so the ref's entry_id is real). This is the recording layer a
         # future GC will key off — refcount checks, not log-scan archaeology.
@@ -134,7 +174,7 @@ def _entry_bytes(ev: Entry) -> int:
     return len(crypto.canonicalize(ev.content()))
 
 
-def _apply_receipt(ledger: Ledger, ev: Entry, sth: STH) -> None:
+def _apply_receipt(ledger: Ledger, ev: Entry, sth: STH | EphemeralSTH) -> None:
     """Feed a kind='receipt' entry into the ledger. Spec §8.
 
       - recipient = ev.author (the receipt is authored by who's acking).

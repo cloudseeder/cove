@@ -43,10 +43,13 @@ class StubDirectory:
 
 
 class StubStore:
-    def __init__(self) -> None:
+    def __init__(self, ephemeral: set[str] | None = None) -> None:
         self._by_id: dict[str, Entry] = {}
         self._next_seq: dict[str, int] = {}
         self.appended: list[tuple[str, int]] = []   # for assertions
+        # v0.4.37: names in this set report is_ephemeral(t) == True.
+        # Empty set = pure permanent-thread behavior (default for prior tests).
+        self._ephemeral = ephemeral or set()
 
     def next_seq(self, thread: str) -> int:
         s = self._next_seq.get(thread, 0)
@@ -65,6 +68,9 @@ class StubStore:
 
     def exists(self, entry_id: str) -> bool:
         return entry_id in self._by_id
+
+    def is_ephemeral(self, thread: str) -> bool:
+        return thread in self._ephemeral
 
 
 class StubThrottler:
@@ -291,3 +297,136 @@ def test_non_receipt_entry_does_not_call_apply_receipt(pipeline):
     ev = sign_entry(_post("t1", apub, "just a post"), apriv)
     pl.accept(ev)
     assert pl.ledger.receipts == []
+
+
+# ---- v0.4.37: ephemeral thread routing ---------------------------------
+
+from cove.entry import Receipt
+from cove.translog_ephemeral import (
+    EphemeralTransLog, verify_inclusion_ephemeral,
+)
+
+
+@pytest.fixture
+def eph_pipeline(no_structural, hub_keypair, keypair):
+    """Pipeline wired with an ephemeral translog and one already-open
+    ephemeral thread named 'beach'. Everything else mirrors the base
+    `pipeline` fixture."""
+    priv, pub = hub_keypair
+    apriv, apub = keypair
+    directory = StubDirectory(attested={apub: _Att(role="member")})
+    eph = EphemeralTransLog(priv, pub)
+    eph.open_thread("beach")
+    pl = Pipeline(
+        store=StubStore(ephemeral={"beach"}),
+        directory=directory,
+        translog=TamperEvidentLog(priv, pub),
+        overview=StubOverview(),
+        ledger=StubLedger(),
+        throttler=StubThrottler(),
+        ephemeral_translog=eph,
+    )
+    return pl, apriv, apub
+
+
+def test_ephemeral_post_goes_to_ephemeral_log_not_main(eph_pipeline):
+    pl, apriv, apub = eph_pipeline
+    ev = sign_entry(_post("beach", apub, "hey"), apriv)
+
+    seq = pl.accept(ev)
+
+    # Main log stays empty; ephemeral log has the leaf.
+    assert pl.translog.current_sth().tree_size == 0
+    esth = pl.ephemeral_translog.current_sth("beach")
+    assert esth.tree_size == 1
+    assert esth.thread == "beach"
+    # Inclusion proof from the ephemeral log verifies with the ephemeral STH.
+    proof = pl.ephemeral_translog.inclusion_proof("beach", ev.id)
+    assert verify_inclusion_ephemeral("beach", ev.id, seq, proof, esth) is True
+
+
+def test_permanent_and_ephemeral_logs_stay_isolated(eph_pipeline):
+    """A permanent post next to an ephemeral post: each ends up in its own
+    tree only. Cross-contamination is exactly the failure the per-thread
+    STH binding is defending against."""
+    pl, apriv, apub = eph_pipeline
+    perm = sign_entry(_post("permanent-thread", apub, "perm"), apriv)
+    eph  = sign_entry(_post("beach", apub, "eph"), apriv)
+
+    pl.accept(perm)
+    pl.accept(eph)
+
+    assert pl.translog.current_sth().tree_size == 1
+    assert pl.ephemeral_translog.current_sth("beach").tree_size == 1
+
+
+@pytest.mark.parametrize("bad_kind", [
+    "notice", "membership", "supersede", "revoke",
+    "branch", "archive", "reopen", "audience",
+])
+def test_governance_kinds_rejected_structurally_in_ephemeral(eph_pipeline, bad_kind):
+    """Only post/reply/receipt allowed inside an ephemeral thread. Every
+    governance-shape kind must be rejected BEFORE seq allocation so a
+    caller can't burn seq numbers with rejected attempts."""
+    pl, apriv, apub = eph_pipeline
+    ev = Entry(
+        thread="beach", author=apub, kind=bad_kind,
+        created_at="2026-01-01T00:00:00Z",
+        # branch needs a target thread; provide one so the *governance*
+        # rejection is what we're testing, not a structural miss.
+        branch_thread="somewhere" if bad_kind == "branch" else None,
+    )
+    ev = sign_entry(ev, apriv)
+
+    with pytest.raises(AcceptanceError, match="not permitted in ephemeral"):
+        pl.accept(ev)
+
+    # Neither log advanced.
+    assert pl.translog.current_sth().tree_size == 0
+    assert pl.ephemeral_translog.current_sth("beach").tree_size == 0
+
+
+def test_ephemeral_receipt_feeds_ledger(eph_pipeline):
+    """Receipts are one of the three allowed kinds in ephemeral threads.
+    A receipt in an ephemeral thread must still feed the ledger — that's
+    the accountability substrate that makes ephemeral threads verifiable
+    while they're alive."""
+    pl, apriv, apub = eph_pipeline
+    # First, a post to establish something to ack.
+    p = sign_entry(_post("beach", apub, "hi"), apriv)
+    pl.accept(p)
+    # Now a receipt against tree_size=1.
+    r_ev = Entry(
+        thread="beach", author=apub, kind="receipt",
+        created_at="2026-01-01T00:00:00Z", body="",
+        receipt=Receipt(
+            high_water_seq=0, observed_sth_size=1,
+            observed_sth_root="a" * 64,
+        ),
+    )
+    r_ev = sign_entry(r_ev, apriv)
+
+    pl.accept(r_ev)
+
+    assert pl.ledger.receipts == [(apub, "beach", 0, (1, "a" * 64))]
+
+
+def test_ephemeral_thread_without_translog_wired_is_loud(no_structural, hub_keypair, keypair):
+    """If the store reports a thread as ephemeral but the pipeline was
+    constructed without the ephemeral translog, we refuse. Silent
+    single-tree accumulation would be worst-case correctness loss."""
+    priv, pub = hub_keypair
+    apriv, apub = keypair
+    directory = StubDirectory(attested={apub: _Att(role="member")})
+    pl = Pipeline(
+        store=StubStore(ephemeral={"beach"}),
+        directory=directory,
+        translog=TamperEvidentLog(priv, pub),
+        overview=StubOverview(),
+        ledger=StubLedger(),
+        throttler=StubThrottler(),
+        # ephemeral_translog INTENTIONALLY omitted
+    )
+    ev = sign_entry(_post("beach", apub, "hi"), apriv)
+    with pytest.raises(AcceptanceError, match="no ephemeral translog wired"):
+        pl.accept(ev)
