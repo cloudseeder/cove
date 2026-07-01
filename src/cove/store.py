@@ -36,18 +36,36 @@ CREATE INDEX IF NOT EXISTS idx_entries_thread_seq ON entries(thread, seq);
 -- themselves still live in the `entries` table above — the routing
 -- decision is a lookup against this registry, not a column on the entry.
 --
--- `delete_auth_content` + `delete_auth_sig` are the creator's pre-signed
--- authorization for eventual deletion (§ ephemeral extension). Held so
--- the tombstone path (v0.4.37b) can present a member-signed delete-
--- authorization at TTL expiration without any live keypair on the hub.
+-- v0.4.38: `tombstone_entry_content` + `tombstone_entry_sig` are the
+-- creator's PRE-SIGNED tombstone Entry (kind='tombstone',
+-- tombstone_valid_after = created_at + ttl_seconds). Held so the
+-- auto-seal path can present a member-signed tombstone at TTL
+-- expiration without any live member keypair on the hub. Manual seal
+-- (POST /threads/{T}/tombstone) accepts a fresh tombstone entry
+-- with valid_after ≤ now, overriding this one.
 CREATE TABLE IF NOT EXISTS ephemeral_threads (
-    thread               TEXT PRIMARY KEY,
-    creator_pubkey       TEXT NOT NULL,
-    created_at           TEXT NOT NULL,          -- RFC 3339 UTC
-    ttl_seconds          INTEGER NOT NULL,
-    delete_auth_content  BLOB NOT NULL,          -- JCS bytes of the auth payload
-    delete_auth_sig      TEXT NOT NULL,          -- creator signature over that JCS
-    tombstoned_at        TEXT DEFAULT NULL        -- set at 37b tombstone time
+    thread                   TEXT PRIMARY KEY,
+    creator_pubkey           TEXT NOT NULL,
+    created_at               TEXT NOT NULL,      -- RFC 3339 UTC
+    ttl_seconds              INTEGER NOT NULL,
+    tombstone_entry_content  BLOB NOT NULL,      -- JCS bytes of the tombstone Entry's content()
+    tombstone_entry_sig      TEXT NOT NULL,      -- creator signature over that JCS
+    tombstoned_at            TEXT DEFAULT NULL    -- set at seal ceremony
+);
+
+-- v0.4.38: sealed ephemeral STHs. Populated at seal time; the row
+-- outlives the underlying ephemeral entries (which are deleted). Any
+-- member who kept a copy of an entry can prove it was in the tree by
+-- reconstructing the leaf and running verify_inclusion_ephemeral
+-- against this STH.
+CREATE TABLE IF NOT EXISTS ephemeral_final_sths (
+    thread          TEXT PRIMARY KEY,
+    tree_size       INTEGER NOT NULL,
+    root_hash       TEXT NOT NULL,
+    prev_sth_hash   TEXT NOT NULL,
+    timestamp       TEXT NOT NULL,
+    hub_key         TEXT NOT NULL,
+    sig             TEXT NOT NULL
 );
 """
 
@@ -298,12 +316,13 @@ class EventStore:
     # ---- ephemeral registry (v0.4.37) ----------------------------------
     def open_ephemeral(
         self, *, thread: str, creator_pubkey: str, created_at: str,
-        ttl_seconds: int, delete_auth_content: bytes, delete_auth_sig: str,
+        ttl_seconds: int, tombstone_entry_content: bytes,
+        tombstone_entry_sig: str,
     ) -> None:
         """Register a thread as ephemeral. Rejects re-opening an existing
         thread — a name in `entries` (permanent) OR in `ephemeral_threads`
         cannot be re-typed. Callers are expected to have verified the
-        delete_auth signature before this call."""
+        tombstone entry's signature before this call."""
         row = self._conn.execute(
             "SELECT 1 FROM ephemeral_threads WHERE thread=? LIMIT 1", (thread,),
         ).fetchone()
@@ -319,10 +338,10 @@ class EventStore:
         self._conn.execute(
             "INSERT INTO ephemeral_threads"
             " (thread, creator_pubkey, created_at, ttl_seconds,"
-            "  delete_auth_content, delete_auth_sig)"
+            "  tombstone_entry_content, tombstone_entry_sig)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (thread, creator_pubkey, created_at, ttl_seconds,
-             delete_auth_content, delete_auth_sig),
+             tombstone_entry_content, tombstone_entry_sig),
         )
 
     def is_ephemeral(self, thread: str) -> bool:
@@ -338,10 +357,10 @@ class EventStore:
     def get_ephemeral(self, thread: str) -> Optional[dict]:
         """Full ephemeral thread record, or None. Includes tombstoned_at
         (nullable). Used by the API layer for the /threads listing +
-        TTL expiration checks in 37b."""
+        the auto-seal loop's TTL check."""
         row = self._conn.execute(
             "SELECT thread, creator_pubkey, created_at, ttl_seconds,"
-            "  delete_auth_content, delete_auth_sig, tombstoned_at"
+            "  tombstone_entry_content, tombstone_entry_sig, tombstoned_at"
             " FROM ephemeral_threads WHERE thread=?",
             (thread,),
         ).fetchone()
@@ -352,8 +371,8 @@ class EventStore:
             "creator_pubkey": row[1],
             "created_at": row[2],
             "ttl_seconds": int(row[3]),
-            "delete_auth_content": row[4],
-            "delete_auth_sig": row[5],
+            "tombstone_entry_content": row[4],
+            "tombstone_entry_sig": row[5],
             "tombstoned_at": row[6],
         }
 
@@ -363,7 +382,7 @@ class EventStore:
         live thread's chain restored before it can accept new entries."""
         rows = self._conn.execute(
             "SELECT thread, creator_pubkey, created_at, ttl_seconds,"
-            "  delete_auth_content, delete_auth_sig, tombstoned_at"
+            "  tombstone_entry_content, tombstone_entry_sig, tombstoned_at"
             " FROM ephemeral_threads",
         ).fetchall()
         return [
@@ -372,12 +391,77 @@ class EventStore:
                 "creator_pubkey": r[1],
                 "created_at": r[2],
                 "ttl_seconds": int(r[3]),
-                "delete_auth_content": r[4],
-                "delete_auth_sig": r[5],
+                "tombstone_entry_content": r[4],
+                "tombstone_entry_sig": r[5],
                 "tombstoned_at": r[6],
             }
             for r in rows
         ]
+
+    def mark_tombstoned(self, thread: str, tombstoned_at: str) -> None:
+        """Set tombstoned_at on the ephemeral_threads row. Idempotent
+        for retry-safety — a later timestamp does not overwrite an
+        earlier one (the first successful seal wins)."""
+        self._conn.execute(
+            "UPDATE ephemeral_threads SET tombstoned_at=?"
+            " WHERE thread=? AND tombstoned_at IS NULL",
+            (tombstoned_at, thread),
+        )
+
+    def save_final_sth(self, *, thread: str, tree_size: int, root_hash: str,
+                       prev_sth_hash: str, timestamp: str, hub_key: str,
+                       sig: str) -> None:
+        """Pin the sealed ephemeral STH. INSERT OR IGNORE so a retry after
+        a mid-flight error doesn't rewrite the sealed head — the first
+        write wins, matching mark_tombstoned's semantics."""
+        self._conn.execute(
+            "INSERT OR IGNORE INTO ephemeral_final_sths"
+            " (thread, tree_size, root_hash, prev_sth_hash, timestamp, hub_key, sig)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (thread, tree_size, root_hash, prev_sth_hash, timestamp, hub_key, sig),
+        )
+
+    def get_final_sth(self, thread: str) -> Optional[dict]:
+        """Sealed ephemeral STH for a tombstoned thread, or None. Any
+        member who kept a copy of an entry proves inclusion by
+        re-hashing the leaf and running verify_inclusion_ephemeral
+        against this STH."""
+        row = self._conn.execute(
+            "SELECT tree_size, root_hash, prev_sth_hash, timestamp, hub_key, sig"
+            " FROM ephemeral_final_sths WHERE thread=?",
+            (thread,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "thread": thread,
+            "tree_size": int(row[0]),
+            "root_hash": row[1],
+            "prev_sth_hash": row[2],
+            "timestamp": row[3],
+            "hub_key": row[4],
+            "sig": row[5],
+        }
+
+    def delete_ephemeral_entries(self, thread: str) -> int:
+        """Delete every entry row for a tombstoned ephemeral thread.
+        Returns the number of rows removed. The seal ceremony calls
+        this after mark_tombstoned + save_final_sth so a mid-flight
+        crash leaves either 'not tombstoned yet' or 'tombstoned +
+        sealed STH pinned, entries gone' — never a torn state where
+        the STH is missing but the leaves are gone."""
+        cur = self._conn.execute(
+            "DELETE FROM entries WHERE thread=?", (thread,),
+        )
+        # v0.4.37: iter_global excludes tombstoned threads from main-
+        # log rebuild via the WHERE clause that references
+        # ephemeral_threads. Once tombstoned_at is set the WHERE
+        # excludes only live ephemeral. Leaf deletion here removes the
+        # per-thread cache-warm seq material — reset it to 0 so a
+        # tombstone entry (published shortly after via the main log)
+        # lands at seq 0 in the now-empty thread.
+        self._next_seq.pop(thread, None)
+        return cur.rowcount
 
     def iter_ephemeral_entries(self, thread: str) -> list[tuple[str, int]]:
         """(entry_id, seq) for every accepted entry in an ephemeral thread,

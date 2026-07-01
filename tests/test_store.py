@@ -184,7 +184,7 @@ def test_open_ephemeral_registers_the_thread(store):
     store.open_ephemeral(
         thread="beach", creator_pubkey="alice_pub",
         created_at="2026-07-01T00:00:00Z", ttl_seconds=30 * 86400,
-        delete_auth_content=content, delete_auth_sig=sig,
+        tombstone_entry_content=content, tombstone_entry_sig=sig,
     )
     assert store.is_ephemeral("beach") is True
     rec = store.get_ephemeral("beach")
@@ -197,13 +197,13 @@ def test_open_ephemeral_rejects_re_open(store):
     content, sig = _mk_auth("beach")
     store.open_ephemeral(
         thread="beach", creator_pubkey="a", created_at="2026-07-01T00:00:00Z",
-        ttl_seconds=86400, delete_auth_content=content, delete_auth_sig=sig,
+        ttl_seconds=86400, tombstone_entry_content=content, tombstone_entry_sig=sig,
     )
     with pytest.raises(ValueError, match="already exists"):
         store.open_ephemeral(
             thread="beach", creator_pubkey="a",
             created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
-            delete_auth_content=content, delete_auth_sig=sig,
+            tombstone_entry_content=content, tombstone_entry_sig=sig,
         )
 
 
@@ -219,7 +219,7 @@ def test_open_ephemeral_rejects_existing_permanent_thread(store, keypair):
         store.open_ephemeral(
             thread="permanent-t", creator_pubkey="a",
             created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
-            delete_auth_content=content, delete_auth_sig=sig,
+            tombstone_entry_content=content, tombstone_entry_sig=sig,
         )
 
 
@@ -229,7 +229,7 @@ def test_all_ephemeral_lists_every_registered_thread(store):
         store.open_ephemeral(
             thread=name, creator_pubkey="a",
             created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
-            delete_auth_content=content, delete_auth_sig=sig,
+            tombstone_entry_content=content, tombstone_entry_sig=sig,
         )
     listed = {r["thread"] for r in store.all_ephemeral()}
     assert listed == {"beach", "lake", "trail"}
@@ -247,7 +247,7 @@ def test_iter_global_excludes_ephemeral_thread_entries(store, keypair):
     store.open_ephemeral(
         thread="beach", creator_pubkey="a",
         created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
-        delete_auth_content=content, delete_auth_sig=sig,
+        tombstone_entry_content=content, tombstone_entry_sig=sig,
     )
     eph = _signed(priv, pub, thread="beach", body="in ephemeral thread")
     store.append(eph, store.next_seq(eph.thread))
@@ -264,7 +264,7 @@ def test_iter_ephemeral_entries_returns_only_that_threads_entries(store, keypair
         store.open_ephemeral(
             thread=name, creator_pubkey="a",
             created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
-            delete_auth_content=content, delete_auth_sig=sig,
+            tombstone_entry_content=content, tombstone_entry_sig=sig,
         )
     beach1 = _signed(priv, pub, thread="beach", body="b1")
     beach2 = _signed(priv, pub, thread="beach", body="b2")

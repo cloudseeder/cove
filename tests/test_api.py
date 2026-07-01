@@ -1885,38 +1885,60 @@ def test_startup_reconciles_in_memory_translog_with_on_disk_store(
             assert verify_inclusion(entry_id, seq, proof, sth) is True
 
 
-# ---- v0.4.37: POST /threads/ephemeral -----------------------------------
+# ---- v0.4.37 + v0.4.38: POST /threads/ephemeral -----------------------
 
-def _sign_delete_auth(*, priv: str, thread: str, ttl_seconds: int) -> tuple[dict, str]:
-    """Build + sign the delete_authorization payload the endpoint expects.
-    Returns (content_dict, hex_sig)."""
-    content = {
-        "kind": "delete_authorization",
+def _entry_json(ev: Entry) -> dict:
+    """Wire form for POST /entries. Mirrors the client's serializer for
+    the fields the hub expects. Kept local so this module stays
+    self-contained without importing from api._entry_from_dict."""
+    payload = ev.content()
+    payload["id"] = ev.id
+    payload["sig"] = ev.sig
+    return payload
+
+
+def _open_ephemeral_body(*, priv: str, pub: str, thread: str,
+                         ttl_seconds: int, valid_after: str | None = None,
+                         created_at: str | None = None) -> dict:
+    """Build a POST /threads/ephemeral body: {thread, ttl_seconds,
+    tombstone_entry: <signed Entry>}. `valid_after` defaults to a
+    timestamp ~TTL seconds from now so the server's ±60s tolerance
+    accepts it. `created_at` on the tombstone Entry can differ from
+    the hub's received created_at without breaking the flow (only
+    valid_after is verified against ttl_seconds)."""
+    from datetime import datetime, timedelta, timezone
+    now = datetime.now(timezone.utc)
+    if valid_after is None:
+        valid_after = (now + timedelta(seconds=ttl_seconds)).isoformat()
+    if created_at is None:
+        created_at = now.isoformat()
+    ts_ev = sign_entry(Entry(
+        thread=thread, author=pub, kind="tombstone",
+        created_at=created_at, body="",
+        tombstone_valid_after=valid_after,
+    ), priv)
+    return {
         "thread": thread,
         "ttl_seconds": ttl_seconds,
+        "tombstone_entry": _entry_json(ts_ev),
     }
-    sig = crypto.sign(priv, crypto.canonicalize(content))
-    return content, sig
 
 
 def test_post_threads_ephemeral_opens_the_thread(hub):
     thread = "beach-recital"
     ttl = 30 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
-    )
-    r = hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": sig},
-    })
+    r = hub["client"].post("/threads/ephemeral", json=_open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=ttl,
+    ))
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["thread"] == thread
     assert body["ttl_seconds"] == ttl
     assert body["creator_pubkey"] == hub["member_pub"]
+    assert isinstance(body["expires_at"], str)
     # Store row exists; log knows the thread.
     assert hub["store"].is_ephemeral(thread) is True
-    # The ephemeral log has the thread opened with tree_size 0.
     esth = hub["ephemeral_translog"].current_sth(thread)
     assert esth.tree_size == 0
     assert esth.thread == thread
@@ -1925,58 +1947,96 @@ def test_post_threads_ephemeral_opens_the_thread(hub):
 def test_post_threads_ephemeral_rejects_bad_signature(hub):
     thread = "trail"
     ttl = 7 * 86400
-    content, _ = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    body = _open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=ttl,
     )
-    r = hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": "00" * 64},
-    })
+    # Tamper the sig after signing.
+    body["tombstone_entry"]["sig"] = "00" * 64
+    r = hub["client"].post("/threads/ephemeral", json=body)
     assert r.status_code == 400
     assert "signature" in r.json()["reason"]
     assert hub["store"].is_ephemeral(thread) is False
 
 
-def test_post_threads_ephemeral_rejects_content_mismatch(hub):
-    """Bait-and-switch: caller signs one thread name but claims another."""
-    real_thread = "trail"
-    ttl = 7 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=real_thread, ttl_seconds=ttl,
+def test_post_threads_ephemeral_rejects_wrong_author(hub):
+    """The tombstone entry's author must equal the calling session so a
+    caller can't submit someone else's pre-signed authorization."""
+    other_priv, other_pub = crypto.generate_keypair()
+    body = _open_ephemeral_body(
+        priv=other_priv, pub=other_pub,
+        thread="beach", ttl_seconds=30 * 86400,
     )
+    r = hub["client"].post("/threads/ephemeral", json=body)
+    assert r.status_code == 400
+    assert "author" in r.json()["reason"]
+
+
+def test_post_threads_ephemeral_rejects_wrong_kind(hub):
+    """A signed 'post' entry is not a tombstone authorization; refuse."""
+    ev = sign_entry(Entry(
+        thread="beach", author=hub["member_pub"], kind="post",
+        created_at="2026-07-01T00:00:00Z", body="not a tombstone",
+    ), hub["member_priv"])
     r = hub["client"].post("/threads/ephemeral", json={
-        "thread": "different-thread", "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": sig},
+        "thread": "beach", "ttl_seconds": 30 * 86400,
+        "tombstone_entry": _entry_json(ev),
     })
     assert r.status_code == 400
-    assert "does not match" in r.json()["reason"]
+    assert "'tombstone'" in r.json()["reason"]
+
+
+def test_post_threads_ephemeral_rejects_thread_mismatch(hub):
+    """Bait-and-switch: signed tombstone entry names one thread, request
+    body claims another. Refuse."""
+    body = _open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="trail", ttl_seconds=30 * 86400,
+    )
+    body["thread"] = "beach"  # mismatch
+    r = hub["client"].post("/threads/ephemeral", json=body)
+    assert r.status_code == 400
+    assert "thread" in r.json()["reason"]
 
 
 def test_post_threads_ephemeral_rejects_out_of_range_ttl(hub):
-    """TTL must be within [ephemeral_ttl_min_seconds, ephemeral_ttl_max_seconds]."""
-    thread = "lake"
-    bad_ttl = 10  # way below the 1-day floor
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=bad_ttl,
+    body = _open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="lake", ttl_seconds=10,  # below the 1d floor
     )
-    r = hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": bad_ttl,
-        "delete_authorization": {"content": content, "sig": sig},
-    })
+    r = hub["client"].post("/threads/ephemeral", json=body)
     assert r.status_code == 400
     assert "ttl_seconds" in r.json()["reason"]
+
+
+def test_post_threads_ephemeral_rejects_valid_after_skew(hub):
+    """valid_after must match created_at + ttl_seconds within ±60s of
+    the hub's clock. A pre-signed authorization for a wildly wrong
+    horizon can't be honored — the stored authorization must actually
+    authorize deletion at the TTL the caller is asking us to enforce."""
+    # Sign an entry with valid_after 10 days from now but request 30d TTL.
+    from datetime import datetime, timedelta, timezone
+    wrong_va = (
+        datetime.now(timezone.utc) + timedelta(days=10)
+    ).isoformat()
+    body = _open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="beach", ttl_seconds=30 * 86400, valid_after=wrong_va,
+    )
+    r = hub["client"].post("/threads/ephemeral", json=body)
+    assert r.status_code == 400
+    assert "skew" in r.json()["reason"]
 
 
 def test_post_threads_ephemeral_rejects_duplicate(hub):
     thread = "beach"
     ttl = 30 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    body = _open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=ttl,
     )
-    body = {"thread": thread, "ttl_seconds": ttl,
-            "delete_authorization": {"content": content, "sig": sig}}
     r1 = hub["client"].post("/threads/ephemeral", json=body)
-    assert r1.status_code == 200
+    assert r1.status_code == 200, r1.text
     r2 = hub["client"].post("/threads/ephemeral", json=body)
     assert r2.status_code == 409
     assert "already" in r2.json()["reason"]
@@ -1987,52 +2047,26 @@ def test_ephemeral_entries_land_only_in_the_per_thread_log(hub):
     STH doesn't see it and the per-thread STH does."""
     thread = "beach"
     ttl = 30 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
-    )
-    hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": sig},
-    })
-
+    hub["client"].post("/threads/ephemeral", json=_open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=ttl,
+    ))
     ev = sign_entry(Entry(
         thread=thread, author=hub["member_pub"], kind="post",
         created_at="2026-07-01T00:00:00Z", body="hey",
     ), hub["member_priv"])
     r = hub["client"].post("/entries", json=_entry_json(ev))
     assert r.status_code == 200, r.text
-
-    # Main log: still empty (no permanent entries in this test).
-    main_sth = hub["translog"].current_sth()
-    assert main_sth.tree_size == 0
-    # Ephemeral log: has our leaf.
-    eph_sth = hub["ephemeral_translog"].current_sth(thread)
-    assert eph_sth.tree_size == 1
-
-
-def _entry_json(ev: Entry) -> dict:
-    """Wire form for POST /entries. Mirrors the client's serializer for
-    the fields the hub expects. Kept local here so this test module stays
-    self-contained without importing from api._entry_from_dict."""
-    from cove import crypto as _c
-    payload = ev.content()
-    payload["id"] = ev.id
-    payload["sig"] = ev.sig
-    return payload
+    assert hub["translog"].current_sth().tree_size == 0
+    assert hub["ephemeral_translog"].current_sth(thread).tree_size == 1
 
 
 def test_ephemeral_notice_kind_rejected_via_pipeline(hub):
-    """Governance kinds must be refused when the thread is ephemeral.
-    Verified end-to-end through the API so the wire error is loud."""
     thread = "beach"
-    ttl = 30 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
-    )
-    hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": sig},
-    })
+    hub["client"].post("/threads/ephemeral", json=_open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=30 * 86400,
+    ))
     bad = sign_entry(Entry(
         thread=thread, author=hub["member_pub"], kind="notice",
         created_at="2026-07-01T00:00:00Z", body="this should not land",
@@ -2043,19 +2077,12 @@ def test_ephemeral_notice_kind_rejected_via_pipeline(hub):
 
 
 def test_sth_with_thread_param_returns_ephemeral_sth(hub):
-    """?thread=T returns the per-thread ephemeral STH when T is ephemeral —
-    signed with the hub key AND thread-bound so cross-tree substitution
-    fails."""
     from cove.translog_ephemeral import EphemeralSTH, verify_sth_ephemeral
     thread = "beach"
-    ttl = 30 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
-    )
-    hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": sig},
-    })
+    hub["client"].post("/threads/ephemeral", json=_open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=30 * 86400,
+    ))
     r = hub["client"].get("/sth", params={"thread": thread})
     assert r.status_code == 200
     body = r.json()
@@ -2066,40 +2093,27 @@ def test_sth_with_thread_param_returns_ephemeral_sth(hub):
 
 
 def test_sth_without_thread_param_returns_main_sth(hub):
-    """Backwards-compat: /sth with no query param returns the main-log
-    STH exactly as before v0.4.37."""
     r = hub["client"].get("/sth")
     assert r.status_code == 200
-    assert "thread" not in r.json()  # main STH has no thread binding
+    assert "thread" not in r.json()
 
 
 def test_proof_inclusion_for_ephemeral_entry_routes_to_per_thread_tree(hub):
-    """An entry authored in an ephemeral thread gets a proof + STH from
-    the per-thread tree, not the main tree. Client detects this via
-    sth.thread being present."""
     from cove.translog_ephemeral import (
         EphemeralInclusionProof, EphemeralSTH, verify_inclusion_ephemeral,
     )
     thread = "beach"
-    ttl = 30 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
-    )
-    hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": sig},
-    })
+    hub["client"].post("/threads/ephemeral", json=_open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=30 * 86400,
+    ))
     ev = sign_entry(Entry(
         thread=thread, author=hub["member_pub"], kind="post",
         created_at="2026-07-01T00:00:00Z", body="hey",
     ), hub["member_priv"])
-    post_resp = hub["client"].post("/entries", json=_entry_json(ev))
-    assert post_resp.status_code == 200
-    seq = post_resp.json()["seq"]
+    seq = hub["client"].post("/entries", json=_entry_json(ev)).json()["seq"]
 
-    r = hub["client"].get("/proof/inclusion", params={"entry": ev.id})
-    assert r.status_code == 200
-    body = r.json()
+    body = hub["client"].get("/proof/inclusion", params={"entry": ev.id}).json()
     sth = EphemeralSTH(**body.pop("sth"))
     proof = EphemeralInclusionProof(**body)
     assert sth.thread == thread
@@ -2108,48 +2122,33 @@ def test_proof_inclusion_for_ephemeral_entry_routes_to_per_thread_tree(hub):
 
 
 def test_proof_inclusion_still_works_for_permanent_entries(hub):
-    """Regression: after adding ephemeral routing, permanent entries
-    keep their old proof + STH shape (no `thread` field on main STH)."""
-    from cove.translog import STH, verify_inclusion
+    from cove.translog import STH, InclusionProof, verify_inclusion
     ev = sign_entry(Entry(
         thread="permanent-t", author=hub["member_pub"], kind="post",
         created_at="2026-07-01T00:00:00Z", body="hello",
     ), hub["member_priv"])
-    post_resp = hub["client"].post("/entries", json=_entry_json(ev))
-    assert post_resp.status_code == 200
-    seq = post_resp.json()["seq"]
+    seq = hub["client"].post("/entries", json=_entry_json(ev)).json()["seq"]
 
     body = hub["client"].get("/proof/inclusion", params={"entry": ev.id}).json()
     sth_body = body.pop("sth")
     assert "thread" not in sth_body
     sth = STH(**sth_body)
-    from cove.translog import InclusionProof
     proof = InclusionProof(**body)
     assert verify_inclusion(ev.id, seq, proof, sth) is True
 
 
 def test_ledger_works_for_ephemeral_entries_unchanged(hub):
-    """/ledger derives from the receipt entries fed to Ledger — which are
-    the same regardless of thread type. No routing change needed.
-    Just verifies the endpoint returns a plausible partition for an
-    ephemeral entry."""
     thread = "beach"
-    ttl = 30 * 86400
-    content, sig = _sign_delete_auth(
-        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
-    )
-    hub["client"].post("/threads/ephemeral", json={
-        "thread": thread, "ttl_seconds": ttl,
-        "delete_authorization": {"content": content, "sig": sig},
-    })
+    hub["client"].post("/threads/ephemeral", json=_open_ephemeral_body(
+        priv=hub["member_priv"], pub=hub["member_pub"],
+        thread=thread, ttl_seconds=30 * 86400,
+    ))
     ev = sign_entry(Entry(
         thread=thread, author=hub["member_pub"], kind="post",
         created_at="2026-07-01T00:00:00Z", body="hey",
     ), hub["member_priv"])
     hub["client"].post("/entries", json=_entry_json(ev))
-
     r = hub["client"].get("/ledger", params={"entry": ev.id})
     assert r.status_code == 200
-    body = r.json()
     # Author short-circuit (v0.4.36) puts the poster in acked-by-construction.
-    assert hub["member_pub"] in body["acked"]
+    assert hub["member_pub"] in r.json()["acked"]

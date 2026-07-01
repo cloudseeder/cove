@@ -26,7 +26,7 @@ from . import crypto
 from .auth import AuthError, AuthService
 from .blobs import BlobStore
 from .config import DEFAULT, HubConfig
-from .entry import Audience, BlobRef, Entry, Receipt
+from .entry import Audience, BlobRef, Entry, Receipt, verify_entry
 from .identity import (
     Attestation, Directory, DirectoryManifest,
     InvalidManifestSignatureError, RevocationDroppedError,
@@ -393,18 +393,19 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             })
         return {"threads": rows}
 
-    # ---- POST /threads/ephemeral (v0.4.37) -----------------------------
-    # Register a thread as ephemeral with a TTL. The caller pre-signs a
-    # delete_authorization ({kind, thread, ttl_seconds}); the hub verifies
-    # it against the caller's pubkey and persists it. At TTL expiration
-    # (v0.4.37b) the hub uses the stored authorization as the member-signed
-    # half of the tombstone entry — the hub itself holds no member keys
-    # and cannot fabricate one.
+    # ---- POST /threads/ephemeral (v0.4.37 / v0.4.38 shape) --------------
+    # Register a thread as ephemeral with a TTL. The caller submits a
+    # PRE-SIGNED tombstone Entry (kind='tombstone', author=caller,
+    # thread=<T>, tombstone_valid_after=<created_at + ttl>). The hub
+    # verifies the entry, records it verbatim, and holds it for the
+    # auto-seal path. At TTL expiration the hub uses this stored entry
+    # as the member-signed tombstone — the hub itself holds no member
+    # keys and cannot fabricate one.
     #
-    # No governance kinds are permitted in the resulting thread (pipeline
-    # enforces this structurally). Cross-tree substitution is prevented
-    # at the STH layer by binding the thread name into the ephemeral
-    # STH signing payload (translog_ephemeral.EphemeralSTH).
+    # No governance kinds are permitted in the resulting thread
+    # (pipeline enforces this structurally). Cross-tree substitution
+    # is prevented at the STH layer by binding the thread name into
+    # the ephemeral STH signing payload.
     @api.post("/threads/ephemeral")
     def post_threads_ephemeral(body: dict = Body(...),
                                caller: str = Depends(require_session)):
@@ -413,9 +414,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
 
         thread = body.get("thread")
         ttl_seconds = body.get("ttl_seconds")
-        auth_block = body.get("delete_authorization") or {}
-        auth_content = auth_block.get("content")
-        auth_sig = auth_block.get("sig")
+        tombstone_body = body.get("tombstone_entry")
 
         if not isinstance(thread, str) or not thread:
             return _err(400, error="bad_request", reason="thread required")
@@ -432,42 +431,73 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                     f"{config.ephemeral_ttl_max_seconds}]"
                 ),
             )
-        if not isinstance(auth_content, dict) or not isinstance(auth_sig, str):
+        if not isinstance(tombstone_body, dict):
             return _err(
-                400, error="bad_request",
-                reason="delete_authorization.{content,sig} required",
+                400, error="bad_request", reason="tombstone_entry required",
             )
-        # The signed content must exactly match what the request declares.
-        # Preventing a bait-and-switch where the client signs one thread /
-        # TTL and the hub records another.
-        expected = {
-            "kind": "delete_authorization",
-            "thread": thread,
-            "ttl_seconds": ttl_seconds,
-        }
-        if auth_content != expected:
+        try:
+            ts_ev = _entry_from_dict(tombstone_body)
+        except (TypeError, ValueError) as e:
+            return _err(400, error="bad_request", reason=f"tombstone_entry: {e}")
+        if ts_ev.kind != "tombstone":
             return _err(
                 400, error="bad_request",
-                reason="delete_authorization.content does not match request",
+                reason="tombstone_entry.kind must be 'tombstone'",
             )
-        if not crypto.verify(
-            caller, auth_sig, crypto.canonicalize(expected),
-        ):
+        if ts_ev.author != caller:
             return _err(
                 400, error="bad_request",
-                reason="delete_authorization signature does not verify",
+                reason="tombstone_entry.author must equal caller",
+            )
+        if ts_ev.thread != thread:
+            return _err(
+                400, error="bad_request",
+                reason="tombstone_entry.thread must equal thread",
+            )
+        if not verify_entry(ts_ev):
+            return _err(
+                400, error="bad_request",
+                reason="tombstone_entry signature does not verify",
+            )
+        if not isinstance(ts_ev.tombstone_valid_after, str):
+            return _err(
+                400, error="bad_request",
+                reason="tombstone_entry.tombstone_valid_after required (RFC3339)",
+            )
+        # Bind the pre-signed valid_after to the requested TTL: the
+        # entry the hub holds must actually authorize deletion at the
+        # TTL horizon, not earlier or later. Parse both with the same
+        # helper so clock-format ambiguity can't sneak through.
+        try:
+            created_dt = _now_utc()
+            expected_valid_after = _add_seconds_iso(created_dt, ttl_seconds)
+            declared_valid_after = _parse_iso(ts_ev.tombstone_valid_after)
+        except ValueError as e:
+            return _err(400, error="bad_request", reason=str(e))
+        # Allow ±60s tolerance for round-trip clock skew between the
+        # client's sign time and the hub's arrival time. Beyond that
+        # the pre-signed authorization no longer represents the TTL
+        # the caller is asking us to enforce.
+        skew = abs((declared_valid_after - _parse_iso(expected_valid_after)).total_seconds())
+        if skew > 60:
+            return _err(
+                400, error="bad_request",
+                reason=(
+                    f"tombstone_valid_after {ts_ev.tombstone_valid_after} does not match "
+                    f"created_at + ttl_seconds ({expected_valid_after}); "
+                    f"skew {skew:.0f}s > 60s tolerance"
+                ),
             )
 
-        from datetime import datetime, timezone
-        created_at = datetime.now(timezone.utc).isoformat()
+        created_at = created_dt.isoformat()
         try:
             store.open_ephemeral(
                 thread=thread,
                 creator_pubkey=caller,
                 created_at=created_at,
                 ttl_seconds=ttl_seconds,
-                delete_auth_content=crypto.canonicalize(expected),
-                delete_auth_sig=auth_sig,
+                tombstone_entry_content=crypto.canonicalize(ts_ev.content()),
+                tombstone_entry_sig=ts_ev.sig,
             )
         except ValueError as e:
             return _err(409, error="conflict", reason=str(e))
@@ -478,6 +508,7 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             "creator_pubkey": caller,
             "created_at": created_at,
             "ttl_seconds": ttl_seconds,
+            "expires_at": expected_valid_after,
         }
 
     # ---- GET /inbox (v0.4.19) ------------------------------------------
@@ -1093,6 +1124,28 @@ _manifest_to_dict = manifest_to_dict
 _manifest_from_dict = manifest_from_dict
 
 
+
+
+# v0.4.38: time helpers for the ephemeral-thread + tombstone flows.
+# Kept module-level so tests can patch _now_utc for deterministic
+# TTL scenarios without stubbing the whole datetime module.
+def _now_utc():
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc)
+
+
+def _parse_iso(s: str):
+    """Parse an RFC3339 / ISO-8601 UTC timestamp. Accepts both '+00:00'
+    and 'Z' suffix; returns a timezone-aware datetime."""
+    from datetime import datetime
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    return datetime.fromisoformat(s)
+
+
+def _add_seconds_iso(dt, seconds: int) -> str:
+    from datetime import timedelta
+    return (dt + timedelta(seconds=seconds)).isoformat()
 
 
 def _err(status: int, **body) -> JSONResponse:
