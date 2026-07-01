@@ -2040,3 +2040,116 @@ def test_ephemeral_notice_kind_rejected_via_pipeline(hub):
     r = hub["client"].post("/entries", json=_entry_json(bad))
     assert r.status_code == 400
     assert "not permitted" in r.text
+
+
+def test_sth_with_thread_param_returns_ephemeral_sth(hub):
+    """?thread=T returns the per-thread ephemeral STH when T is ephemeral —
+    signed with the hub key AND thread-bound so cross-tree substitution
+    fails."""
+    from cove.translog_ephemeral import EphemeralSTH, verify_sth_ephemeral
+    thread = "beach"
+    ttl = 30 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+    r = hub["client"].get("/sth", params={"thread": thread})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["thread"] == thread
+    assert body["tree_size"] == 0
+    esth = EphemeralSTH(**body)
+    assert verify_sth_ephemeral(esth) is True
+
+
+def test_sth_without_thread_param_returns_main_sth(hub):
+    """Backwards-compat: /sth with no query param returns the main-log
+    STH exactly as before v0.4.37."""
+    r = hub["client"].get("/sth")
+    assert r.status_code == 200
+    assert "thread" not in r.json()  # main STH has no thread binding
+
+
+def test_proof_inclusion_for_ephemeral_entry_routes_to_per_thread_tree(hub):
+    """An entry authored in an ephemeral thread gets a proof + STH from
+    the per-thread tree, not the main tree. Client detects this via
+    sth.thread being present."""
+    from cove.translog_ephemeral import (
+        EphemeralInclusionProof, EphemeralSTH, verify_inclusion_ephemeral,
+    )
+    thread = "beach"
+    ttl = 30 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+    ev = sign_entry(Entry(
+        thread=thread, author=hub["member_pub"], kind="post",
+        created_at="2026-07-01T00:00:00Z", body="hey",
+    ), hub["member_priv"])
+    post_resp = hub["client"].post("/entries", json=_entry_json(ev))
+    assert post_resp.status_code == 200
+    seq = post_resp.json()["seq"]
+
+    r = hub["client"].get("/proof/inclusion", params={"entry": ev.id})
+    assert r.status_code == 200
+    body = r.json()
+    sth = EphemeralSTH(**body.pop("sth"))
+    proof = EphemeralInclusionProof(**body)
+    assert sth.thread == thread
+    assert proof.thread == thread
+    assert verify_inclusion_ephemeral(thread, ev.id, seq, proof, sth) is True
+
+
+def test_proof_inclusion_still_works_for_permanent_entries(hub):
+    """Regression: after adding ephemeral routing, permanent entries
+    keep their old proof + STH shape (no `thread` field on main STH)."""
+    from cove.translog import STH, verify_inclusion
+    ev = sign_entry(Entry(
+        thread="permanent-t", author=hub["member_pub"], kind="post",
+        created_at="2026-07-01T00:00:00Z", body="hello",
+    ), hub["member_priv"])
+    post_resp = hub["client"].post("/entries", json=_entry_json(ev))
+    assert post_resp.status_code == 200
+    seq = post_resp.json()["seq"]
+
+    body = hub["client"].get("/proof/inclusion", params={"entry": ev.id}).json()
+    sth_body = body.pop("sth")
+    assert "thread" not in sth_body
+    sth = STH(**sth_body)
+    from cove.translog import InclusionProof
+    proof = InclusionProof(**body)
+    assert verify_inclusion(ev.id, seq, proof, sth) is True
+
+
+def test_ledger_works_for_ephemeral_entries_unchanged(hub):
+    """/ledger derives from the receipt entries fed to Ledger — which are
+    the same regardless of thread type. No routing change needed.
+    Just verifies the endpoint returns a plausible partition for an
+    ephemeral entry."""
+    thread = "beach"
+    ttl = 30 * 86400
+    content, sig = _sign_delete_auth(
+        priv=hub["member_priv"], thread=thread, ttl_seconds=ttl,
+    )
+    hub["client"].post("/threads/ephemeral", json={
+        "thread": thread, "ttl_seconds": ttl,
+        "delete_authorization": {"content": content, "sig": sig},
+    })
+    ev = sign_entry(Entry(
+        thread=thread, author=hub["member_pub"], kind="post",
+        created_at="2026-07-01T00:00:00Z", body="hey",
+    ), hub["member_priv"])
+    hub["client"].post("/entries", json=_entry_json(ev))
+
+    r = hub["client"].get("/ledger", params={"entry": ev.id})
+    assert r.status_code == 200
+    body = r.json()
+    # Author short-circuit (v0.4.36) puts the poster in acked-by-construction.
+    assert hub["member_pub"] in body["acked"]

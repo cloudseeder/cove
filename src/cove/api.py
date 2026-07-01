@@ -557,13 +557,38 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         return {"thread": thread, "entries": rows}
 
     # ---- GET /sth (§6.4) ------------------------------------------------
+    # v0.4.37: `?thread=T` selects the per-thread ephemeral STH when T is
+    # an ephemeral thread; without the parameter (or when T is permanent)
+    # the main-log STH is returned. The two shapes differ only in that
+    # the ephemeral STH carries a `thread` field bound into its signature.
     @api.get("/sth")
-    def get_sth() -> dict:
+    def get_sth(thread: Optional[str] = Query(None)) -> dict:
+        if thread is not None and store.is_ephemeral(thread):
+            if ephemeral_translog is None:
+                return _err(503, error="no_ephemeral_log")
+            try:
+                return asdict(ephemeral_translog.current_sth(thread))
+            except KeyError:
+                return _err(404, error="not_found", thread=thread)
         return asdict(translog.current_sth())
 
     # ---- GET /proof/inclusion (§6.4.2) ----------------------------------
+    # v0.4.37: when the entry is in an ephemeral thread, route the proof
+    # to that thread's tree. Response shape stays the same (proof + sth
+    # bundle) — clients dispatch on sth.thread being present.
     @api.get("/proof/inclusion")
     def get_inclusion(entry: str = Query(...)):
+        target = store.get(entry)
+        if target is not None and store.is_ephemeral(target.thread):
+            if ephemeral_translog is None:
+                return _err(503, error="no_ephemeral_log")
+            try:
+                proof, sth = ephemeral_translog.inclusion_proof_and_sth(
+                    target.thread, entry,
+                )
+                return {**asdict(proof), "sth": asdict(sth)}
+            except KeyError:
+                return _err(404, error="not_found", entry=entry)
         try:
             # v0.4.31: bundle the proof + STH from a single atomic
             # snapshot of the translog. Eliminates the client-side
@@ -576,10 +601,19 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             return _err(404, error="not_found", entry=entry)
 
     # ---- GET /proof/consistency (§6.4.2) --------------------------------
+    # v0.4.37: `?thread=T` for ephemeral consistency between two STHs of
+    # the same per-thread tree. Without the parameter, the main log.
     @api.get("/proof/consistency")
     def get_consistency(from_size: int = Query(..., alias="from_size"),
-                        to_size: int = Query(..., alias="to_size")):
+                        to_size: int = Query(..., alias="to_size"),
+                        thread: Optional[str] = Query(None)):
         try:
+            if thread is not None and store.is_ephemeral(thread):
+                if ephemeral_translog is None:
+                    return _err(503, error="no_ephemeral_log")
+                return asdict(ephemeral_translog.consistency_proof(
+                    thread, from_size, to_size,
+                ))
             return asdict(translog.consistency_proof(from_size, to_size))
         except ValueError as e:
             return _err(400, error="bad_sizes", detail=str(e))
