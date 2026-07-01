@@ -29,6 +29,26 @@ CREATE TABLE IF NOT EXISTS entries (
     UNIQUE(thread, seq)
 );
 CREATE INDEX IF NOT EXISTS idx_entries_thread_seq ON entries(thread, seq);
+
+-- v0.4.37: ephemeral thread registry. A thread appears here iff it was
+-- opened via POST /threads/ephemeral; anything not in this table is a
+-- permanent thread and follows the main tamper-evident log. Entries
+-- themselves still live in the `entries` table above — the routing
+-- decision is a lookup against this registry, not a column on the entry.
+--
+-- `delete_auth_content` + `delete_auth_sig` are the creator's pre-signed
+-- authorization for eventual deletion (§ ephemeral extension). Held so
+-- the tombstone path (v0.4.37b) can present a member-signed delete-
+-- authorization at TTL expiration without any live keypair on the hub.
+CREATE TABLE IF NOT EXISTS ephemeral_threads (
+    thread               TEXT PRIMARY KEY,
+    creator_pubkey       TEXT NOT NULL,
+    created_at           TEXT NOT NULL,          -- RFC 3339 UTC
+    ttl_seconds          INTEGER NOT NULL,
+    delete_auth_content  BLOB NOT NULL,          -- JCS bytes of the auth payload
+    delete_auth_sig      TEXT NOT NULL,          -- creator signature over that JCS
+    tombstoned_at        TEXT DEFAULT NULL        -- set at 37b tombstone time
+);
 """
 
 
@@ -275,16 +295,117 @@ class EventStore:
         ).fetchall()
         return [(_row_to_entry((r[0], r[1], r[2])), int(r[3])) for r in rows]
 
-    def iter_global(self) -> Iterable[tuple[str, int]]:
-        """(entry_id, seq) for every accepted entry, in GLOBAL acceptance order.
+    # ---- ephemeral registry (v0.4.37) ----------------------------------
+    def open_ephemeral(
+        self, *, thread: str, creator_pubkey: str, created_at: str,
+        ttl_seconds: int, delete_auth_content: bytes, delete_auth_sig: str,
+    ) -> None:
+        """Register a thread as ephemeral. Rejects re-opening an existing
+        thread — a name in `entries` (permanent) OR in `ephemeral_threads`
+        cannot be re-typed. Callers are expected to have verified the
+        delete_auth signature before this call."""
+        row = self._conn.execute(
+            "SELECT 1 FROM ephemeral_threads WHERE thread=? LIMIT 1", (thread,),
+        ).fetchone()
+        if row is not None:
+            raise ValueError(f"ephemeral thread {thread!r} already exists")
+        row = self._conn.execute(
+            "SELECT 1 FROM entries WHERE thread=? LIMIT 1", (thread,),
+        ).fetchone()
+        if row is not None:
+            raise ValueError(
+                f"thread {thread!r} already has permanent entries — cannot re-open as ephemeral",
+            )
+        self._conn.execute(
+            "INSERT INTO ephemeral_threads"
+            " (thread, creator_pubkey, created_at, ttl_seconds,"
+            "  delete_auth_content, delete_auth_sig)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (thread, creator_pubkey, created_at, ttl_seconds,
+             delete_auth_content, delete_auth_sig),
+        )
 
-        Drives translog rebuild (§9 integrity rule). SQLite's implicit rowid
-        is monotonic in insertion order, so ORDER BY rowid IS the acceptance
-        sequence — even across threads, even with thread-local seq resetting
-        to 0 each thread.
+    def is_ephemeral(self, thread: str) -> bool:
+        """True iff the thread was opened as ephemeral AND has not been
+        tombstoned. Used by the pipeline to route entries to the per-
+        thread translog."""
+        row = self._conn.execute(
+            "SELECT 1 FROM ephemeral_threads WHERE thread=? AND tombstoned_at IS NULL LIMIT 1",
+            (thread,),
+        ).fetchone()
+        return row is not None
+
+    def get_ephemeral(self, thread: str) -> Optional[dict]:
+        """Full ephemeral thread record, or None. Includes tombstoned_at
+        (nullable). Used by the API layer for the /threads listing +
+        TTL expiration checks in 37b."""
+        row = self._conn.execute(
+            "SELECT thread, creator_pubkey, created_at, ttl_seconds,"
+            "  delete_auth_content, delete_auth_sig, tombstoned_at"
+            " FROM ephemeral_threads WHERE thread=?",
+            (thread,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "thread": row[0],
+            "creator_pubkey": row[1],
+            "created_at": row[2],
+            "ttl_seconds": int(row[3]),
+            "delete_auth_content": row[4],
+            "delete_auth_sig": row[5],
+            "tombstoned_at": row[6],
+        }
+
+    def all_ephemeral(self) -> list[dict]:
+        """Every ephemeral thread row (tombstoned or live). Drives
+        EphemeralTransLog rebuild on startup — the pipeline needs each
+        live thread's chain restored before it can accept new entries."""
+        rows = self._conn.execute(
+            "SELECT thread, creator_pubkey, created_at, ttl_seconds,"
+            "  delete_auth_content, delete_auth_sig, tombstoned_at"
+            " FROM ephemeral_threads",
+        ).fetchall()
+        return [
+            {
+                "thread": r[0],
+                "creator_pubkey": r[1],
+                "created_at": r[2],
+                "ttl_seconds": int(r[3]),
+                "delete_auth_content": r[4],
+                "delete_auth_sig": r[5],
+                "tombstoned_at": r[6],
+            }
+            for r in rows
+        ]
+
+    def iter_ephemeral_entries(self, thread: str) -> list[tuple[str, int]]:
+        """(entry_id, seq) for every accepted entry in an ephemeral thread,
+        in seq order. Drives EphemeralTransLog.rebuild(thread, …) on startup."""
+        rows = self._conn.execute(
+            "SELECT id, seq FROM entries WHERE thread=? ORDER BY seq",
+            (thread,),
+        ).fetchall()
+        return [(r[0], int(r[1])) for r in rows]
+
+    def iter_global(self) -> Iterable[tuple[str, int]]:
+        """(entry_id, seq) for every accepted entry in a PERMANENT thread,
+        in GLOBAL acceptance order.
+
+        Drives main translog rebuild (§9 integrity rule). SQLite's implicit
+        rowid is monotonic in insertion order, so ORDER BY rowid IS the
+        acceptance sequence — even across threads, even with thread-local
+        seq resetting to 0 each thread.
+
+        v0.4.37: ephemeral-thread entries are excluded. Those live in the
+        per-thread ephemeral translog (see iter_ephemeral_entries) and
+        must not tangle the main tree — cross-tree substitution is
+        exactly what the per-thread STH binding is defending against.
         """
         rows = self._conn.execute(
-            "SELECT id, seq FROM entries ORDER BY rowid"
+            "SELECT id, seq FROM entries"
+            " WHERE thread NOT IN (SELECT thread FROM ephemeral_threads)"
+            " ORDER BY rowid"
         ).fetchall()
         return [(r[0], int(r[1])) for r in rows]
 

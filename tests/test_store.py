@@ -165,6 +165,118 @@ def test_since_at_high_water_is_empty(store, keypair):
     assert list(store.since("t1", 0)) == []
 
 
+# ---- ephemeral registry (v0.4.37) --------------------------------------
+
+def _mk_auth(thread: str, ttl: int = 30 * 24 * 3600) -> tuple[bytes, str]:
+    """A minimal delete-authorization pair for tests. The pipeline verifies
+    the sig against the creator's pubkey; the store just persists bytes."""
+    return (b'{"thread":"' + thread.encode() + b'","ttl":' + str(ttl).encode() + b'}',
+            "aa" * 32)
+
+
+def test_is_ephemeral_false_before_open(store):
+    assert store.is_ephemeral("beach") is False
+    assert store.get_ephemeral("beach") is None
+
+
+def test_open_ephemeral_registers_the_thread(store):
+    content, sig = _mk_auth("beach")
+    store.open_ephemeral(
+        thread="beach", creator_pubkey="alice_pub",
+        created_at="2026-07-01T00:00:00Z", ttl_seconds=30 * 86400,
+        delete_auth_content=content, delete_auth_sig=sig,
+    )
+    assert store.is_ephemeral("beach") is True
+    rec = store.get_ephemeral("beach")
+    assert rec["creator_pubkey"] == "alice_pub"
+    assert rec["ttl_seconds"] == 30 * 86400
+    assert rec["tombstoned_at"] is None
+
+
+def test_open_ephemeral_rejects_re_open(store):
+    content, sig = _mk_auth("beach")
+    store.open_ephemeral(
+        thread="beach", creator_pubkey="a", created_at="2026-07-01T00:00:00Z",
+        ttl_seconds=86400, delete_auth_content=content, delete_auth_sig=sig,
+    )
+    with pytest.raises(ValueError, match="already exists"):
+        store.open_ephemeral(
+            thread="beach", creator_pubkey="a",
+            created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
+            delete_auth_content=content, delete_auth_sig=sig,
+        )
+
+
+def test_open_ephemeral_rejects_existing_permanent_thread(store, keypair):
+    """A thread name that already has permanent entries can't be re-typed
+    as ephemeral — otherwise a hub could quietly move an accountable log
+    into the deletable tier."""
+    priv, pub = keypair
+    ev = _signed(priv, pub, thread="permanent-t", body="written already")
+    store.append(ev, store.next_seq(ev.thread))
+    content, sig = _mk_auth("permanent-t")
+    with pytest.raises(ValueError, match="permanent"):
+        store.open_ephemeral(
+            thread="permanent-t", creator_pubkey="a",
+            created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
+            delete_auth_content=content, delete_auth_sig=sig,
+        )
+
+
+def test_all_ephemeral_lists_every_registered_thread(store):
+    for name in ("beach", "lake", "trail"):
+        content, sig = _mk_auth(name)
+        store.open_ephemeral(
+            thread=name, creator_pubkey="a",
+            created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
+            delete_auth_content=content, delete_auth_sig=sig,
+        )
+    listed = {r["thread"] for r in store.all_ephemeral()}
+    assert listed == {"beach", "lake", "trail"}
+
+
+def test_iter_global_excludes_ephemeral_thread_entries(store, keypair):
+    """Main translog rebuild must not slurp ephemeral leaves. That would
+    put ephemeral entries in the main tree and break the cross-tree
+    binding EphemeralSTH defends against."""
+    priv, pub = keypair
+    perm = _signed(priv, pub, thread="perm", body="in permanent thread")
+    store.append(perm, store.next_seq(perm.thread))
+
+    content, sig = _mk_auth("beach")
+    store.open_ephemeral(
+        thread="beach", creator_pubkey="a",
+        created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
+        delete_auth_content=content, delete_auth_sig=sig,
+    )
+    eph = _signed(priv, pub, thread="beach", body="in ephemeral thread")
+    store.append(eph, store.next_seq(eph.thread))
+
+    globals_ = list(store.iter_global())
+    assert (perm.id, 0) in globals_
+    assert (eph.id, 0) not in globals_
+
+
+def test_iter_ephemeral_entries_returns_only_that_threads_entries(store, keypair):
+    priv, pub = keypair
+    for name in ("beach", "lake"):
+        content, sig = _mk_auth(name)
+        store.open_ephemeral(
+            thread=name, creator_pubkey="a",
+            created_at="2026-07-01T00:00:00Z", ttl_seconds=86400,
+            delete_auth_content=content, delete_auth_sig=sig,
+        )
+    beach1 = _signed(priv, pub, thread="beach", body="b1")
+    beach2 = _signed(priv, pub, thread="beach", body="b2")
+    lake1  = _signed(priv, pub, thread="lake",  body="l1")
+    for ev in (beach1, beach2, lake1):
+        store.append(ev, store.next_seq(ev.thread))
+
+    got = store.iter_ephemeral_entries("beach")
+    assert got == [(beach1.id, 0), (beach2.id, 1)]
+    assert store.iter_ephemeral_entries("lake") == [(lake1.id, 0)]
+
+
 # ---- persistence --------------------------------------------------------
 
 def test_state_survives_reopen(tmp_path, keypair):
