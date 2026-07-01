@@ -4,6 +4,20 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.39] — 2026-07-01
+
+### Fixed
+- Delivery indicator on a group message now lists only the audience,
+  not every attested member. `/ledger` scopes the acked/not_acked
+  partition to the thread's audience when one is set; public threads
+  still enumerate the full directory. Prevents the perpetual
+  "not yet" list for members who were never in the group to begin
+  with.
+- Sidebar "Start a new thread…" input now routes through the shared
+  new-thread dialog (with the name pre-filled) so the sidebar entry
+  point offers the same audience + retention controls as the Inbox
+  button. Previously it created a name-only public thread.
+
 ## [0.4.38] — 2026-07-01
 
 **Ephemeral threads — deletion + client UI.** Builds on the 37a
@@ -144,6 +158,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.39]: https://github.com/cloudseeder/cove/releases/tag/v0.4.39
 [0.4.38]: https://github.com/cloudseeder/cove/releases/tag/v0.4.38
 [0.4.37]: https://github.com/cloudseeder/cove/releases/tag/v0.4.37
 [0.4.36]: https://github.com/cloudseeder/cove/releases/tag/v0.4.36

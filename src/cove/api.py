@@ -976,7 +976,18 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         seq = store.seq_of(entry) if target is not None else None
         if target is None or seq is None:
             return _err(404, error="not_found", entry=entry)
-        members = directory.attested_keys() if directory is not None else []
+        # v0.4.39: for audience-scoped threads, partition ONLY over the
+        # audience members. The delivery indicator on a group message
+        # should list "did the 4 people in this group get it?", not
+        # "did the 4 in the group + 15 uninvolved members get it?" —
+        # the latter forever shows every non-audience member as
+        # "not yet" because they were never in the audience to begin
+        # with. Public threads still enumerate the full directory.
+        aud = store.thread_audience(target.thread)
+        if aud is not None:
+            members = list(aud.pubkeys)
+        else:
+            members = directory.attested_keys() if directory is not None else []
         return ledger.status(
             target.thread, required_seq=seq, members=members,
             author=target.author,

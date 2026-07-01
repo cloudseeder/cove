@@ -1802,6 +1802,46 @@ def test_post_entries_rejects_receipt_kind_without_payload(hub):
     assert "receipt" in r.json()["reason"].lower()
 
 
+def test_ledger_scopes_to_audience_on_private_threads(hub):
+    """v0.4.39: on an audience-scoped thread, /ledger partitions ONLY
+    the audience members — the delivery indicator on a group message
+    should show "did the 4 people in this group get it?", not "did the
+    4 in the group + 15 uninvolved members." Public threads keep the
+    full-directory partition."""
+    # Attest two extra members so the directory has folks NOT in the audience.
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    _, carol_pub = _attest_extra_member(hub, role="member",
+                                        display_name="Carol",
+                                        affiliation="U-3")
+
+    # Private thread with just Alice + Bob (excludes Carol + hub revoked_pub).
+    thread = "board-private"
+    seed = _signed_post(hub["member_priv"], hub["member_pub"],
+                        thread=thread, body="private post")
+    hub["client"].post("/entries", json=_entry_payload(seed))
+    _post_audience_entry(hub, priv=hub["member_priv"], pub=hub["member_pub"],
+                         thread=thread,
+                         pubkeys=[hub["member_pub"], bob_pub])
+
+    # A notice authored by Alice in the private thread.
+    notice = sign_entry(Entry(
+        thread=thread, author=hub["member_pub"], kind="post",
+        created_at="2026-07-01T00:00:00Z", body="notice for the group",
+    ), hub["member_priv"])
+    hub["client"].post("/entries", json=_entry_payload(notice))
+
+    r = hub["client"].get("/ledger", params={"entry": notice.id})
+    assert r.status_code == 200
+    body = r.json()
+    everyone = set(body["acked"]) | set(body["not_acked"])
+    # Only the audience appears. Carol and the revoked user do not.
+    assert everyone == {hub["member_pub"], bob_pub}
+    assert carol_pub not in everyone
+    assert hub["revoked_pub"] not in everyone
+
+
 def test_ledger_404_for_unknown_entry(hub):
     r = hub["client"].get("/ledger", params={"entry": "sha256:" + "ff" * 32})
     assert r.status_code == 404

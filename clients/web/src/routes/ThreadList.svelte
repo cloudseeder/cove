@@ -93,8 +93,15 @@
     ev.preventDefault();
     const name = sanitizeThreadName(newThreadName);
     if (!name) return;
+    // v0.4.39: route through the shared new-thread dialog so the
+    // sidebar entry point offers the same audience + retention
+    // controls as the InboxPanel button. Pre-fill the name so
+    // the user's typing carries over.
     newThreadName = '';
-    await app.switchThread(name);
+    app.openNewThreadDialog();
+    if (app.newThreadDialog) {
+      app.newThreadDialog.name = name;
+    }
   }
 </script>
 
