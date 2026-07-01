@@ -160,6 +160,29 @@ jobs:
             echo "WINDOWS_CERTIFICATE_PASSWORD=${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}"
           } >> "$GITHUB_ENV"
 
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          # Everything between "## [$TAG]" and the next "## [" header
+          # (or EOF). Stripped of the "## [$TAG] — <date>" title line
+          # itself since the release page already shows the version.
+          awk -v tag="$TAG" '
+            $0 ~ "^## \\[" tag "\\]" { p=1; next }
+            p && /^## \[/ { exit }
+            p { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "No CHANGELOG entry for $TAG — using fallback." >&2
+            echo "See [CHANGELOG](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/CHANGELOG.md)." > /tmp/release-notes.md
+          fi
+          {
+            echo 'body<<CHANGELOG_EOF'
+            cat /tmp/release-notes.md
+            echo 'CHANGELOG_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -178,7 +201,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: 'Cove ${{ github.ref_name }}'
           releaseBody: |
-            See CHANGELOG for details.
+            ${{ steps.notes.outputs.body }}
 
             ### Install notes
             - **macOS:** open the .dmg, drag Cove to Applications, launch.
