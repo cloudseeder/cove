@@ -121,6 +121,17 @@ class Pipeline:
                 raise AcceptanceError(
                     f"branch_thread {ev.branch_thread!r} cannot equal thread")
 
+        # v0.4.49: refuse writes to a tombstoned thread. Without this,
+        # posts to a sealed thread name would silently land in the main
+        # log next to the tombstone entry as if the name had never been
+        # used — betraying the "sealed" promise the user made when they
+        # deleted the thread. Reject BEFORE seq allocation so a rejected
+        # attempt cannot burn a seq number.
+        if self.store.is_tombstoned(ev.thread):
+            raise AcceptanceError(
+                f"thread {ev.thread!r} is tombstoned — no further writes accepted",
+            )
+
         # v0.4.37: ephemeral-thread routing decision + structural kind gate.
         # Consulted before the translog write so the gate is store-driven
         # and can't be bypassed by a pipeline caller that forgot to wire

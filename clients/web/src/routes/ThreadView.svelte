@@ -457,7 +457,12 @@
         {/if}
       </div>
 
-      <ComposeBox {app} />
+      <!-- v0.4.49: hide compose in a tombstoned thread — the hub
+           refuses writes to it, so surfacing the input would just
+           produce a bewildering error card on submit. -->
+      {#if !ephemeralRow || ephemeralRow.type !== 'tombstoned'}
+        <ComposeBox {app} />
+      {/if}
     </section>
   {/if}
 </div>

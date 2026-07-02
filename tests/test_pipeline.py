@@ -43,13 +43,18 @@ class StubDirectory:
 
 
 class StubStore:
-    def __init__(self, ephemeral: set[str] | None = None) -> None:
+    def __init__(self, ephemeral: set[str] | None = None,
+                 tombstoned: set[str] | None = None) -> None:
         self._by_id: dict[str, Entry] = {}
         self._next_seq: dict[str, int] = {}
         self.appended: list[tuple[str, int]] = []   # for assertions
         # v0.4.37: names in this set report is_ephemeral(t) == True.
         # Empty set = pure permanent-thread behavior (default for prior tests).
         self._ephemeral = ephemeral or set()
+        # v0.4.49: names in this set report is_tombstoned(t) == True —
+        # the pipeline uses this to refuse further writes to a sealed
+        # thread. Empty set = no tombstones (default).
+        self._tombstoned = tombstoned or set()
 
     def next_seq(self, thread: str) -> int:
         s = self._next_seq.get(thread, 0)
@@ -71,6 +76,9 @@ class StubStore:
 
     def is_ephemeral(self, thread: str) -> bool:
         return thread in self._ephemeral
+
+    def is_tombstoned(self, thread: str) -> bool:
+        return thread in self._tombstoned
 
 
 class StubThrottler:
@@ -433,6 +441,29 @@ def test_ephemeral_receipt_feeds_ledger(eph_pipeline):
     pl.accept(r_ev)
 
     assert pl.ledger.receipts == [(apub, "beach", 0, (1, "a" * 64))]
+
+
+def test_writes_to_tombstoned_thread_are_rejected(no_structural, hub_keypair, keypair):
+    """v0.4.49: after a thread is sealed (tombstoned_at set), the pipeline
+    must refuse further writes to that thread name. Otherwise a post
+    would silently land in the main log next to the tombstone entry —
+    "the thread is deleted" would be a lie."""
+    priv, pub = hub_keypair
+    apriv, apub = keypair
+    directory = StubDirectory(attested={apub: _Att(role="member")})
+    pl = Pipeline(
+        store=StubStore(tombstoned={"beach"}),
+        directory=directory,
+        translog=TamperEvidentLog(priv, pub),
+        overview=StubOverview(),
+        ledger=StubLedger(),
+        throttler=StubThrottler(),
+    )
+    ev = sign_entry(_post("beach", apub, "sneaky post-tombstone message"), apriv)
+    with pytest.raises(AcceptanceError, match="tombstoned"):
+        pl.accept(ev)
+    # Neither log advanced.
+    assert pl.translog.current_sth().tree_size == 0
 
 
 def test_ephemeral_thread_without_translog_wired_is_loud(no_structural, hub_keypair, keypair):

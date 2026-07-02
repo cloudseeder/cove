@@ -354,6 +354,19 @@ class EventStore:
         ).fetchone()
         return row is not None
 
+    def is_tombstoned(self, thread: str) -> bool:
+        """v0.4.49: True iff the thread name was opened as ephemeral AND
+        has since been tombstoned. The pipeline uses this to REFUSE
+        further writes to a sealed thread — without the check, new posts
+        would land in the main log next to the tombstone entry, as if
+        the name had never been used. That betrays the "sealed" promise
+        the user made when they deleted the thread."""
+        row = self._conn.execute(
+            "SELECT 1 FROM ephemeral_threads WHERE thread=? AND tombstoned_at IS NOT NULL LIMIT 1",
+            (thread,),
+        ).fetchone()
+        return row is not None
+
     def get_ephemeral(self, thread: str) -> Optional[dict]:
         """Full ephemeral thread record, or None. Includes tombstoned_at
         (nullable). Used by the API layer for the /threads listing +

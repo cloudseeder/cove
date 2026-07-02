@@ -4,6 +4,26 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.49] — 2026-07-02
+
+### Fixed
+- **Writes to a tombstoned thread were silently accepted.** After a
+  member sealed an ephemeral thread, the sidebar showed ⚰ and the
+  compose banner said "tombstone card." But the pipeline routed new
+  entries to the *main log* (because `is_ephemeral()` returned False
+  post-seal — the check ORs on tombstoned_at being null), and
+  `store.append_atomic` happily appended them as if the thread name
+  had never been used. New posts landed at seq 1 in the main log
+  next to the seq 0 tombstone. "The thread is sealed" was a lie.
+  New rule: `store.is_tombstoned(t)` returns true iff the name has
+  been sealed, and the pipeline rejects with
+  `"thread T is tombstoned — no further writes accepted"` before
+  seq allocation. One new pipeline regression test.
+- Compose box is hidden client-side on tombstoned threads so a user
+  doesn't type into a phantom input and get a bewildering error card
+  on submit. The tombstone card at the top of the thread view is now
+  the entire story.
+
 ## [0.4.48] — 2026-07-02
 
 ### Added
@@ -308,6 +328,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.49]: https://github.com/cloudseeder/cove/releases/tag/v0.4.49
 [0.4.48]: https://github.com/cloudseeder/cove/releases/tag/v0.4.48
 [0.4.47]: https://github.com/cloudseeder/cove/releases/tag/v0.4.47
 [0.4.46]: https://github.com/cloudseeder/cove/releases/tag/v0.4.46
