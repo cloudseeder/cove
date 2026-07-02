@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cove — Threads that come back like old friends.</title>
+  <meta name="description" content="Verifiable group messaging for boards, committees, and small teams. Every message signed. Every delivery proven. Old threads come back like old friends." />
+  <meta property="og:title" content="Cove — Threads that come back like old friends." />
+  <meta property="og:description" content="Verifiable group messaging for boards, committees, and small teams." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://love.cove.oap.dev" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E🪶%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #fbf7ee;         /* warm cream */
+      --panel: #ffffff;
+      --fg: #2b2620;         /* deep warm brown-black */
+      --muted: #6f6a60;      /* warm mid-grey */
+      --border: #e6ddc9;
+      --gold: #b8892f;       /* darker than the app gold for contrast on cream */
+      --gold-soft: #f0e2b8;
+      --danger: #8a3a2b;
+      --serif: "Iowan Old Style", "Palatino", "Georgia", ui-serif, serif;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17140f;
+        --panel: #1e1a13;
+        --fg: #f2ead8;
+        --muted: #9c948a;
+        --border: #33291b;
+        --gold: #d4af37;
+        --gold-soft: rgba(212, 175, 55, 0.15);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      font-size: 17px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 4rem;
+    }
+    /* ---- Hero ---- */
+    .hero {
+      padding: 2rem 0 3rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 3rem;
+    }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: clamp(2.1rem, 5vw, 3rem);
+      line-height: 1.12;
+      letter-spacing: -0.01em;
+      margin: 0 0 0.9rem;
+      color: var(--fg);
+    }
+    .subhead {
+      font-size: 1.2rem;
+      color: var(--muted);
+      margin: 0 0 1.5rem;
+      line-height: 1.4;
+    }
+    .hero p {
+      margin: 0 0 1rem;
+    }
+    .ctas {
+      display: flex;
+      gap: 0.9rem;
+      flex-wrap: wrap;
+      margin: 1.8rem 0 1rem;
+    }
+    .btn {
+      display: inline-block;
+      padding: 0.7rem 1.3rem;
+      border-radius: 8px;
+      font-weight: 500;
+      text-decoration: none;
+      transition: background 120ms, border-color 120ms;
+    }
+    .btn-primary {
+      background: var(--gold);
+      color: var(--bg);
+      border: 1px solid var(--gold);
+    }
+    .btn-primary:hover {
+      background: var(--fg);
+      border-color: var(--fg);
+    }
+    .btn-ghost {
+      background: transparent;
+      color: var(--fg);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover {
+      border-color: var(--gold);
+      color: var(--gold);
+    }
+    .kicker {
+      font-style: italic;
+      color: var(--muted);
+      font-size: 0.98rem;
+      margin: 1rem 0 0;
+    }
+    /* ---- Section headings ---- */
+    h2 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 1.7rem;
+      margin: 3.5rem 0 1.4rem;
+      letter-spacing: -0.005em;
+    }
+    h3 {
+      font-family: var(--sans);
+      font-weight: 600;
+      font-size: 1.15rem;
+      margin: 2rem 0 0.6rem;
+      color: var(--fg);
+    }
+    h3 .num {
+      color: var(--gold);
+      font-weight: 600;
+      margin-right: 0.35rem;
+    }
+    p { margin: 0 0 1rem; }
+    /* Feature-block tagline */
+    .tagline {
+      color: var(--muted);
+      font-style: italic;
+      margin: 0.3rem 0 0;
+      font-size: 0.98rem;
+    }
+    /* ---- Trust callout ---- */
+    .trust {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem 1.6rem 1.3rem;
+      margin: 3rem 0 0;
+    }
+    .trust h2 {
+      margin-top: 0;
+    }
+    .trust p {
+      margin: 0 0 1rem;
+    }
+    .trust p strong {
+      color: var(--fg);
+      font-weight: 600;
+    }
+    .trust .tagline {
+      text-align: center;
+      margin-top: 1rem;
+      padding-top: 1rem;
+      border-top: 1px solid var(--border);
+    }
+    /* ---- Mission ---- */
+    .mission {
+      margin-top: 3rem;
+      padding-top: 2.5rem;
+      border-top: 1px solid var(--border);
+    }
+    /* ---- Footer ---- */
+    footer {
+      margin-top: 4rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.88rem;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+    }
+    footer a {
+      color: var(--muted);
+      text-decoration: none;
+      border-bottom: 1px dotted var(--border);
+    }
+    footer a:hover {
+      color: var(--gold);
+      border-bottom-color: var(--gold);
+    }
+    /* ---- Mobile ---- */
+    @media (max-width: 480px) {
+      .wrap { padding: 2rem 1.1rem 3rem; }
+      .hero { padding: 1rem 0 2rem; margin-bottom: 2rem; }
+      h1 { font-size: 2rem; }
+      .subhead { font-size: 1.08rem; }
+      h2 { font-size: 1.4rem; margin: 2.5rem 0 1rem; }
+      .trust { padding: 1.2rem 1.1rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+
+  <!-- ============================================================ -->
+  <!-- HERO                                                          -->
+  <!-- ============================================================ -->
+  <section class="hero">
+    <h1>Threads that come back like old friends.</h1>
+    <p class="subhead">
+      Group messaging that stays whole &mdash; signed, delivered, and always right where you left it.
+    </p>
+    <p>
+      Boards, committees, and small groups shouldn&rsquo;t lose track of what they said last quarter. In Cove, every message is signed by its author. Every delivery is proven.
+    </p>
+    <p>
+      And a quiet thread from months ago surfaces in your inbox the moment it matters again &mdash; not lost in a search bar, not stranded on someone&rsquo;s laptop.
+    </p>
+    <div class="ctas">
+      <a class="btn btn-primary" href="https://app.cove.oap.dev">Start your group</a>
+      <a class="btn btn-ghost" href="#how-it-works">How it works</a>
+    </div>
+    <p class="kicker">
+      Every message signed. Every delivery proven. No &ldquo;I never got that.&rdquo;
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- FEATURE BLOCKS                                                -->
+  <!-- ============================================================ -->
+  <section>
+    <h3><span class="num">1.</span>Signed by the person who wrote it.</h3>
+    <p>
+      Every message is signed on the sender&rsquo;s device before it leaves. No forgeries. No &ldquo;I forwarded this from someone.&rdquo; When Alice posts a notice, the group can prove &mdash; cryptographically &mdash; that Alice wrote it, not someone on her account, not someone in her name.
+    </p>
+    <p class="tagline">Sender identity isn&rsquo;t claimed. It&rsquo;s proven.</p>
+
+    <h3><span class="num">2.</span>You can see who read it.</h3>
+    <p>
+      Every read produces a signed receipt. Send a notice to the board and watch the delivery list fill in as people ack &mdash; Kevin at 9:14, Alice at 10:02, still waiting on Nancy. No more guessing. No more &ldquo;did anyone check email today?&rdquo;
+    </p>
+    <p class="tagline">The receipt isn&rsquo;t a promise. It&rsquo;s a record.</p>
+
+    <h3><span class="num">3.</span>Threads stay whole &mdash; for as long as they need to.</h3>
+    <p>
+      A conversation from last April is one tap from today&rsquo;s, in the exact order it happened, verifiable line by line. Governance threads live forever. Casual threads (a recital, a beach cleanup) can carry a delete-by date &mdash; the hub honors it, and a signed record proves what was there before it went away.
+    </p>
+    <p class="tagline">Old threads come back. Ephemeral threads know when to leave.</p>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- WHO IT'S FOR                                                  -->
+  <!-- ============================================================ -->
+  <section>
+    <h2>Who it&rsquo;s for.</h2>
+
+    <h3>HOAs, condo boards, and homeowner associations.</h3>
+    <p>
+      The board sends a special-assessment notice. Who read it? Who&rsquo;s about to argue they didn&rsquo;t? In Cove, every notice is signed, every recipient&rsquo;s ack is receipted, and last April&rsquo;s beach-access discussion is right where you left it &mdash; verifiable line by line, ready when it comes back up at the annual meeting.
+    </p>
+
+    <h3>Church councils, synagogue boards, mosque leadership.</h3>
+    <p>
+      Decisions made in a leadership meeting have a way of coming back three years later &mdash; the building project, the pastor&rsquo;s transition, the endowment vote. Cove keeps every thread whole and verifiable, so nobody has to reconstruct what was decided from someone&rsquo;s memory. Old threads surface when they matter again, exactly as they were said.
+    </p>
+
+    <h3>Small nonprofit boards and committees.</h3>
+    <p>
+      A funder asks for the record of last May&rsquo;s grant vote. You don&rsquo;t hunt through five people&rsquo;s inboxes &mdash; you tap the thread, signed and timestamped from first message to last. Decisions with fiduciary weight hold up on their own, whether the audit comes from donors, the IRS, or your own board minutes.
+    </p>
+
+    <p class="tagline">
+      Or anywhere a group needs to know what was said, who read it, and where the record lives.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- HOW IT WORKS                                                  -->
+  <!-- ============================================================ -->
+  <section id="how-it-works">
+    <h2>How it works.</h2>
+
+    <h3><span class="num">1.</span>Your keymaster invites you.</h3>
+    <p>
+      One person in your group &mdash; usually the board secretary or a technically-inclined member &mdash; mints an invite code and sends it to you out-of-band: text, in person, on paper. You paste the code into Cove, generate your keys on your own device, and the keymaster approves you into the directory. You&rsquo;re now an attested member of the group, not a username-and-password guest.
+    </p>
+
+    <h3><span class="num">2.</span>Post to your group.</h3>
+    <p>
+      Write a notice, start a thread, attach a file, reply in-line. It works like any modern messaging app &mdash; but every message is signed by you, in the moment, on your device. Nobody at Cove, nobody at the hub, and nobody on your group&rsquo;s board can ever put words in your mouth.
+    </p>
+
+    <h3><span class="num">3.</span>See who received it &mdash; and keep the receipt.</h3>
+    <p>
+      Every message carries a delivery indicator. Tap it and see who&rsquo;s acked, who hasn&rsquo;t, when they did. If a dispute ever comes up &mdash; did the notice go out? did Kevin read the special assessment? &mdash; the answer is right there in the log, signed and provable, not &ldquo;I think I remember sending it.&rdquo; A year from now, the same thread is still there, still verifiable, still one tap from today.
+    </p>
+  </section>
+
+  <!-- ============================================================ -->
+  <!-- TRUST CALLOUT                                                 -->
+  <!-- ============================================================ -->
+  <aside class="trust">
+    <h2>What Cove can&rsquo;t do to you.</h2>
+    <p>
+      <strong>Cove doesn&rsquo;t hold your private key.</strong> Your identity is a keypair generated on your device; the private half never leaves it. The hub can see who signed what &mdash; it can&rsquo;t sign anything on your behalf. Not messages, not receipts, not board notices in your name.
+    </p>
+    <p>
+      <strong>Cove can&rsquo;t rewrite what was said.</strong> Every message goes into a tamper-evident log. If anyone tried to change history &mdash; swap a message, delete a receipt, quietly reorder a thread &mdash; the next signature check would fail, on every client, at once. The hub keeps the log; it can&rsquo;t launder it.
+    </p>
+    <p>
+      <strong>Cove doesn&rsquo;t moderate you.</strong> No spam filter, no toxicity scorer, no &ldquo;we flagged this for review.&rdquo; Every message either has a verified sender or gets rejected. There&rsquo;s no middle ground where an algorithm decides who gets heard.
+    </p>
+    <p>
+      <strong>You run the hub.</strong> Cove is self-hosted. Your notices, your board minutes, your files &mdash; they live on infrastructure you control, not on someone else&rsquo;s cloud. There&rsquo;s no third-party vendor to read your messages, because there&rsquo;s no third-party vendor.
+    </p>
+    <p class="tagline">These aren&rsquo;t policy promises. They&rsquo;re protocol properties.</p>
+  </aside>
+
+  <!-- ============================================================ -->
+  <!-- MISSION                                                       -->
+  <!-- ============================================================ -->
+  <section class="mission">
+    <h2>Why Cove is free.</h2>
+    <p>
+      Every group I&rsquo;ve ever been part of has lost something to &ldquo;I never got the email.&rdquo; A vote that didn&rsquo;t happen because a notice went to spam. An HOA fee that hit a member three months late because they missed the announcement. A committee decision that fell apart because two people had different memories of what was agreed. Small moments, mostly. But they compound &mdash; and in groups that hold themselves accountable to each other, they corrode trust.
+    </p>
+    <p>
+      Cove exists to fix that. Not to build a company. Not to sell attention. Not to farm your board&rsquo;s communication for training data or ad targeting. Just to make sure that when your group says something to itself, everybody can prove it happened.
+    </p>
+    <p>
+      That&rsquo;s why Cove is free, and why it&rsquo;ll stay free. Not &ldquo;free tier.&rdquo; Not &ldquo;free trial.&rdquo; Not &ldquo;free until we raise a Series A.&rdquo; Structurally, no-strings-attached free.
+    </p>
+    <p>
+      If you want to support the work &mdash; a coffee, a small donation, hosting a friend&rsquo;s group on your hub &mdash; the door&rsquo;s open. But if you never chip in, nothing changes. Your group&rsquo;s threads stay whole, verifiable, and yours.
+    </p>
+  </section>
+
+  <footer>
+    <span>Cove is a project by <a href="https://oap.dev">oap.dev</a>.</span>
+    <span>
+      <a href="https://github.com/cloudseeder/cove">Source</a> &middot;
+      <a href="https://app.cove.oap.dev">App</a>
+    </span>
+  </footer>
+
+</div>
+</body>
+</html>
