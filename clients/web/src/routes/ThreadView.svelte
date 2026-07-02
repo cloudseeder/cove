@@ -831,15 +831,21 @@
      z-index than the backdrop so it stays clickable. */
   .sidebar-toggle {
     position: absolute;
-    top: 0.6rem;
-    left: 0.6rem;
+    /* v0.4.46: max() honors the iPhone status-bar / notch safe area
+       when the PWA is installed to Home Screen (standalone mode).
+       On desktop and Android the env() value is 0, so max() falls
+       back to the base 0.6rem and the button stays where it was. */
+    top: max(0.6rem, calc(env(safe-area-inset-top) + 0.4rem));
+    left: max(0.6rem, calc(env(safe-area-inset-left) + 0.4rem));
     z-index: 20;
     background: var(--panel);
     color: var(--fg);
     border: 1px solid var(--border);
     border-radius: 6px;
-    padding: 0.25rem 0.65rem;
-    font-size: 1.1rem;
+    /* v0.4.46: bigger tap target for phones (was 0.25rem × 0.65rem —
+       roughly 30×20 px on iPhone, well below Apple's 44×44 pt guideline). */
+    padding: 0.5rem 0.85rem;
+    font-size: 1.15rem;
     line-height: 1;
     cursor: pointer;
     opacity: 0.75;
@@ -866,9 +872,11 @@
     flex: 1;
     overflow-y: auto;
     padding: 1.5rem;
-    /* Leave headroom for the toggle button so the first line of the
-       header doesn't sit under it. */
-    padding-top: 2.75rem;
+    /* v0.4.46: leave headroom for the toggle button so the first line
+       of the header doesn't sit under it. On PWAs installed to home
+       screen, add the iPhone status-bar / notch safe area on top of
+       that clearance so the toggle isn't cramped against the top edge. */
+    padding-top: calc(env(safe-area-inset-top, 0px) + 3.25rem);
     /* The .feed + compose box are the centered column; the
        scrollable region itself stretches to fill the pane. */
   }
@@ -901,7 +909,12 @@
       z-index: 12;
     }
     .thread {
-      padding: 2.75rem 0.9rem 1rem;
+      /* v0.4.46: on mobile keep the safe-area clearance from the
+         non-mobile rule; only the horizontal padding tightens. */
+      padding-top: calc(env(safe-area-inset-top, 0px) + 3.25rem);
+      padding-left: 0.9rem;
+      padding-right: 0.9rem;
+      padding-bottom: 1rem;
     }
   }
   .thread > :global(*) {

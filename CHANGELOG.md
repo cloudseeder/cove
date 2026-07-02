@@ -4,6 +4,18 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.46] — 2026-07-02
+
+### Fixed
+- On an iPhone with the PWA installed to Home Screen, the sidebar
+  hamburger button sat too close to the top edge of the screen — cramped
+  against the notch and hard to tap reliably. Now positioned with
+  `env(safe-area-inset-top)` clearance so it drops below the notch/status
+  bar. Tap target grew from ~30×20px to ~46×34px to clear Apple's 44pt
+  minimum guideline. Panel content clearance grew to match, so nothing
+  slides under the button. Android and desktop unaffected (safe-area
+  values are 0 there; the base clearance still applies).
+
 ## [0.4.45] — 2026-07-01
 
 ### Added
@@ -258,6 +270,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.46]: https://github.com/cloudseeder/cove/releases/tag/v0.4.46
 [0.4.45]: https://github.com/cloudseeder/cove/releases/tag/v0.4.45
 [0.4.44]: https://github.com/cloudseeder/cove/releases/tag/v0.4.44
 [0.4.43]: https://github.com/cloudseeder/cove/releases/tag/v0.4.43
