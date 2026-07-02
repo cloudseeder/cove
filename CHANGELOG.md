@@ -4,6 +4,17 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.47] — 2026-07-02
+
+### Fixed
+- PWA sidebar version footer showed nothing. Root cause:
+  `tauri.ts::appVersion()` returned null in browser mode (no Tauri
+  shell to ask), and the ThreadList footer's `{#if app.appVersion}`
+  never fired. Now Vite injects `clients/web/package.json`'s version
+  at build time as the PWA fallback; Tauri desktop still calls the
+  runtime `getVersion()` which is authoritative for the installed
+  bundle. Both surfaces render the version now.
+
 ## [0.4.46] — 2026-07-02
 
 ### Fixed
@@ -270,6 +281,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.47]: https://github.com/cloudseeder/cove/releases/tag/v0.4.47
 [0.4.46]: https://github.com/cloudseeder/cove/releases/tag/v0.4.46
 [0.4.45]: https://github.com/cloudseeder/cove/releases/tag/v0.4.45
 [0.4.44]: https://github.com/cloudseeder/cove/releases/tag/v0.4.44

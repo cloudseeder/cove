@@ -18,11 +18,20 @@ export interface KeyStatus {
   public_key: string | null;
 }
 
-/** Reads the bundle version from Tauri. Returns null in browser-only
- *  mode (no shell to ask). Resolved lazily so the import has no
- *  Tauri-side side-effects at module load. */
+/** Reads the bundle version. In Tauri, calls @tauri-apps/api/app's
+ *  getVersion() which returns the .app/.dmg/.msi bundle version.
+ *  In browser mode (PWA, dev server), falls back to the value Vite
+ *  injected from clients/web/package.json at build time — see the
+ *  `define` block in vite.config.ts. Resolved lazily so the import
+ *  has no Tauri-side side-effects at module load. */
 export async function appVersion(): Promise<string | null> {
-  if (!isTauri()) return null;
+  if (!isTauri()) {
+    // v0.4.47: build-time constant injected by Vite. Falls back to
+    // null in vitest (jsdom / node env) where the define didn't fire.
+    return typeof __COVE_PACKAGE_VERSION__ !== 'undefined'
+      ? __COVE_PACKAGE_VERSION__
+      : null;
+  }
   const { getVersion } = await import('@tauri-apps/api/app');
   return await getVersion();
 }
