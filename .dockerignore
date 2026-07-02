@@ -1,0 +1,52 @@
+# Trim the docker build context to only the files the Dockerfile
+# actually COPYs. Without this, `docker compose build` slurps every
+# tracked and untracked file in the tree — .venv, node_modules,
+# .git, IDE state — and slows the build to a crawl.
+
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Editor / IDE / tool local state
+.vscode
+.idea
+.claude
+CLAUDE.md
+.DS_Store
+*.swp
+
+# Python virtualenv + build artifacts
+.venv
+venv
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+build
+dist
+.pytest_cache
+.mypy_cache
+
+# Node / client workspace — not needed by the hub image
+node_modules
+clients
+landing
+.github
+
+# Tests + local state — not needed at runtime
+tests
+cove-state
+*.db
+*.db-wal
+*.db-shm
+
+# Docs the hub doesn't need
+CHANGELOG.md
+docs
+docker/README.md
+
+# The Dockerfile + compose files themselves — no need to embed them
+Dockerfile
+docker-compose.yml
+docker-compose.override.yml

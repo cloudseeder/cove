@@ -10,7 +10,17 @@ The minimum path from a fresh Linux host to a live Cove hub. Everything below as
 
 ## Prerequisites
 
-- A Linux (or macOS) host with Docker + `docker compose` plugin
+- A Linux (or macOS) host with Docker + `docker compose` plugin (v2). On Debian 12 the base repo only ships legacy `docker-compose` v1 — install v2 as a CLI plugin from Docker's GitHub releases:
+  ```sh
+  sudo apt install -y docker.io
+  sudo usermod -aG docker $USER
+  mkdir -p ~/.docker/cli-plugins
+  curl -SL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+      -o ~/.docker/cli-plugins/docker-compose
+  chmod +x ~/.docker/cli-plugins/docker-compose
+  # In a fresh shell (or via `newgrp docker`), verify:
+  docker compose version
+  ```
 - A domain name pointed at the host (or a Cloudflare Tunnel, see below)
 - A TLS story (reverse proxy, tunnel, or Caddy) — the hub itself does not terminate TLS
 
@@ -85,7 +95,15 @@ Verify:
 ```sh
 curl http://127.0.0.1:8000/healthz
 # → {"status":"ok","version":"0.1.0"}
+
+# The directory the ceremony signed:
+curl http://127.0.0.1:8000/directory | head -c 200
+
+# The initial signed tree head — empty tree, hub key signature:
+curl http://127.0.0.1:8000/sth
 ```
+
+**Port already in use?** If you already run something on `:8000` on this host — a dev process, or another Cove hub — edit `docker-compose.yml`'s `ports:` line to bind a different host port (e.g. `127.0.0.1:8001:8000`).
 
 ## 5. Put TLS in front of it
 
