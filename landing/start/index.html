@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Get started — Cove</title>
+  <meta name="description" content="Get a Cove hub running for your group, install the client on every phone and laptop." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E🪶%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #fbf7ee;
+      --panel: #ffffff;
+      --fg: #2b2620;
+      --muted: #6f6a60;
+      --border: #e6ddc9;
+      --gold: #b8892f;
+      --gold-soft: #f0e2b8;
+      --code-bg: #f2ecdc;
+      --serif: "Iowan Old Style", "Palatino", "Georgia", ui-serif, serif;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17140f;
+        --panel: #1e1a13;
+        --fg: #f2ead8;
+        --muted: #9c948a;
+        --border: #33291b;
+        --gold: #d4af37;
+        --gold-soft: rgba(212, 175, 55, 0.15);
+        --code-bg: #23200c;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      font-size: 17px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 4rem;
+    }
+    .back {
+      display: inline-block;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-decoration: none;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px dotted var(--border);
+    }
+    .back:hover { color: var(--gold); border-color: var(--gold); }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: clamp(1.9rem, 4.5vw, 2.6rem);
+      line-height: 1.15;
+      letter-spacing: -0.01em;
+      margin: 0 0 0.6rem;
+    }
+    .subhead {
+      color: var(--muted);
+      font-size: 1.1rem;
+      margin: 0 0 2.5rem;
+      line-height: 1.4;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 1.55rem;
+      margin: 3rem 0 0.5rem;
+      letter-spacing: -0.005em;
+      display: flex;
+      align-items: baseline;
+      gap: 0.7rem;
+    }
+    h2 .num {
+      display: inline-block;
+      min-width: 2.2rem;
+      height: 2.2rem;
+      line-height: 2.2rem;
+      text-align: center;
+      background: var(--gold-soft);
+      color: var(--gold);
+      border-radius: 50%;
+      font-family: var(--sans);
+      font-size: 1rem;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    h3 {
+      font-family: var(--sans);
+      font-weight: 600;
+      font-size: 1.05rem;
+      margin: 1.8rem 0 0.5rem;
+    }
+    p { margin: 0 0 1rem; }
+    a { color: var(--gold); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--fg); }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 0.9em;
+    }
+    pre {
+      background: var(--code-bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.9rem 1rem;
+      overflow-x: auto;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      line-height: 1.5;
+      margin: 0.5rem 0 1.2rem;
+    }
+    pre code {
+      background: transparent;
+      padding: 0;
+      font-size: inherit;
+    }
+    .callout {
+      background: var(--panel);
+      border-left: 3px solid var(--gold);
+      padding: 0.8rem 1rem;
+      margin: 1.2rem 0;
+      border-radius: 0 8px 8px 0;
+      font-size: 0.94rem;
+    }
+    .callout strong { color: var(--fg); }
+    .callout.warn { border-left-color: var(--gold); background: var(--gold-soft); }
+    .client-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 1.2rem 0;
+    }
+    .client-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+    .client-card h3 {
+      margin: 0 0 0.4rem;
+      font-size: 1rem;
+    }
+    .client-card p {
+      margin: 0;
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+    .client-card .status {
+      display: inline-block;
+      margin-top: 0.4rem;
+      padding: 0.1rem 0.5rem;
+      border-radius: 999px;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+    .status.ready { background: rgba(60, 130, 60, 0.15); color: #4a8a4a; }
+    .status.experimental { background: var(--gold-soft); color: var(--gold); }
+    .status.later { background: rgba(120, 120, 120, 0.15); color: var(--muted); }
+    .install-steps {
+      margin: 0.5rem 0;
+      padding-left: 1.4rem;
+    }
+    .install-steps li { margin: 0.3rem 0; }
+    footer {
+      margin-top: 4rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.88rem;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+    }
+    footer a { color: var(--muted); border-bottom: 1px dotted var(--border); text-decoration: none; }
+    footer a:hover { color: var(--gold); border-color: var(--gold); }
+    @media (max-width: 480px) {
+      .wrap { padding: 1.5rem 1.1rem 3rem; }
+      h1 { font-size: 1.7rem; }
+      h2 { font-size: 1.3rem; }
+      h2 .num { min-width: 1.9rem; height: 1.9rem; line-height: 1.9rem; }
+      pre { font-size: 0.78rem; padding: 0.75rem 0.85rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/" class="back">&larr; back to overview</a>
+
+  <h1>Get your group set up.</h1>
+  <p class="subhead">
+    Three steps: run a hub, become the keymaster, install the client on every phone and laptop that needs it. Plan on about an hour if you&rsquo;re comfortable at a terminal, longer if it&rsquo;s your first server.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 1: HUB                                                   -->
+  <!-- ============================================================ -->
+  <h2><span class="num">1</span>Run a hub.</h2>
+  <p>
+    Cove is self-hosted. Every group runs its own hub &mdash; a small Python server that holds the tamper-evident log for that group and nobody else&rsquo;s. Nothing about your group&rsquo;s messages ever touches infrastructure the Cove project controls.
+  </p>
+  <p>
+    The easiest way to run one is Docker on a small Linux VM (a $5/month box is more than enough for a board of 20). If you already run other services on a Cloudflare Tunnel, Cove drops in the same way.
+  </p>
+
+  <pre><code>git clone https://github.com/cloudseeder/cove.git
+cd cove
+mkdir -p ./cove-state
+
+# Genesis ceremony — root + hub keypairs + signed manifest.
+docker compose --profile setup run --rm bootstrap \
+    --org-name "Your Org" \
+    --members keymaster</code></pre>
+
+  <div class="callout warn">
+    <strong>Non-negotiable:</strong> after the bootstrap, move <code>cove-state/keys/root.priv</code> off the host. The hub&rsquo;s whole security model depends on the root key not living on the running server. Detailed steps in the <a href="https://github.com/cloudseeder/cove/blob/main/docker/README.md">docker README</a>.
+  </div>
+
+  <pre><code># After root.priv is safely offline:
+docker compose up -d hub
+
+# Verify:
+curl http://127.0.0.1:8000/healthz
+# {"status":"ok","version":"..."}</code></pre>
+
+  <p>
+    Point a domain at the container (Cloudflare Tunnel or Caddy both work &mdash; walked through in the <a href="https://github.com/cloudseeder/cove/blob/main/docker/README.md">docker README</a>) and you have a running hub.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 2: KEYMASTER                                             -->
+  <!-- ============================================================ -->
+  <h2><span class="num">2</span>Onboard the keymaster.</h2>
+  <p>
+    The bootstrap ceremony created one member for you: the <em>keymaster</em>. That&rsquo;s the person who mints invite codes for everyone else, approves new members, and holds the group&rsquo;s custodial responsibility. It&rsquo;s almost always you if you set up the hub.
+  </p>
+  <p>
+    Take <code>cove-state/keys/members/keymaster.priv</code> and get it onto the device you&rsquo;ll use as the keymaster (usually your laptop or phone). On the client, paste the key into the &ldquo;I already have a key&rdquo; unlock flow. On the PWA, you&rsquo;ll be asked for a passphrase during first-time setup so the key survives future sessions without re-paste.
+  </p>
+  <p>
+    Once you&rsquo;re authenticated, everyone else onboards through the invite-code flow you mint from the Admin panel &mdash; no more terminal work needed for the rest of the group.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 3: CLIENTS                                               -->
+  <!-- ============================================================ -->
+  <h2><span class="num">3</span>Install the client.</h2>
+  <p>
+    Cove has three client surfaces at different levels of polish. Pilot-era honesty: the desktop app is the best-supported, the PWA is the everyday-mobile answer, native mobile is not yet built.
+  </p>
+
+  <div class="client-grid">
+    <div class="client-card">
+      <h3>macOS desktop</h3>
+      <p>Signed and notarized. Download the .dmg from GitHub Releases, open, drag to Applications.</p>
+      <span class="status ready">Ready</span>
+    </div>
+    <div class="client-card">
+      <h3>PWA (iOS &amp; Android)</h3>
+      <p>Install <a href="https://app.cove.oap.dev">app.cove.oap.dev</a> to your home screen. Instructions below.</p>
+      <span class="status ready">Ready</span>
+    </div>
+    <div class="client-card">
+      <h3>Windows / Linux desktop</h3>
+      <p>Unsigned Tauri builds attached to every GitHub release. Works, but expect Gatekeeper/SmartScreen warnings.</p>
+      <span class="status experimental">Unsigned</span>
+    </div>
+    <div class="client-card">
+      <h3>Native iOS / Android</h3>
+      <p>Not built yet. The PWA covers this well enough that native isn&rsquo;t urgent.</p>
+      <span class="status later">Later</span>
+    </div>
+  </div>
+
+  <!-- PWA install walkthrough -->
+  <h3>Installing the PWA on iPhone (Safari)</h3>
+  <ol class="install-steps">
+    <li>Open <a href="https://app.cove.oap.dev">app.cove.oap.dev</a> in Safari. (Chrome on iOS forwards to Safari for install; other browsers won&rsquo;t work.)</li>
+    <li>Tap the <strong>Share</strong> icon at the bottom of the screen (square with an up-arrow).</li>
+    <li>Scroll down in the share sheet and tap <strong>Add to Home Screen</strong>.</li>
+    <li>Tap <strong>Add</strong> in the top-right corner.</li>
+    <li>Open Cove from your home screen. It runs full-screen, has its own icon, and remembers your session between opens (from v0.4.34+).</li>
+  </ol>
+
+  <h3>Installing the PWA on Android (Chrome)</h3>
+  <ol class="install-steps">
+    <li>Open <a href="https://app.cove.oap.dev">app.cove.oap.dev</a> in Chrome.</li>
+    <li>Tap the <strong>&vellip;</strong> menu in the top-right.</li>
+    <li>Tap <strong>Install app</strong> (or on some Chrome versions, <strong>Add to Home screen</strong>).</li>
+    <li>Confirm on the prompt.</li>
+    <li>Open Cove from your home screen or app drawer.</li>
+  </ol>
+
+  <div class="callout">
+    <strong>Why a PWA and not a native app?</strong> Native iOS and Android would need App Store review, provisioning profiles, and platform-specific keychain integrations for every release. That&rsquo;s a lot of infrastructure for a pilot. The PWA gets you 90% of the native feel &mdash; home-screen icon, full-screen, offline caching, push notifications on the roadmap &mdash; without any of the store gatekeeping. Native comes later if the pilot outgrows the PWA.
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- WRAP                                                          -->
+  <!-- ============================================================ -->
+  <h2 style="margin-top: 3.5rem; font-size: 1.35rem;">You&rsquo;re running.</h2>
+  <p>
+    From here, the day-to-day is: mint invite codes for the rest of the group, hand them out out-of-band (text, in person, on paper), and start posting. Every message is signed, every delivery is receipted, every thread stays whole.
+  </p>
+  <p>
+    If you hit a wall, the <a href="https://github.com/cloudseeder/cove">source repo</a> has issue templates. This is a small project by design &mdash; the response won&rsquo;t be instant, but it will be real.
+  </p>
+
+  <footer>
+    <span>Cove is a project by <a href="https://oap.dev">oap.dev</a>.</span>
+    <span>
+      <a href="https://github.com/cloudseeder/cove">Source</a> &middot;
+      <a href="https://app.cove.oap.dev">App</a> &middot;
+      <a href="/">Home</a>
+    </span>
+  </footer>
+
+</div>
+</body>
+</html>

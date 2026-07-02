@@ -1,0 +1,52 @@
+# Cove hub — Docker Compose runtime.
+#
+# Two services:
+#   hub        — the always-on hub. Depends on state existing.
+#   bootstrap  — one-shot ceremony for genesis state. Run once, then
+#                MOVE keys/root.priv OFFLINE and never run again.
+#
+# Usage on a fresh host:
+#
+#     mkdir -p ./cove-state
+#     docker compose run --rm bootstrap \
+#         --org-name "Your Org" \
+#         --members keymaster
+#
+#     # ⚠️ move ./cove-state/keys/root.priv to offline storage
+#     # (USB, password manager, paper backup) and delete it here.
+#     mv ./cove-state/keys/root.priv ~/somewhere-safe/
+#
+#     docker compose up -d hub
+#
+# See docker/README.md for the full walk-through, including TLS via
+# Cloudflare Tunnel or Caddy.
+
+services:
+  hub:
+    build: .
+    image: cove-hub:latest
+    container_name: cove-hub
+    restart: unless-stopped
+    ports:
+      # Bind to loopback only by default — production runs behind a
+      # reverse proxy that terminates TLS. Change to "8000:8000" to
+      # bind to all interfaces if you're behind a real firewall.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./cove-state:/state
+    environment:
+      COVE_STATE_DIR: /state
+
+  # One-shot genesis ceremony. Runs scripts/bootstrap_pilot.py with
+  # any args you pass after the service name:
+  #     docker compose run --rm bootstrap --org-name X --members Y,Z
+  # After the ceremony finishes, this service does not run again.
+  bootstrap:
+    build: .
+    image: cove-hub:latest
+    profiles: ["setup"]
+    volumes:
+      - ./cove-state:/state
+    environment:
+      COVE_STATE_DIR: /state
+    entrypoint: ["python", "scripts/bootstrap_pilot.py", "--state-dir", "/state"]
