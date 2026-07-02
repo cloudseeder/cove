@@ -1307,14 +1307,42 @@ export class AppState {
       );
       this.teardown = () => { void teardown(); };
     } else {
-      this.teardown = this.client.subscribe(
-        this.thread,
-        (ve) => this.appendIfNew(ve),
-        (err) => {
-          this.threadStatus = { kind: 'error', message: `stream: ${errMsg(err)}` };
-        },
-      );
+      // v0.4.55: browser subscribe path previously used
+      // client.subscribe with a callback that filtered by thread and
+      // appended matching entries. It missed the v0.4.48 unknown-
+      // thread detection that lives in handlePushedRaw — so on the
+      // PWA, a push announcing a brand-new audience-scoped thread
+      // (audience entry or first post) would arrive on the WS,
+      // client.subscribe's thread filter would drop it, and the
+      // sidebar never refreshed. The Tauri path was fine because
+      // stream.start forwards raw payloads to handlePushedRaw
+      // regardless of thread. Now the browser path does the same:
+      // hook the raw WebSocket directly and route both channels
+      // through the same handler.
+      this.teardown = this.subscribeRawWs();
     }
+  }
+
+  /** v0.4.55: minimal WS subscriber for browser mode that forwards
+   *  raw payloads to handlePushedRaw. Mirrors the Tauri stream's
+   *  behavior — no per-thread filtering here, the JS-side handler
+   *  decides what to do with each push (refresh listings, verify +
+   *  append to current feed, etc.). */
+  private subscribeRawWs(): () => void {
+    if (this.client === null) return () => {};
+    const wsUrl = new URL(this.hubUrl.replace(/^http/, 'ws') + '/stream');
+    wsUrl.searchParams.set('token', this.sessionToken);
+    const ws = new WebSocket(wsUrl.toString());
+    ws.onmessage = (event) => {
+      const raw = typeof event.data === 'string' ? event.data : '';
+      if (raw) void this.handlePushedRaw(raw);
+    };
+    ws.onerror = () => {
+      this.threadStatus = { kind: 'error', message: 'stream: connection error' };
+    };
+    return () => {
+      try { ws.close(); } catch { /* already closed */ }
+    };
   }
 
   /** v0.4.17: the Client signalled a session refresh. The HTTP path

@@ -4,6 +4,22 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.55] — 2026-07-02
+
+### Fixed
+- **PWA sidebar didn't update when a new audience-scoped thread was
+  created (Tauri did).** The browser subscribe path used
+  `client.subscribe(thread, cb)` where the callback filtered by
+  thread and skipped the v0.4.48 unknown-thread detection that
+  lives in `handlePushedRaw`. So on the PWA, a push announcing a
+  brand-new thread you're in the audience of arrived on the WS,
+  got dropped by the thread filter, and the sidebar stayed empty
+  until a manual refresh. The Tauri path was fine because
+  `stream.start` forwards raw payloads to `handlePushedRaw`
+  regardless of thread. Now the browser path does the same via a
+  minimal `subscribeRawWs()` helper that hooks the WebSocket
+  directly and routes every push through `handlePushedRaw`.
+
 ## [0.4.54] — 2026-07-02
 
 ### Fixed
@@ -421,6 +437,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.55]: https://github.com/cloudseeder/cove/releases/tag/v0.4.55
 [0.4.54]: https://github.com/cloudseeder/cove/releases/tag/v0.4.54
 [0.4.53]: https://github.com/cloudseeder/cove/releases/tag/v0.4.53
 [0.4.52]: https://github.com/cloudseeder/cove/releases/tag/v0.4.52
