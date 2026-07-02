@@ -4,6 +4,25 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.53] — 2026-07-02
+
+### Fixed
+- **New audience-scoped threads didn't appear in the sidebar until
+  a manual refresh.** Two related sub-bugs:
+  1. `goToInbox` explicitly tore down the WebSocket subscription, so
+     while a user was on the Inbox route no pushes reached the
+     client at all. The audience-entry that would have added someone
+     to a new thread, the `thread_opened` broadcast, receipts — all
+     dropped silently. Fix: don't tear down the socket when leaving
+     a thread; `handlePushedRaw` already knows to refresh listings
+     via the v0.4.48 handlers regardless of current route.
+  2. Fresh authentication landed on Inbox without ever opening the
+     socket in the first place, so someone who just logged in and
+     stayed on Inbox never got pushes. Fix: `ensureSubscribed()` now
+     runs at post-auth boot, opening the WS eagerly. The socket
+     stays alive across route changes and gets restarted (with the
+     new bound thread) when the user actually opens a thread.
+
 ## [0.4.52] — 2026-07-02
 
 ### Fixed
@@ -377,6 +396,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.53]: https://github.com/cloudseeder/cove/releases/tag/v0.4.53
 [0.4.52]: https://github.com/cloudseeder/cove/releases/tag/v0.4.52
 [0.4.51]: https://github.com/cloudseeder/cove/releases/tag/v0.4.51
 [0.4.50]: https://github.com/cloudseeder/cove/releases/tag/v0.4.50

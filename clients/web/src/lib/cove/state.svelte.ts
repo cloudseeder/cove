@@ -1237,6 +1237,14 @@ export class AppState {
       // Sidebar thread list — non-blocking so a slow /threads doesn't
       // gate the inbox render.
       void this.loadThreads();
+      // v0.4.53: open the WebSocket subscription eagerly so pushes
+      // (new-thread announcements, audience updates, receipts) reach
+      // the client from the moment the user authenticates — not just
+      // after they've opened a thread once. Without this, someone
+      // being added to an audience while they're sitting on Inbox
+      // wouldn't see the new thread appear in the sidebar until
+      // they manually refreshed.
+      void this.ensureSubscribed();
       // And on Tauri keymaster stations, surface the root keychain
       // state so AdminPanel can show "import root keys" if absent.
       if (this.inTauri) void this.refreshRootKeychain();
@@ -1267,28 +1275,45 @@ export class AppState {
     const client = this.client;
     this.threadStatus = { kind: 'syncing' };
     try {
-      // 1. Subscribe FIRST.
-      if (this.inTauri) {
-        const teardown = await stream.start(
-          { hubUrl: this.hubUrl, token: this.sessionToken, thread: this.thread },
-          (raw) => { void this.handlePushedRaw(raw); },
-        );
-        this.teardown = () => { void teardown(); };
-      } else {
-        this.teardown = client.subscribe(
-          this.thread,
-          (ve) => this.appendIfNew(ve),
-          (err) => {
-            this.threadStatus = { kind: 'error', message: `stream: ${errMsg(err)}` };
-          },
-        );
-      }
+      // 1. Subscribe FIRST — tearing down any prior subscription so it
+      // picks up the new this.thread (used by the Rust notification
+      // title + the browser-mode thread filter).
+      await this.ensureSubscribed({ restart: true });
       // 2. Then sync from last-known seq.
       const initial = await client.sync(this.thread);
       for (const ve of initial) this.appendIfNew(ve);
       this.threadStatus = { kind: 'idle' };
     } catch (err) {
       this.threadStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
+  /** v0.4.53: bring up the WS subscription if it isn't running, without
+   *  requiring a thread-view context. Used by (a) post-auth boot so
+   *  Inbox users get pushes from the moment they log in, and (b)
+   *  syncAndSubscribe with restart:true to refresh the subscription's
+   *  bound thread when the user switches threads. */
+  private async ensureSubscribed(opts: { restart?: boolean } = {}): Promise<void> {
+    if (this.client === null) return;
+    if (this.teardown !== null && !opts.restart) return;
+    if (this.teardown !== null && opts.restart) {
+      this.teardown();
+      this.teardown = null;
+    }
+    if (this.inTauri) {
+      const teardown = await stream.start(
+        { hubUrl: this.hubUrl, token: this.sessionToken, thread: this.thread },
+        (raw) => { void this.handlePushedRaw(raw); },
+      );
+      this.teardown = () => { void teardown(); };
+    } else {
+      this.teardown = this.client.subscribe(
+        this.thread,
+        (ve) => this.appendIfNew(ve),
+        (err) => {
+          this.threadStatus = { kind: 'error', message: `stream: ${errMsg(err)}` };
+        },
+      );
     }
   }
 
@@ -1609,8 +1634,16 @@ export class AppState {
    *  thread is opened) and re-loads the inbox so unread state reflects
    *  any receipts posted during the just-finished thread session. */
   async goToInbox(): Promise<void> {
-    this.teardown?.();
-    this.teardown = null;
+    // v0.4.53: do NOT tear down the WS subscription on the Inbox route.
+    // handlePushedRaw already ignores entries whose thread doesn't
+    // match this.thread for feed appending; keeping the socket open
+    // lets the unknown-thread + thread_opened + thread_tombstoned
+    // handlers refresh /threads and /inbox in response to pushes that
+    // would otherwise silently miss us (e.g., someone else adds this
+    // caller to an audience-scoped thread — Inbox previously would
+    // only surface it after a manual refresh).
+    // (If we haven't opened a thread yet in this session, no WS was
+    // running anyway — this is a no-op in that case.)
     this.entries = [];
     this.seenIds = new Set();
     this.replyOpen = null;
