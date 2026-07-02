@@ -4,6 +4,18 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.51] — 2026-07-02
+
+### Fixed
+- **Sidebar toggle button was covering the sidebar's own contents on
+  desktop.** The v0.4.45 button was positioned at `left: 0.6rem`
+  unconditionally, so when the sidebar was open on desktop (240px
+  inline column) the chevron sat on top of the "THREADS" heading /
+  Inbox row. Now on viewports ≥641px, the toggle shifts to
+  `left: calc(240px + 0.6rem)` when the sidebar is open — sits at
+  the sidebar's edge as a proper collapse chevron. Mobile drawer
+  behavior is unchanged.
+
 ## [0.4.50] — 2026-07-02
 
 ### Fixed
@@ -347,6 +359,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.51]: https://github.com/cloudseeder/cove/releases/tag/v0.4.51
 [0.4.50]: https://github.com/cloudseeder/cove/releases/tag/v0.4.50
 [0.4.49]: https://github.com/cloudseeder/cove/releases/tag/v0.4.49
 [0.4.48]: https://github.com/cloudseeder/cove/releases/tag/v0.4.48

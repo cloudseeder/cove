@@ -838,6 +838,12 @@
        back to the base 0.6rem and the button stays where it was. */
     top: max(0.6rem, calc(env(safe-area-inset-top) + 0.4rem));
     left: max(0.6rem, calc(env(safe-area-inset-left) + 0.4rem));
+    /* v0.4.51: on desktop when the sidebar is open, shift the toggle
+       to just RIGHT of the sidebar's edge so it sits at the sidebar
+       boundary (chevron collapsing inward) instead of on top of the
+       sidebar's own header. Mobile behavior is unchanged (drawer is
+       an overlay; button overlays it and taps to close). */
+    transition: left 120ms ease;
     z-index: 20;
     background: var(--panel);
     color: var(--fg);
@@ -855,6 +861,14 @@
   .sidebar-toggle:hover {
     opacity: 1;
     border-color: rgba(212, 175, 55, 0.5);
+  }
+  /* v0.4.51: on viewports where the sidebar sits inline (not overlay),
+     push the toggle out of the sidebar's column when it's open. 240px
+     matches the sidebar's width in ThreadList.svelte. */
+  @media (min-width: 641px) {
+    :global(.layout.sidebar-open) .sidebar-toggle {
+      left: calc(240px + 0.6rem);
+    }
   }
   /* v0.4.45: mobile sidebar backdrop. Hidden on desktop; shown on
      narrow viewports only when the sidebar is open. */
