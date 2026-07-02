@@ -1357,13 +1357,17 @@ export class AppState {
         if (this.route === 'inbox') void this.loadInbox();
         return;
       }
-      // v0.4.48: a new ephemeral thread was opened somewhere. Refresh
-      // /threads so it appears in the sidebar without a manual poll.
-      // Also refresh /inbox if we're on that route so new-thread rows
-      // show up there too.
+      // v0.4.48 → v0.4.54: this handler used to receive a global
+      // thread_opened broadcast from the hub. The hub no longer emits
+      // that message — it leaked the existence of newly-created
+      // audience-scoped threads to non-audience members between the
+      // "open" call and the subsequent audience entry landing. Audience
+      // members now learn about a new thread the correct way: the
+      // audience entry lands via WS and the unknown-thread detection
+      // below triggers loadThreads. Handler kept as a no-op for
+      // forward-compat with any hub still emitting the old event
+      // (older self-hosted deployments during rollout).
       if (msg.type === 'thread_opened') {
-        void this.loadThreads();
-        if (this.route === 'inbox') void this.loadInbox();
         return;
       }
       // v0.4.38: an ephemeral thread was sealed. Purge any local

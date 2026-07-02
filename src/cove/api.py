@@ -434,17 +434,27 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                     row["expires_at"] = expires
                     row["creator_pubkey"] = rec["creator_pubkey"]
             rows.append(row)
-        # v0.4.38: also surface freshly-opened ephemeral threads that
-        # have no entries yet — otherwise a just-created thread stays
-        # invisible to /threads until someone posts. Overview's
-        # thread_summaries() derives from entries; these are the ones
-        # with entry_count == 0 that don't show up there.
+        # v0.4.38: surface freshly-opened ephemeral threads that have no
+        # entries yet — otherwise a just-created thread stays invisible
+        # to /threads until someone posts.
+        # v0.4.54: scope this fallback to the CREATOR only. Prior code
+        # surfaced empty ephemeral threads to every caller with
+        # audience: null, which briefly leaked the existence of every
+        # new group thread to every attested member (between openEphemeral
+        # returning and the subsequent audience entry landing). A
+        # non-creator learns about a scoped thread the correct way —
+        # via the audience entry's push landing in their WS — not from
+        # a listing that predates the audience.
         seen = {r["thread"] for r in rows}
         for thread, rec in eph_by_thread.items():
             if thread in seen:
                 continue
             if rec["tombstoned_at"] is not None:
                 continue  # tombstoned-but-never-had-entries is hidden
+            if rec["creator_pubkey"] != caller:
+                continue  # non-creator has no business seeing an unscoped
+                          # placeholder row for a thread whose audience
+                          # isn't set yet
             try:
                 expires = _add_seconds_iso(
                     _parse_iso(rec["created_at"]), rec["ttl_seconds"],
@@ -723,20 +733,15 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
             return _err(409, error="conflict", reason=str(e))
         ephemeral_translog.open_thread(thread)
 
-        # v0.4.48: broadcast so connected clients see the new thread
-        # appear in their sidebar without a manual /threads refresh.
-        # Best-effort — a fan-out failure must not fail the creation
-        # (the thread is already durably registered).
-        if fanout is not None:
-            try:
-                await fanout.broadcast({
-                    "type": "thread_opened",
-                    "thread": thread,
-                    "creator_pubkey": caller,
-                    "expires_at": expected_valid_after,
-                })
-            except Exception:
-                pass
+        # v0.4.54: the v0.4.48 thread_opened broadcast has been removed.
+        # It fired to every connected client with no audience filter
+        # (couldn't have one — no audience exists yet at open time),
+        # which leaked the existence of every new private thread to
+        # every attested member. The audience entry the client posts
+        # a moment later IS audience-filtered by the fan-out layer,
+        # so audience members receive that entry, trigger their
+        # unknown-thread handler, and load /threads on their own —
+        # correctly-scoped visibility, no leak.
 
         return {
             "thread": thread,

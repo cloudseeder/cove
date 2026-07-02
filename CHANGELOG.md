@@ -4,6 +4,31 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.54] — 2026-07-02
+
+### Fixed
+- **Non-audience members briefly saw new group threads in their
+  sidebar.** Two compounding leaks introduced in v0.4.38 and v0.4.48:
+  1. `POST /threads/ephemeral` broadcast a `{type: "thread_opened"}`
+     WS event with no audience filter (couldn't have one — no
+     audience exists yet at open time), so every attested member's
+     client learned about every new private thread.
+  2. `/threads` surfaced empty ephemeral rows with `audience: null`
+     to every caller. A non-creator hitting `/threads` between the
+     open and the first audience entry saw the thread as public.
+
+  Together: Amy would see a new group thread pop into her sidebar
+  before you added her; tapping it showed 0 messages because
+  `/sync` correctly filtered her out.
+
+  Fix: dropped the `thread_opened` broadcast entirely — audience
+  members learn about the thread via the audience-entry push
+  (which IS audience-filtered by the fan-out layer). Scoped the
+  `/threads` empty-ephemeral fallback to the CREATOR only.
+
+  Client keeps an inert `thread_opened` handler for forward-compat
+  with older self-hosted hubs that might still emit the event.
+
 ## [0.4.53] — 2026-07-02
 
 ### Fixed
@@ -396,6 +421,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.54]: https://github.com/cloudseeder/cove/releases/tag/v0.4.54
 [0.4.53]: https://github.com/cloudseeder/cove/releases/tag/v0.4.53
 [0.4.52]: https://github.com/cloudseeder/cove/releases/tag/v0.4.52
 [0.4.51]: https://github.com/cloudseeder/cove/releases/tag/v0.4.51
