@@ -796,9 +796,11 @@ export class AppState {
     error: string | null;
     /** v0.4.38: opt in to an ephemeral thread with a TTL. When true,
      *  submitNewThread routes through openEphemeralThread instead of
-     *  createDirectThread / switchThread. Ephemeral + private is not
-     *  supported in this ship (audience-scope kind is rejected in
-     *  ephemeral threads); the dialog forces scope back to 'public'. */
+     *  createDirectThread / switchThread.
+     *  v0.4.48: ephemeral + private is now supported — after
+     *  openEphemeralThread we post an audience entry into the newly
+     *  opened thread (the audience entry lives in the ephemeral log
+     *  and dies with the thread). */
     ephemeral: boolean;
     ttlDays: number;
   } | null>(null);
@@ -850,11 +852,25 @@ export class AppState {
         // v0.4.38: ephemeral thread creation. TTL in days → seconds.
         // Backend clamps to [1d, 365d]; the dialog UX presets to
         // 7/30/90 with a free-form field for anything else.
-        if (this.client === null) throw new Error('not connected');
+        // v0.4.48: ephemeral + private is now supported. After the
+        // hub opens the thread, post an audience entry into it (also
+        // ephemeral, dies with the thread). Order matters: audience
+        // must land before the first post so non-audience subscribers
+        // never see the post pushed.
+        if (this.client === null || this.authStatus.kind !== 'authenticated') {
+          throw new Error('not connected');
+        }
         const ttlSeconds = Math.max(1, Math.round(d.ttlDays)) * 86400;
         await this.client.openEphemeralThread({
           thread: sanitized, ttlSeconds,
         });
+        if (d.scope === 'private') {
+          const me = this.authStatus.pubkey;
+          const pubkeys = d.selected.has(me)
+            ? Array.from(d.selected)
+            : [me, ...Array.from(d.selected)];
+          await this.setThreadAudience(sanitized, pubkeys);
+        }
         await this.switchThread(sanitized);
         if (d.message.trim()) await this.post(d.message);
       } else if (d.scope === 'private') {
@@ -1316,6 +1332,15 @@ export class AppState {
         if (this.route === 'inbox') void this.loadInbox();
         return;
       }
+      // v0.4.48: a new ephemeral thread was opened somewhere. Refresh
+      // /threads so it appears in the sidebar without a manual poll.
+      // Also refresh /inbox if we're on that route so new-thread rows
+      // show up there too.
+      if (msg.type === 'thread_opened') {
+        void this.loadThreads();
+        if (this.route === 'inbox') void this.loadInbox();
+        return;
+      }
       // v0.4.38: an ephemeral thread was sealed. Purge any local
       // in-memory entries for that thread (the hub deleted them
       // durably) and refresh /threads + /inbox so the UI reflects
@@ -1332,6 +1357,13 @@ export class AppState {
       }
       if (msg.type !== 'entry') return;
       const ve = await this.client.verify(msg.entry, msg.seq);
+      // v0.4.48: a pushed entry can announce a thread we haven't seen
+      // yet (someone else just created it). Refresh /threads so the
+      // sidebar picks it up; still don't append to the visible feed
+      // unless it's for the currently-viewed thread.
+      if (!this.threads.some((t) => t.thread === ve.entry.thread)) {
+        void this.loadThreads();
+      }
       if (ve.entry.thread !== this.thread) return;
       this.appendIfNew(ve);
     } catch (err) {

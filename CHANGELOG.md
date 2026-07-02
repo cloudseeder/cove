@@ -4,6 +4,33 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.48] — 2026-07-02
+
+### Added
+- **Group ephemeral threads.** `audience` is now an allowed entry
+  kind inside ephemeral threads. Previously the pipeline rejected
+  it alongside real governance kinds, which made "recital chat
+  with just three people that expires next week" structurally
+  impossible. Audience is per-thread routing, not governance —
+  the entry lives in the ephemeral log and dies with the thread.
+  New-thread dialog: pick both "Ephemeral" and "Just these
+  people" freely; the client now posts the audience entry into
+  the newly opened ephemeral thread after `POST /threads/ephemeral`.
+- **`thread_opened` WebSocket broadcast** on `POST
+  /threads/ephemeral`. Connected clients see the new thread appear
+  in their sidebar without a manual /threads refresh. Client also
+  now detects unknown-thread pushed entries (someone else created
+  a permanent thread) and triggers a `/threads` reload so those
+  appear too.
+
+### Fixed
+- New-thread dialog no longer silently overrides your audience
+  selection when you flip to "Ephemeral." The prior behavior set
+  `d.scope = 'public'` and cleared the selected pubkeys on the
+  ephemeral radio's onchange handler, so if you picked members
+  and then toggled ephemeral (or vice versa in click order), the
+  UI showed your picks but the backend created a public thread.
+
 ## [0.4.47] — 2026-07-02
 
 ### Fixed
@@ -281,6 +308,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.48]: https://github.com/cloudseeder/cove/releases/tag/v0.4.48
 [0.4.47]: https://github.com/cloudseeder/cove/releases/tag/v0.4.47
 [0.4.46]: https://github.com/cloudseeder/cove/releases/tag/v0.4.46
 [0.4.45]: https://github.com/cloudseeder/cove/releases/tag/v0.4.45

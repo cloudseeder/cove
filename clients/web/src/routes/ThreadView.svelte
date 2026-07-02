@@ -539,11 +539,7 @@
       <label class="radio">
         <input type="radio" name="retention"
           checked={d.ephemeral}
-          onchange={() => {
-            d.ephemeral = true;
-            d.scope = 'public';   // ephemeral + private not supported this ship
-            d.selected.clear();
-          }} />
+          onchange={() => { d.ephemeral = true; }} />
         <span>Ephemeral — deletes after a TTL</span>
       </label>
       {#if d.ephemeral}

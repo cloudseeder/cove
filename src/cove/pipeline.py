@@ -27,10 +27,16 @@ class AcceptanceError(Exception):
 
 # v0.4.37: entry kinds allowed inside an ephemeral thread. Everything not
 # in this set is a governance/permanent-shape kind and gets rejected
-# structurally when directed at an ephemeral thread — matches the user's
-# design decision that ephemeral threads carry only conversational payload,
-# never anything a governance decision depends on.
-_EPHEMERAL_ALLOWED_KINDS = frozenset({"post", "reply", "receipt"})
+# structurally when directed at an ephemeral thread.
+#
+# v0.4.48: `audience` moved into the allowed set. Audience is per-thread
+# routing (who receives pushes / who /sync surfaces the thread to), not
+# governance. In an ephemeral thread the audience entry lives in the
+# per-thread ephemeral log and dies with the thread; nothing about it
+# leaks or persists after tombstone. The prior blanket rejection made
+# "group ephemeral threads" structurally impossible — a real gap for the
+# recital-with-just-3-people use case.
+_EPHEMERAL_ALLOWED_KINDS = frozenset({"post", "reply", "receipt", "audience"})
 
 
 class Pipeline:

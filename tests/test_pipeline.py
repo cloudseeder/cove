@@ -362,12 +362,15 @@ def test_permanent_and_ephemeral_logs_stay_isolated(eph_pipeline):
 
 @pytest.mark.parametrize("bad_kind", [
     "notice", "membership", "supersede", "revoke",
-    "branch", "archive", "reopen", "audience",
+    "branch", "archive", "reopen",
+    # v0.4.48: `audience` was previously rejected but is now permitted
+    # (routing, not governance — dies with the thread). See
+    # test_audience_kind_accepted_in_ephemeral below.
 ])
 def test_governance_kinds_rejected_structurally_in_ephemeral(eph_pipeline, bad_kind):
-    """Only post/reply/receipt allowed inside an ephemeral thread. Every
-    governance-shape kind must be rejected BEFORE seq allocation so a
-    caller can't burn seq numbers with rejected attempts."""
+    """post/reply/receipt/audience allowed inside an ephemeral thread;
+    the governance-shape kinds listed above must be rejected BEFORE seq
+    allocation so a caller can't burn seq numbers with rejected attempts."""
     pl, apriv, apub = eph_pipeline
     ev = Entry(
         thread="beach", author=apub, kind=bad_kind,
@@ -384,6 +387,27 @@ def test_governance_kinds_rejected_structurally_in_ephemeral(eph_pipeline, bad_k
     # Neither log advanced.
     assert pl.translog.current_sth().tree_size == 0
     assert pl.ephemeral_translog.current_sth("beach").tree_size == 0
+
+
+def test_audience_kind_accepted_in_ephemeral(eph_pipeline):
+    """v0.4.48: audience is per-thread routing, not governance, so it's
+    allowed in ephemeral threads. Without this, "group ephemeral thread"
+    (a private conversation with just a few people that expires) was
+    structurally impossible — the pipeline rejected the very entry that
+    would scope the audience."""
+    from cove.entry import Audience
+    pl, apriv, apub = eph_pipeline
+    ev = sign_entry(Entry(
+        thread="beach", author=apub, kind="audience",
+        created_at="2026-01-01T00:00:00Z", body="",
+        audience=Audience(pubkeys=[apub]),
+    ), apriv)
+
+    # Should NOT raise — pipeline accepts it into the ephemeral log.
+    pl.accept(ev)
+
+    assert pl.ephemeral_translog.current_sth("beach").tree_size == 1
+    assert pl.translog.current_sth().tree_size == 0    # not the main log
 
 
 def test_ephemeral_receipt_feeds_ledger(eph_pipeline):

@@ -627,8 +627,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     # is prevented at the STH layer by binding the thread name into
     # the ephemeral STH signing payload.
     @api.post("/threads/ephemeral")
-    def post_threads_ephemeral(body: dict = Body(...),
-                               caller: str = Depends(require_session)):
+    async def post_threads_ephemeral(body: dict = Body(...),
+                                     caller: str = Depends(require_session)):
         if ephemeral_translog is None:
             return _err(503, error="no_ephemeral_log")
 
@@ -722,6 +722,21 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         except ValueError as e:
             return _err(409, error="conflict", reason=str(e))
         ephemeral_translog.open_thread(thread)
+
+        # v0.4.48: broadcast so connected clients see the new thread
+        # appear in their sidebar without a manual /threads refresh.
+        # Best-effort — a fan-out failure must not fail the creation
+        # (the thread is already durably registered).
+        if fanout is not None:
+            try:
+                await fanout.broadcast({
+                    "type": "thread_opened",
+                    "thread": thread,
+                    "creator_pubkey": caller,
+                    "expires_at": expected_valid_after,
+                })
+            except Exception:
+                pass
 
         return {
             "thread": thread,
