@@ -917,6 +917,27 @@
       padding-right: 0.9rem;
       padding-bottom: 1rem;
     }
+    /* v0.4.50: on mobile, stack the header vertically. A long thread
+       name gets the whole first line; the view-toggle + status +
+       archive cluster gets its own row underneath. Prevents the
+       right cluster from being crushed to unreadable width by a long
+       name, and prevents a long name from being cramped by the cluster. */
+    section.thread header {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 0.6rem;
+      margin-bottom: 1rem;
+    }
+    section.thread header > .head-right {
+      justify-content: flex-start;
+      gap: 0.7rem;
+    }
+    section.thread header h1 {
+      font-size: 1.25rem;
+    }
+    section.thread .status {
+      padding-top: 0;
+    }
   }
   .thread > :global(*) {
     max-width: 720px;
@@ -930,10 +951,21 @@
     gap: 1rem;
     margin-bottom: 1.5rem;
   }
+  header > div:first-child {
+    /* v0.4.50: give the name column something to shrink into so long
+       thread names don't push the right cluster off the edge. */
+    min-width: 0;
+    flex: 1 1 auto;
+  }
   h1 {
     margin: 0 0 0.25rem;
     font-size: 1.4rem;
     font-weight: 600;
+    /* v0.4.50: wrap long names inside the h1 rather than pushing
+       the container width; break-word covers URL-shaped names too. */
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    line-height: 1.15;
   }
   .muted {
     margin: 0;
@@ -1100,6 +1132,11 @@
     display: flex;
     align-items: center;
     gap: 0.85rem;
+    flex-shrink: 0;
+    /* v0.4.50: allow the cluster to wrap under itself instead of
+       squeezing the toggle buttons on a cramped viewport. */
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
   .view-toggle {
     display: inline-flex;
@@ -1107,6 +1144,7 @@
     border-radius: 8px;
     overflow: hidden;
     font-size: 0.78rem;
+    flex-shrink: 0;
   }
   .view-toggle button {
     appearance: none;
@@ -1116,6 +1154,10 @@
     color: var(--muted);
     cursor: pointer;
     font: inherit;
+    /* v0.4.50: force each button to be a whole word wide so a cramped
+       parent can't clip "Cards" to "Car". */
+    white-space: nowrap;
+    flex-shrink: 0;
   }
   .view-toggle button.active {
     background: rgba(212, 175, 55, 0.18);

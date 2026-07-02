@@ -4,6 +4,25 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.50] — 2026-07-02
+
+### Fixed
+- **Mobile thread header stacks vertically.** On narrow viewports
+  (<640px) the thread-name column and the view-toggle + status +
+  archive cluster used to sit side-by-side and fight for space —
+  short names left awkward whitespace on the right, long names
+  pushed the right cluster off-edge and truncated the toggle
+  button text ("Cards" clipping to "Car"). Now the name gets its
+  own row and the cluster gets its own beneath it, both with the
+  full column width to breathe.
+- **Toggle buttons never truncate.** `.view-toggle button` gains
+  `white-space: nowrap` + `flex-shrink: 0` so a cramped parent
+  can't clip the label. The wrap-underneath behavior on the
+  cluster now handles the tight-space case gracefully.
+- Long thread names wrap inside the h1 rather than overflowing
+  the column; h1 shrinks slightly on mobile (1.4rem → 1.25rem)
+  to match the tighter feel.
+
 ## [0.4.49] — 2026-07-02
 
 ### Fixed
@@ -328,6 +347,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.50]: https://github.com/cloudseeder/cove/releases/tag/v0.4.50
 [0.4.49]: https://github.com/cloudseeder/cove/releases/tag/v0.4.49
 [0.4.48]: https://github.com/cloudseeder/cove/releases/tag/v0.4.48
 [0.4.47]: https://github.com/cloudseeder/cove/releases/tag/v0.4.47
