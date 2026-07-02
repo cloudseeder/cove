@@ -541,9 +541,26 @@ export class Client {
     const data = await this.requestJson('GET', `/sync?${params}`);
     const items = data.entries as Array<{ entry: Entry; seq: number }>;
 
+    // v0.4.52: verify each entry independently. Previously an
+    // exception on any single entry aborted the whole batch — one
+    // broken historical entry hid every subsequent entry in the same
+    // sync, and the UI looked like "only new messages showed up."
+    // Now a failed verify is logged and skipped; the rest of the
+    // batch still lands. The advanced high-water still reflects the
+    // highest successfully-verified seq so a future sync retries the
+    // failed one at some point (either it heals or stays hidden — the
+    // rest of history is no longer collateral damage).
     const verified: VerifiedEntry[] = [];
     for (const item of items) {
-      verified.push(await this.verify(item.entry, item.seq, sth));
+      try {
+        verified.push(await this.verify(item.entry, item.seq, sth));
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[cove] sync: skipping entry ${item.entry.id} at seq ${item.seq}`,
+          err,
+        );
+      }
     }
 
     if (verified.length > 0) {

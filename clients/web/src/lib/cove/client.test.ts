@@ -169,9 +169,14 @@ describe('sync', () => {
     expect(replay.length).toBe(items.length);
   });
 
-  test('throws VerificationError on tampered entry, high-water stays put', async () => {
+  test('v0.4.52: tampered entry is skipped, other entries still verify', async () => {
+    // Each entry's signature stands on its own. A tampered entry in
+    // transit doesn't compromise correctly-signed entries in the same
+    // batch — refusing to render the whole batch on one bad row was
+    // strictly wrong from both security and UX standpoints. Rule:
+    // skip the bad entry, keep the good ones, advance high-water to
+    // the max seq of what verified successfully.
     const { fetch } = mockHub();
-    // Wrap the mock to tamper a body field on the wire — sig will no longer match.
     const tampering = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       const resp = await fetch(url, init);
       const u = new URL(url.toString());
@@ -184,9 +189,14 @@ describe('sync', () => {
       hubUrl: HUB, privateKey: alice.priv, publicKey: alice.pub, fetch: tampering,
     });
     await c.authenticate();
-    await expect(c.sync('annual-meeting'))
-      .rejects.toBeInstanceOf(VerificationError);
-    expect(c.highWaterFor('annual-meeting')).toBe(-1);
+    const result = await c.sync('annual-meeting');
+    // Fixture batch had multiple entries; the first one was tampered.
+    // The rest still verify and come through.
+    expect(result.length).toBe(items.length - 1);
+    // No entry with the tampered id in the result.
+    expect(result.some((v) => v.entry.body === 'TAMPERED ON THE WIRE')).toBe(false);
+    // High-water is the max seq of the verified survivors, not -1.
+    expect(c.highWaterFor('annual-meeting')).toBe(items[items.length - 1].seq);
   });
 });
 

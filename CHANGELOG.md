@@ -4,6 +4,24 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.52] — 2026-07-02
+
+### Fixed
+- **`Client.sync` no longer abandons the whole batch on one bad
+  entry.** Previously `for (…) verified.push(await verify(…))` threw
+  on any single verification failure, so a single flaky historical
+  entry (bad inclusion proof, weird cached STH, whatever) hid every
+  other entry that would have verified fine. Symptom Brooks saw:
+  Amy was just added to an audience-scoped ephemeral thread, tapped
+  it, and only the freshly-arrived push showed up; historical
+  entries were silently missing until she quit and restarted (fresh
+  boot cleared whatever transient state was tripping verify). Now:
+  each entry's signature stands on its own — a failing verify is
+  logged via `console.warn` and skipped; the rest of the batch still
+  lands. High-water advances to the max seq of what verified
+  successfully. Test updated to reflect the new (defensible)
+  semantics: tampered entry skipped, remaining entries verify.
+
 ## [0.4.51] — 2026-07-02
 
 ### Fixed
@@ -359,6 +377,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.52]: https://github.com/cloudseeder/cove/releases/tag/v0.4.52
 [0.4.51]: https://github.com/cloudseeder/cove/releases/tag/v0.4.51
 [0.4.50]: https://github.com/cloudseeder/cove/releases/tag/v0.4.50
 [0.4.49]: https://github.com/cloudseeder/cove/releases/tag/v0.4.49
