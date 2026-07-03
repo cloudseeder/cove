@@ -25,7 +25,7 @@
   }
   let { app, onBack }: Props = $props();
 
-  let hubUrl = $state('https://cove.oap.dev');
+  let hubUrl = $state('https://lwccoa.cove.oap.dev');
   let nameHint = $state('');
   // v0.4.33: invite code is required. The keymaster mints it via
   // AdminPanel and delivers it out-of-band (text / Signal / paper);
@@ -144,7 +144,7 @@
     <label>
       <span>Hub URL</span>
       <input type="url" bind:value={hubUrl}
-        placeholder="https://cove.oap.dev" disabled={isGenerating} />
+        placeholder="https://lwccoa.cove.oap.dev" disabled={isGenerating} />
     </label>
 
     {#if needPassphrase}

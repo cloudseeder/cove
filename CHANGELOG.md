@@ -4,6 +4,16 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.66] — 2026-07-03
+
+### Changed
+- **Client default hub URL: `cove.oap.dev` → `lwccoa.cove.oap.dev`.**
+  Part of a clean-slate URL reshuffling done while the pilot is
+  still just two test users. `OnboardingPanel`, `AuthPanel`, and
+  the `scripts/attest_member.py` CLI docstring all now default to
+  the new URL. The old `cove.oap.dev` alias is being retired at the
+  cloudflared layer (dropped, not redirected) — the URL is dead.
+
 ## [0.4.65] — 2026-07-03
 
 ### Added

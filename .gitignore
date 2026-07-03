@@ -20,7 +20,7 @@ data/
 
 # roster CSVs used at bootstrap. Real-org rosters may hold names +
 # affiliations that shouldn't live in git.
-/roster*.csv
+/*roster*.csv
 
 # python
 __pycache__/
@@ -33,3 +33,6 @@ venv/
 
 # os
 .DS_Store
+
+# brooks
+docker_cmds
