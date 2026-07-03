@@ -4,6 +4,19 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.62] — 2026-07-03
+
+### Changed
+- **Cards mode: verification chain reveals directly under the seal.**
+  Previously the chain panel opened at the bottom of the card, past
+  the body, attachments, and footer — on tall cards that meant the
+  panel could sit below the fold and require scrolling to see, right
+  after the user clicked the trigger. Moved the `<VerificationChain>`
+  block up so it renders immediately below the header. Chat mode is
+  unchanged — its trigger is the ✓ button at the row's right edge,
+  and the panel appearing below the message body is already close to
+  the click point.
+
 ## [0.4.61] — 2026-07-03
 
 ### Changed

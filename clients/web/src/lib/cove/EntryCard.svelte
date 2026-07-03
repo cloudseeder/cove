@@ -81,6 +81,15 @@
     <time datetime={createdIso} title={createdIso}>{createdShort}</time>
   </header>
 
+  <!-- v0.4.62: VerificationChain reveals directly under the seal so the
+       chain becomes visible in place when the user clicks it. Previously
+       it opened at the bottom of the card, past the body/attachments
+       /footer — on long cards that meant the panel could sit below the
+       fold and require scrolling to see. -->
+  {#if revealed}
+    <VerificationChain {ve} />
+  {/if}
+
   {#if isBranch && onFollowBranch}
     <button type="button" class="branch-link"
       onclick={() => onFollowBranch(ve.entry.branch_thread!)}>
@@ -122,10 +131,6 @@
         <DeliveryIndicator {client} entryId={ve.entry.id} {members} />
       {/if}
     </footer>
-  {/if}
-
-  {#if revealed}
-    <VerificationChain {ve} />
   {/if}
 </article>
 
