@@ -4,6 +4,53 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.64] — 2026-07-03
+
+### Added
+- **Keypair groups — one-click audience shortcuts for multi-device
+  members.** A person with multiple device keypairs ("Kevin",
+  "Kevin's Phone") used to require the admin to select every device
+  when adding them to a private thread. Groups bundle N pubkeys under
+  a display name so one chip adds all of them at once. Audience on
+  the wire is still a flat pubkey list — groups are purely an
+  ergonomic layer; no delivery-time semantic changes.
+
+  **Protocol.** New `DirectoryManifest.groups: Optional[list[KeypairGroup]]`
+  field, root-signed like attestations. `KeypairGroup = { name,
+  member_pubkeys }`. Byte-identical-when-absent canonicalization
+  per [[protocol-extensibility]]: pre-v0.4.64 manifests never had
+  the field and still verify with their existing signatures.
+  Per-group `member_pubkeys` is sorted+deduped on the wire so the
+  signed bytes reflect the SET of pubkeys, not input order. Cross-
+  group array is sorted by name for a deterministic canonical form.
+  Mirrored in Python (`src/cove/identity.py`) and TypeScript
+  (`types.ts`, `identity.ts:manifestContent`, `verify.ts:manifestContent`).
+  Four new Python tests cover round-trip, byte-identical-absent,
+  sig-covers-field, and pubkey-set-not-order equivalence.
+
+  **State.** `AppState.saveGroups(next: KeypairGroup[] | null)` — same
+  root-signed manifest-update flow as `setCapabilitiesByRole`. Every
+  other `issueDirectory` call site now forwards `groups: current.groups
+  ?? null` so a caps edit or attestation add can't silently strip a
+  groups list they weren't editing. Plus `AppState.addGroupToNewThread`
+  for the new-thread dialog's bulk-add.
+
+  **Admin UI.** New "Keypair groups" section in `AdminPanel.svelte`
+  with the same visual shape as the Roles section. Draft-state editor:
+  add/remove groups, name each one, multi-select members via checklist,
+  Save/Cancel. Validation refuses empty names, empty groups, and
+  duplicate names. Save cleans up (trim, sort/dedupe) then calls
+  `saveGroups`; empty draft → null so the manifest omits the field.
+
+  **Audience UX.** Both audience dialogs (edit-existing on
+  `ThreadView` + new-thread creation) now show a "Shortcuts:" row of
+  group chips above the members checklist. Each chip shows `+ Name
+  +N` where N is how many of the group's keypairs aren't yet in the
+  selection. Click to bulk-add; chip goes disabled with a ✓ once
+  every keypair in the group is already selected. Skips revoked
+  pubkeys — a group can safely reference a formerly-attested member
+  without smuggling them into fresh audiences.
+
 ## [0.4.63] — 2026-07-03
 
 ### Changed

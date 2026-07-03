@@ -16,7 +16,7 @@ import pytest
 
 from cove import crypto
 from cove.identity import (
-    Attestation, Directory, DirectoryManifest, Revocation,
+    Attestation, Directory, DirectoryManifest, KeypairGroup, Revocation,
     issue_attestation, issue_directory,
     verify_attestation, verify_directory_manifest,
 )
@@ -507,3 +507,91 @@ def test_directory_from_manifest_rejects_invalid_sig(root_keypair, keypair):
     m.updated_at = "2030-01-01T00:00:00+00:00"   # forge after signing
     with pytest.raises(ValueError):
         Directory.from_manifest(m)
+
+
+# ---- keypair groups (v0.4.64) -----------------------------------------
+def test_manifest_with_groups_round_trips(root_keypair, keypair):
+    from cove.identity import manifest_from_dict, manifest_to_dict
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    # Deliberately unsorted pubkeys in the group + unsorted group order —
+    # the canonical form must sort both so the signed bytes are the SET,
+    # not the input order.
+    m = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+        groups=[
+            KeypairGroup(name="Kevin", member_pubkeys=["bb" * 32, "aa" * 32]),
+            KeypairGroup(name="Alice", member_pubkeys=["cc" * 32]),
+        ],
+    )
+    assert verify_directory_manifest(m) is True
+    d = manifest_to_dict(m)
+    # Normalized wire form: groups sorted by name, pubkeys sorted per group.
+    assert [g["name"] for g in d["groups"]] == ["Alice", "Kevin"]
+    assert d["groups"][1]["member_pubkeys"] == ["aa" * 32, "bb" * 32]
+    m2 = manifest_from_dict(d)
+    assert verify_directory_manifest(m2) is True
+    assert m2.groups is not None and len(m2.groups) == 2
+
+
+def test_manifest_without_groups_omits_field_from_wire(root_keypair, keypair):
+    """Byte-identical canonicalization for pre-v0.4.64 manifests: when
+    the field is None it MUST NOT appear on the wire, so old verifiers
+    that don't know the field re-canonicalize to the same bytes and
+    the sig still verifies."""
+    from cove.identity import manifest_to_dict
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    m = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    d = manifest_to_dict(m)
+    assert "groups" not in d
+
+
+def test_manifest_with_and_without_groups_have_different_sigs(root_keypair, keypair):
+    """Proves the groups field is inside the signed payload — flipping
+    from None to a non-empty list must change the root sig, or the
+    admin could tamper with groups post-hoc."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    base_args = dict(
+        org=root_pub, attestations=[att], revocations=[],
+        updated_at="2026-06-01T00:00:00+00:00",
+    )
+    m_no = issue_directory(root_priv, **base_args)
+    m_yes = issue_directory(
+        root_priv, **base_args,
+        groups=[KeypairGroup(name="Kevin", member_pubkeys=["aa" * 32])],
+    )
+    assert m_no.sig != m_yes.sig
+    assert verify_directory_manifest(m_no) is True
+    assert verify_directory_manifest(m_yes) is True
+
+
+def test_manifest_groups_normalize_pubkeys_by_set_not_order(root_keypair, keypair):
+    """Two manifests differing only in group-input pubkey ORDER produce
+    identical canonical bytes and therefore identical sigs when signed
+    at the same timestamp. Proves the sig covers the SET of pubkeys."""
+    root_priv, root_pub = root_keypair
+    _, member_pub = keypair
+    att = _issue(root_priv, root_pub, member_pub)
+    same_time = "2026-06-01T00:00:00+00:00"
+    m1 = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at=same_time,
+        groups=[KeypairGroup(name="Kevin",
+                             member_pubkeys=["aa" * 32, "bb" * 32])],
+    )
+    m2 = issue_directory(
+        root_priv, org=root_pub, attestations=[att], revocations=[],
+        updated_at=same_time,
+        groups=[KeypairGroup(name="Kevin",
+                             member_pubkeys=["bb" * 32, "aa" * 32])],
+    )
+    assert m1.sig == m2.sig

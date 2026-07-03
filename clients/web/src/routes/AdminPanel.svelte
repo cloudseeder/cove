@@ -22,7 +22,7 @@
   import { fingerprint } from '$lib/cove/pairing';
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
-  import type { Attestation } from '$lib/cove/types';
+  import type { Attestation, KeypairGroup } from '$lib/cove/types';
   import {
     CAPABILITIES, DEFAULT_CAPABILITIES_BY_ROLE, type Capability,
   } from '$lib/cove/types';
@@ -212,6 +212,79 @@
     }
     await app.setCapabilitiesByRole(stripped);
     if (app.adminStatus.kind === 'idle') closeRolesEditor();
+  }
+
+  // ---- v0.4.64: keypair groups editor -----------------------------------
+  // Same editing shape as roles: initialize a draft on open, mutate
+  // locally, save re-signs a fresh manifest. Groups are display-name +
+  // pubkey list; storage is a KeypairGroup[] on the manifest.
+  let groupsDraft = $state<KeypairGroup[] | null>(null);
+  const currentGroups = $derived<KeypairGroup[]>(app.manifest?.groups ?? []);
+
+  function openGroupsEditor() {
+    groupsDraft = currentGroups.map((g) => ({
+      name: g.name,
+      member_pubkeys: [...g.member_pubkeys],
+    }));
+  }
+  function closeGroupsEditor() {
+    groupsDraft = null;
+  }
+  function addGroup() {
+    if (groupsDraft === null) return;
+    groupsDraft = [...groupsDraft, { name: '', member_pubkeys: [] }];
+  }
+  function removeGroup(idx: number) {
+    if (groupsDraft === null) return;
+    groupsDraft = groupsDraft.filter((_, i) => i !== idx);
+  }
+  function updateGroupName(idx: number, name: string) {
+    if (groupsDraft === null) return;
+    groupsDraft = groupsDraft.map((g, i) => (i === idx ? { ...g, name } : g));
+  }
+  function toggleMemberInGroup(idx: number, pubkey: string) {
+    if (groupsDraft === null) return;
+    groupsDraft = groupsDraft.map((g, i) => {
+      if (i !== idx) return g;
+      const set = new Set(g.member_pubkeys);
+      if (set.has(pubkey)) set.delete(pubkey);
+      else set.add(pubkey);
+      return { ...g, member_pubkeys: Array.from(set) };
+    });
+  }
+  function groupsDirty(): boolean {
+    if (groupsDraft === null) return false;
+    // Canonical compare: sorted name + sorted pubkeys per group.
+    const key = (gs: KeypairGroup[]) => gs
+      .map((g) => `${g.name}\0${[...g.member_pubkeys].sort().join(',')}`)
+      .sort()
+      .join('|');
+    return key(groupsDraft) !== key(currentGroups);
+  }
+  function groupsValid(): boolean {
+    if (groupsDraft === null) return false;
+    // Every draft group needs a name AND at least one pubkey. Duplicate
+    // names would be confusing in the audience picker — reject those too.
+    const names = new Set<string>();
+    for (const g of groupsDraft) {
+      const name = g.name.trim();
+      if (name === '' || g.member_pubkeys.length === 0) return false;
+      if (names.has(name)) return false;
+      names.add(name);
+    }
+    return true;
+  }
+  async function submitGroups() {
+    if (groupsDraft === null) return;
+    // Normalize on the way out: trim names, sorted+deduped pubkeys.
+    // Empty draft → null so the manifest omits the field entirely
+    // (byte-identical-when-absent with pre-v0.4.64).
+    const clean = groupsDraft.map((g) => ({
+      name: g.name.trim(),
+      member_pubkeys: [...new Set(g.member_pubkeys)].sort(),
+    }));
+    await app.saveGroups(clean.length === 0 ? null : clean);
+    if (app.adminStatus.kind === 'idle') closeGroupsEditor();
   }
 
   let rootPriv = $state('');
@@ -947,6 +1020,112 @@
       {/if}
     </section>
 
+    <!-- v0.4.64: Keypair groups. Ergonomic shortcut for the audience
+         picker — a group bundles several member pubkeys (e.g. "Kevin
+         + Kevin's Phone") under one display name so an admin can add
+         them all with one click. Storage is a root-signed field on the
+         DirectoryManifest, so all admins across all devices see the
+         same groups after the next manifest fetch. -->
+    <section class="groups">
+      <header class="groups-header">
+        <div>
+          <h2>Keypair groups</h2>
+          <p class="muted">
+            Bundle a person's device keypairs under one name so
+            audiences can be picked with a single click.
+            {#if currentGroups.length === 0}
+              No groups defined yet.
+            {:else}
+              {currentGroups.length} group{currentGroups.length === 1 ? '' : 's'} defined.
+            {/if}
+          </p>
+        </div>
+        {#if groupsDraft === null}
+          <button type="button" class="ghost" onclick={openGroupsEditor}>Edit</button>
+        {/if}
+      </header>
+
+      {#if groupsDraft === null}
+        {#if currentGroups.length > 0}
+          <ul class="groups-list">
+            {#each currentGroups as g (g.name)}
+              <li>
+                <span class="group-name">{g.name}</span>
+                <span class="group-count muted">
+                  {g.member_pubkeys.length} keypair{g.member_pubkeys.length === 1 ? '' : 's'}
+                </span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {:else}
+        <div class="groups-editor">
+          {#if groupsDraft.length === 0}
+            <p class="muted small">
+              No groups yet. Click <strong>+ New group</strong> to add
+              one.
+            </p>
+          {/if}
+          {#each groupsDraft as g, i (i)}
+            <div class="group-card">
+              <div class="group-card-head">
+                <input type="text" class="group-name-input"
+                  placeholder="Group name (e.g. Kevin)"
+                  value={g.name}
+                  oninput={(e) => updateGroupName(i, (e.currentTarget as HTMLInputElement).value)}
+                  maxlength="64"
+                  autocapitalize="on" spellcheck="false" />
+                <button type="button" class="ghost small"
+                  onclick={() => removeGroup(i)}
+                  title="Delete this group">Remove</button>
+              </div>
+              <p class="muted small">
+                Select the keypairs to bundle. Revoked members can still
+                be in a group; they're filtered at delivery time.
+              </p>
+              <ul class="group-member-list">
+                {#each app.members as m (m.member_pubkey)}
+                  <li>
+                    <label>
+                      <input type="checkbox"
+                        checked={g.member_pubkeys.includes(m.member_pubkey)}
+                        onchange={() => toggleMemberInGroup(i, m.member_pubkey)} />
+                      <span class="name">{m.display_name}</span>
+                      {#if m.role !== 'member'}
+                        <span class="role-tag">{m.role}</span>
+                      {/if}
+                    </label>
+                  </li>
+                {/each}
+              </ul>
+              {#if g.name.trim() === ''}
+                <p class="small warning">Group needs a name.</p>
+              {:else if g.member_pubkeys.length === 0}
+                <p class="small warning">Group needs at least one keypair.</p>
+              {/if}
+            </div>
+          {/each}
+          <button type="button" class="ghost" onclick={addGroup}>
+            + New group
+          </button>
+          <div class="groups-editor-actions">
+            <button type="button" class="ghost"
+              onclick={closeGroupsEditor}
+              disabled={app.adminStatus.kind === 'submitting'}>Cancel</button>
+            <button type="button"
+              onclick={submitGroups}
+              disabled={!groupsDirty() || !groupsValid()
+                || app.adminStatus.kind === 'submitting'}>
+              {app.adminStatus.kind === 'submitting' ? 'Signing…' : 'Save groups'}
+            </button>
+          </div>
+          {#if app.adminStatus.kind === 'error'}
+            <p class="small error">{app.adminStatus.message}</p>
+          {/if}
+        </div>
+      {/if}
+    </section>
+
     <section class="danger-zone">
       <button type="button" class="ghost" onclick={clearRoot}>
         Forget root key on this device
@@ -1423,4 +1602,105 @@
     display: flex;
     justify-content: flex-end;
   }
+
+  /* v0.4.64: keypair groups section. Mirrors the roles section shape
+     — same top border + spacing, same header layout — so the admin
+     panel reads as a stack of same-shaped org-settings sections. */
+  .groups {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .groups-header {
+    display: flex; justify-content: space-between; align-items: flex-start;
+    gap: 1rem;
+  }
+  .groups-header h2 { margin: 0 0 0.3rem; }
+  .groups-header p { margin: 0; }
+  .groups-list {
+    list-style: none;
+    margin: 1rem 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .groups-list li {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding: 0.5rem 0.8rem;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.9rem;
+  }
+  .group-name { font-weight: 600; }
+  .group-count { font-size: 0.82rem; }
+  .groups-editor {
+    margin-top: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    background: var(--panel);
+    display: flex;
+    flex-direction: column;
+    gap: 0.9rem;
+  }
+  .group-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.9rem 1rem;
+    background: rgba(255, 255, 255, 0.015);
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .group-card-head {
+    display: flex;
+    gap: 0.6rem;
+    align-items: center;
+  }
+  .group-name-input {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.6rem;
+    font: inherit;
+    font-size: 0.92rem;
+  }
+  .ghost.small { padding: 0.28rem 0.7rem; font-size: 0.82rem; }
+  .group-member-list {
+    list-style: none;
+    margin: 0.35rem 0 0;
+    padding: 0.4rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    max-height: 12rem;
+    overflow-y: auto;
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 8px;
+    background: var(--bg);
+  }
+  .group-member-list label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin: 0;
+    font-size: 0.88rem;
+  }
+  .group-member-list input[type="checkbox"] {
+    width: 1rem; height: 1rem; cursor: pointer; margin: 0;
+  }
+  .groups-editor-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    margin-top: 0.2rem;
+  }
+  .warning { color: rgba(212, 175, 55, 0.9); margin: 0; }
 </style>

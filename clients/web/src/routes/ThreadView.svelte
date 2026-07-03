@@ -166,6 +166,39 @@
     else next.add(pk);
     audienceDialog = { selected: next };
   }
+  /** v0.4.64: bulk-add a group's pubkeys to the audience-edit selection.
+   *  Additive only. Skips pubkeys that aren't currently attested (a
+   *  group may reference a revoked pubkey — we don't want to smuggle
+   *  those into a fresh audience). */
+  function addGroupToAudience(pubkeys: readonly string[]) {
+    if (!audienceDialog) return;
+    const attested = new Set(app.members.map((m) => m.member_pubkey));
+    const next = new Set(audienceDialog.selected);
+    for (const pk of pubkeys) if (attested.has(pk)) next.add(pk);
+    audienceDialog = { selected: next };
+  }
+  /** v0.4.64: how many of a group's pubkeys aren't yet in the current
+   *  audience selection. 0 → "already added" (show as checked/muted
+   *  affordance); >0 → "click to add N more". */
+  function groupNewCountForAudience(group: { member_pubkeys: string[] }): number {
+    if (!audienceDialog) return 0;
+    const attested = new Set(app.members.map((m) => m.member_pubkey));
+    let n = 0;
+    for (const pk of group.member_pubkeys) {
+      if (attested.has(pk) && !audienceDialog.selected.has(pk) && pk !== myPk) n++;
+    }
+    return n;
+  }
+  function groupNewCountForNewThread(group: { member_pubkeys: string[] }): number {
+    if (!app.newThreadDialog) return 0;
+    const attested = new Set(app.members.map((m) => m.member_pubkey));
+    let n = 0;
+    for (const pk of group.member_pubkeys) {
+      if (attested.has(pk) && !app.newThreadDialog.selected.has(pk) && pk !== myPk) n++;
+    }
+    return n;
+  }
+  const availableGroups = $derived(app.manifest?.groups ?? []);
   async function submitAudience() {
     if (!audienceDialog) return;
     // Force the caller in — UI doesn't let them remove themselves
@@ -373,6 +406,30 @@
             stay in the audience automatically — to leave a thread,
             you'd ask another member to remove you.
           </p>
+          <!-- v0.4.64: group shortcuts. Clicking a chip adds every
+               pubkey in that group to the selection (skipping revoked
+               or already-included). Groups are managed in the admin
+               panel and root-signed into the manifest. -->
+          {#if availableGroups.length > 0}
+            <div class="audience-groups">
+              <span class="audience-groups-label">Shortcuts:</span>
+              {#each availableGroups as g (g.name)}
+                {@const remaining = groupNewCountForAudience(g)}
+                <button type="button" class="audience-group-chip"
+                  class:exhausted={remaining === 0}
+                  disabled={remaining === 0}
+                  title={remaining === 0
+                    ? `All of ${g.name}'s keypairs are already selected`
+                    : `Add ${remaining} more keypair(s) from ${g.name}`}
+                  onclick={() => addGroupToAudience(g.member_pubkeys)}>
+                  + {g.name}
+                  <span class="chip-count">
+                    {#if remaining === 0}✓{:else}+{remaining}{/if}
+                  </span>
+                </button>
+              {/each}
+            </div>
+          {/if}
           <ul class="audience-edit-list">
             {#each app.members as m (m.member_pubkey)}
               {@const isSelf = m.member_pubkey === myPk}
@@ -526,6 +583,27 @@
         <p class="self-line">
           ✓ <strong>You</strong> (auto-included as creator)
         </p>
+        <!-- v0.4.64: group shortcuts mirror the edit-audience dialog. -->
+        {#if availableGroups.length > 0}
+          <div class="audience-groups">
+            <span class="audience-groups-label">Shortcuts:</span>
+            {#each availableGroups as g (g.name)}
+              {@const remaining = groupNewCountForNewThread(g)}
+              <button type="button" class="audience-group-chip"
+                class:exhausted={remaining === 0}
+                disabled={remaining === 0}
+                title={remaining === 0
+                  ? `All of ${g.name}'s keypairs are already selected`
+                  : `Add ${remaining} more keypair(s) from ${g.name}`}
+                onclick={() => app.addGroupToNewThread(g.member_pubkeys)}>
+                + {g.name}
+                <span class="chip-count">
+                  {#if remaining === 0}✓{:else}+{remaining}{/if}
+                </span>
+              </button>
+            {/each}
+          </div>
+        {/if}
         <ul>
           {#each otherMembers as m (m.member_pubkey)}
             <li>
@@ -1154,6 +1232,60 @@
   .audience-dialog h3 { margin: 0 0 0.4rem; font-size: 1rem; }
   .audience-dialog .muted {
     color: var(--muted); margin: 0 0 0.85rem; font-size: 0.86rem;
+  }
+  /* v0.4.64: group-shortcut chips above the members checklist in both
+     audience dialogs. Compact pill-buttons; disabled state shows a ✓
+     when every keypair in the group is already selected. */
+  .audience-groups {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem;
+    margin: 0 0 0.7rem;
+    padding: 0.55rem 0.6rem;
+    background: rgba(212, 175, 55, 0.04);
+    border: 1px solid rgba(212, 175, 55, 0.18);
+    border-radius: 8px;
+  }
+  .audience-groups-label {
+    color: var(--muted);
+    font-size: 0.78rem;
+    letter-spacing: 0.04em;
+    margin-right: 0.25rem;
+  }
+  .audience-group-chip {
+    appearance: none;
+    background: rgba(212, 175, 55, 0.08);
+    color: rgb(212, 175, 55);
+    border: 1px solid rgba(212, 175, 55, 0.4);
+    border-radius: 999px;
+    padding: 0.28rem 0.7rem;
+    font: inherit;
+    font-size: 0.82rem;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    transition: background 120ms ease, border-color 120ms ease;
+  }
+  .audience-group-chip:hover:not(:disabled) {
+    background: rgba(212, 175, 55, 0.14);
+    border-color: rgba(212, 175, 55, 0.7);
+  }
+  .audience-group-chip .chip-count {
+    color: var(--muted);
+    font-size: 0.72rem;
+    padding-left: 0.15rem;
+    border-left: 1px solid rgba(212, 175, 55, 0.25);
+  }
+  .audience-group-chip.exhausted {
+    opacity: 0.6;
+    cursor: default;
+    background: transparent;
+  }
+  .audience-group-chip.exhausted .chip-count {
+    color: rgba(212, 175, 55, 0.9);
+    border-left-color: transparent;
   }
   .audience-edit-list {
     list-style: none; margin: 0 0 0.5rem; padding: 0;

@@ -184,6 +184,18 @@ function manifestContent(m: DirectoryManifest): Record<string, unknown> {
     }
     out.capabilities_by_role = normalized;
   }
+  // v0.4.64: keypair groups. Same byte-identical-when-absent rule.
+  // Normalize per-group (sort/dedupe pubkeys) and cross-group (sort by
+  // name) so the bytes we hash equal the bytes the root signer signed.
+  // Must match Python identity.py::_manifest_content and identity.ts.
+  if (m.groups != null) {
+    out.groups = [...m.groups]
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((g) => ({
+        name: g.name,
+        member_pubkeys: [...new Set(g.member_pubkeys)].sort(),
+      }));
+  }
   return out;
 }
 

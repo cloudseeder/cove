@@ -15,7 +15,7 @@ import {
   type AvailableUpdate,
 } from './tauri';
 import type {
-  Attestation, DirectoryManifest, InboxRow, Invite, ThreadSummary,
+  Attestation, DirectoryManifest, InboxRow, Invite, KeypairGroup, ThreadSummary,
 } from './types';
 import { DEFAULT_CAPABILITIES_BY_ROLE } from './types';
 import type { RevokedEntry } from './client';
@@ -391,6 +391,10 @@ export class AppState {
         // mutations to attestations/revocations don't silently strip
         // it. If the manifest doesn't carry one, this stays undefined.
         capabilitiesByRole: current.capabilities_by_role ?? null,
+        // v0.4.64: same forward-existing discipline. If the admin is
+        // e.g. adding an attestation, we must not silently strip a
+        // groups list they weren't editing.
+        groups: current.groups ?? null,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -464,6 +468,10 @@ export class AppState {
         // mutations to attestations/revocations don't silently strip
         // it. If the manifest doesn't carry one, this stays undefined.
         capabilitiesByRole: current.capabilities_by_role ?? null,
+        // v0.4.64: same forward-existing discipline. If the admin is
+        // e.g. adding an attestation, we must not silently strip a
+        // groups list they weren't editing.
+        groups: current.groups ?? null,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -539,6 +547,10 @@ export class AppState {
         // mutations to attestations/revocations don't silently strip
         // it. If the manifest doesn't carry one, this stays undefined.
         capabilitiesByRole: current.capabilities_by_role ?? null,
+        // v0.4.64: same forward-existing discipline. If the admin is
+        // e.g. adding an attestation, we must not silently strip a
+        // groups list they weren't editing.
+        groups: current.groups ?? null,
       });
       await this.client.submitRevocation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -592,6 +604,8 @@ export class AppState {
         prevManifestHash: hashManifest(current),
         defaultThread: current.default_thread,
         capabilitiesByRole: next,
+        // v0.4.64: forward existing groups so a caps edit doesn't strip them.
+        groups: current.groups ?? null,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -602,6 +616,55 @@ export class AppState {
       this.myAttestation = this.client.myAttestation();
       this.members = this.client.currentMembers();
       this.revoked = this.client.recentlyRevoked();
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
+  /** v0.4.64: re-issue the directory manifest with a new keypair groups
+   *  list. Same shape as setCapabilitiesByRole — root-signed manifest
+   *  update posted via /admin/attest. Pass an empty array to express
+   *  "no groups"; pass null to CLEAR the field entirely so the manifest
+   *  omits it (byte-identical-when-absent with pre-v0.4.64 manifests).
+   */
+  async saveGroups(next: KeypairGroup[] | null): Promise<void> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      return;
+    }
+    if (!this.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before editing groups.',
+      };
+      return;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    const signer: RootSigner = {
+      sign: (m) => rootKeychain.signMessage(m),
+      pubkey: async () => (await rootKeychain.status()).public_key!,
+    };
+    try {
+      const current = await this.client.fetchDirectory();
+      const rootPub = await signer.pubkey();
+      if (rootPub !== current.org) {
+        throw new Error(
+          'Root key on this device does not match the hub org pubkey.',
+        );
+      }
+      const newManifest = await issueDirectory(signer, {
+        org: current.org,
+        attestations: [...current.attestations],
+        revocations: [...current.revocations],
+        prevManifestHash: hashManifest(current),
+        defaultThread: current.default_thread,
+        capabilitiesByRole: current.capabilities_by_role ?? null,
+        groups: next,
+      });
+      await this.client.submitAttestation(newManifest);
+      this.adminStatus = { kind: 'idle' };
+      await this.client.fetchDirectory();
+      this.manifest = this.client.currentManifest();
     } catch (err) {
       this.adminStatus = { kind: 'error', message: errMsg(err) };
     }
@@ -752,6 +815,10 @@ export class AppState {
         // v0.4.25: changing default_thread shouldn't strip the org's
         // role → caps map either.
         capabilitiesByRole: current.capabilities_by_role ?? null,
+        // v0.4.64: same forward-existing discipline. If the admin is
+        // e.g. adding an attestation, we must not silently strip a
+        // groups list they weren't editing.
+        groups: current.groups ?? null,
       });
       await this.client.submitAttestation(newManifest);
       this.adminStatus = { kind: 'idle' };
@@ -827,6 +894,17 @@ export class AppState {
     const next = new Set(this.newThreadDialog.selected);
     if (next.has(pubkey)) next.delete(pubkey);
     else next.add(pubkey);
+    this.newThreadDialog = { ...this.newThreadDialog, selected: next };
+  }
+  /** v0.4.64: add all pubkeys from a group to the new-thread audience.
+   *  Additive only — doesn't remove already-selected members. Skips
+   *  pubkeys that don't correspond to attested members (a group can
+   *  reference revoked pubkeys, which we filter here). */
+  addGroupToNewThread(pubkeys: readonly string[]): void {
+    if (!this.newThreadDialog) return;
+    const attested = new Set(this.members.map((m) => m.member_pubkey));
+    const next = new Set(this.newThreadDialog.selected);
+    for (const pk of pubkeys) if (attested.has(pk)) next.add(pk);
     this.newThreadDialog = { ...this.newThreadDialog, selected: next };
   }
 

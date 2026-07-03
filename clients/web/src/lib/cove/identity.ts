@@ -13,7 +13,7 @@
  * canonicalizes wrong, the sig fails and the hub rejects.
  */
 import { canonicalize } from './crypto';
-import type { Attestation, DirectoryManifest, Revocation } from './types';
+import type { Attestation, DirectoryManifest, KeypairGroup, Revocation } from './types';
 
 /** All-zero sentinel matching cove.identity._ZERO_PREV_MANIFEST. Used
  *  for the very first manifest in a chain; non-genesis updates pass
@@ -76,6 +76,19 @@ function manifestContent(m: Omit<DirectoryManifest, 'sig'>): Record<string, unkn
     }
     out.capabilities_by_role = normalized;
   }
+  // v0.4.64: KeypairGroup list. Per-group: dedupe + sort pubkeys so the
+  // canonical bytes reflect the SET of pubkeys, not input order.
+  // Cross-group: sort by name so the array's order is deterministic
+  // (JCS sorts object keys but preserves array order). Must match
+  // Python identity.py::_manifest_content.
+  if (m.groups != null) {
+    out.groups = [...m.groups]
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+      .map((g) => ({
+        name: g.name,
+        member_pubkeys: [...new Set(g.member_pubkeys)].sort(),
+      }));
+  }
   return out;
 }
 
@@ -133,6 +146,11 @@ export async function issueDirectory(
      *  (byte-identical to pre-v0.4.25). Pass null to explicitly
      *  clear an existing map (the next manifest omits the field). */
     capabilitiesByRole?: Record<string, string[]> | null;
+    /** v0.4.64: forward the existing manifest's keypair groups. Same
+     *  undefined/null semantics as capabilitiesByRole — undefined
+     *  keeps the payload byte-identical; null clears an existing
+     *  groups list (next manifest omits the field). */
+    groups?: KeypairGroup[] | null;
   },
 ): Promise<DirectoryManifest> {
   const org = opts.org ?? await signer.pubkey();
@@ -145,6 +163,7 @@ export async function issueDirectory(
     ...(opts.defaultThread != null ? { default_thread: opts.defaultThread } : {}),
     ...(opts.capabilitiesByRole != null
       ? { capabilities_by_role: opts.capabilitiesByRole } : {}),
+    ...(opts.groups != null ? { groups: opts.groups } : {}),
   };
   const sig = await signer.sign(canonicalize(manifestContent(m)));
   return { ...m, sig };

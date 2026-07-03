@@ -48,6 +48,23 @@ class Revocation:
     reason: str
 
 
+@dataclass(frozen=True)
+class KeypairGroup:
+    """Admin-defined logical grouping of member pubkeys under a display name.
+    v0.4.64. Purely an ergonomic layer: audience selection surfaces let an
+    admin pick a group to fan out to all its constituent pubkeys with one
+    click, so "Kevin + Kevin's Phone" becomes a single choice. The audience
+    on the wire stays a flat list of pubkeys — group membership is not a
+    delivery-time concept.
+
+    Signed inside the DirectoryManifest (root sig covers the group list),
+    so all admins across all devices see the same groups after the manifest
+    fetch. Editing a group is a manifest update, same flow as attestations.
+    """
+    name: str
+    member_pubkeys: list[str]
+
+
 @dataclass
 class DirectoryManifest:
     """The signed directory wire format (§2.3).
@@ -84,6 +101,11 @@ class DirectoryManifest:
     prev_manifest_hash: str = _ZERO_PREV_MANIFEST
     default_thread: Optional[str] = None
     capabilities_by_role: Optional[dict[str, list[str]]] = None
+    # v0.4.64: OPTIONAL admin-defined keypair groups (ergonomic shortcuts
+    # for the audience picker — see KeypairGroup). Byte-identical-when-
+    # absent canonicalization: pre-v0.4.64 manifests never had this field
+    # and still verify with their existing signature.
+    groups: Optional[list[KeypairGroup]] = None
     sig: str = ""                   # root sig over canonical(manifest minus sig)
 
 
@@ -165,6 +187,16 @@ def _manifest_content(m: DirectoryManifest) -> dict:
             role: sorted(set(caps))
             for role, caps in m.capabilities_by_role.items()
         }
+    if m.groups is not None:
+        # v0.4.64: same normalization rule as capabilities_by_role.
+        # Per-group: dedupe + sort pubkeys so canonical bytes are the SET
+        # of pubkeys, not the order the admin panel happened to submit.
+        # Cross-group: sort by name so the array's order is deterministic
+        # (JCS sorts object keys but preserves array order).
+        out["groups"] = [
+            {"name": g.name, "member_pubkeys": sorted(set(g.member_pubkeys))}
+            for g in sorted(m.groups, key=lambda g: g.name)
+        ]
     return out
 
 
@@ -196,6 +228,11 @@ def manifest_to_dict(m: DirectoryManifest) -> dict:
             role: sorted(set(caps))
             for role, caps in m.capabilities_by_role.items()
         }
+    if m.groups is not None:
+        out["groups"] = [
+            {"name": g.name, "member_pubkeys": sorted(set(g.member_pubkeys))}
+            for g in sorted(m.groups, key=lambda g: g.name)
+        ]
     return out
 
 
@@ -211,12 +248,27 @@ def manifest_from_dict(d: dict) -> DirectoryManifest:
         # through verify(); the canonical form is sorted-deduped per role.
         caps = {role: sorted(set(v)) for role, v in caps_raw.items()
                 if isinstance(role, str) and isinstance(v, list)}
+    groups_raw = d.get("groups")
+    groups: Optional[list[KeypairGroup]] = None
+    if isinstance(groups_raw, list):
+        # v0.4.64. Same normalization discipline as caps: dedupe/sort
+        # pubkeys per group; the canonical form the sig covers is set-of-
+        # pubkeys, not entry order.
+        groups = [
+            KeypairGroup(
+                name=g["name"],
+                member_pubkeys=sorted(set(g.get("member_pubkeys", []) or [])),
+            )
+            for g in groups_raw
+            if isinstance(g, dict) and isinstance(g.get("name"), str)
+        ]
     return DirectoryManifest(
         org=d["org"], attestations=atts, revocations=revs,
         updated_at=d.get("updated_at", ""),
         prev_manifest_hash=d.get("prev_manifest_hash", _ZERO_PREV_MANIFEST),
         default_thread=d.get("default_thread"),
         capabilities_by_role=caps,
+        groups=groups,
         sig=d.get("sig", ""),
     )
 
@@ -272,6 +324,7 @@ def issue_directory(root_private_hex: str, *, org: str,
                     prev_manifest_hash: str = _ZERO_PREV_MANIFEST,
                     default_thread: Optional[str] = None,
                     capabilities_by_role: Optional[dict[str, list[str]]] = None,
+                    groups: Optional[list[KeypairGroup]] = None,
                     ) -> DirectoryManifest:
     """Build and sign a directory manifest with the ROOT key. Admin-tool only.
 
@@ -297,6 +350,7 @@ def issue_directory(root_private_hex: str, *, org: str,
         prev_manifest_hash=prev_manifest_hash,
         default_thread=default_thread,
         capabilities_by_role=capabilities_by_role,
+        groups=list(groups) if groups is not None else None,
         sig="",
     )
     m.sig = crypto.sign(root_private_hex, crypto.canonicalize(_manifest_content(m)))

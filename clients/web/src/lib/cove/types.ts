@@ -214,6 +214,16 @@ export interface Revocation {
   reason: string;
 }
 
+/** Mirrors cove.identity.KeypairGroup. v0.4.64.
+ *  Admin-defined logical grouping of member pubkeys under a display
+ *  name — a shortcut for the audience picker so "Kevin + Kevin's Phone"
+ *  becomes one click. Audience on the wire is still a flat pubkey
+ *  list; group membership is UX layer only. */
+export interface KeypairGroup {
+  name: string;
+  member_pubkeys: string[];
+}
+
 /** Mirrors cove.identity.DirectoryManifest. */
 export interface DirectoryManifest {
   org: string;
@@ -231,6 +241,11 @@ export interface DirectoryManifest {
    *  byte-identical-when-absent rule as default_thread. Drives
    *  hasCapability() in state and require_capability on the hub. */
   capabilities_by_role?: Record<string, string[]>;
+  /** v0.4.64: optional admin-defined keypair groups. Same
+   *  byte-identical-when-absent rule. Used by the audience picker as
+   *  a shortcut ("Add Kevin's 2 keypairs at once"); the wire audience
+   *  is still a flat pubkey list. */
+  groups?: KeypairGroup[];
   sig: string;
 }
 
