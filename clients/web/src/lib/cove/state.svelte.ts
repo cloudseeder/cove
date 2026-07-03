@@ -13,6 +13,10 @@ import {
   HubConnection,
   type AuthStatus, type ThreadStatus, type View, type ConnectOpts,
 } from './hub.svelte';
+import {
+  loadActiveHubUrl, loadHubUrls, loadThreadFor, migrateLegacyKeys,
+  removeHubUrl, saveActiveHubUrl, saveHubUrls,
+} from './hubs';
 import { encodePairingLink, fingerprint as fingerprintOf } from './pairing';
 import {
   appVersion, isPWA, isTauri, keychain, rootKeychain, updater,
@@ -115,12 +119,51 @@ export class AppState {
    *  during onboarding. Carries the priv from generateAndPair through to
    *  the post-attestation connect() call. */
   private pwaTransientPriv: string | null = null;
+  /** v0.4.69: PWA/paste-mode session priv, kept in memory so the
+   *  add-hub flow can construct a second Client without asking the user
+   *  to re-paste. Same threat-model exposure as today's paste-mode
+   *  session priv — just a controlled reference point. Cleared on
+   *  logoutAll(). null for Tauri (OS keychain owns the priv). */
+  livePriv = $state<string | null>(null);
 
   // ---------------------------------------------------------------------
-  // The one HubConnection (Phase 1). Phase 2 grows this to a Map.
+  // Multi-hub state (Phase 2). Phase 1 held a single `hub`; Phase 2
+  // grows this into a Map keyed by hub URL with an activeHubUrl pointer.
+  // All the backward-compat delegator getters/methods below route through
+  // `activeHub` so the 67 consumer .svelte sites don't need changes.
   // ---------------------------------------------------------------------
 
-  hub = $state<HubConnection | null>(null);
+  hubs = $state<Map<string, HubConnection>>(new Map());
+  activeHubUrl = $state<string | null>(null);
+  /** v0.4.69: when true, +page.svelte renders AddHubPanel as a modal
+   *  overlay over ThreadView. Toggled by the sidebar switcher's
+   *  "+ Add another hub" button and by AddHubPanel's own close/submit. */
+  addHubOpen = $state<boolean>(false);
+
+  /** The currently-focused HubConnection. Derived so consumers can
+   *  reactively track hub-switching. */
+  get activeHub(): HubConnection | null {
+    if (this.activeHubUrl === null) return null;
+    return this.hubs.get(this.activeHubUrl) ?? null;
+  }
+  /** Back-compat alias. Phase 1 test code uses `app.hub`; keep it
+   *  pointing at the same instance as `activeHub`. */
+  get hub(): HubConnection | null { return this.activeHub; }
+  set hub(v: HubConnection | null) {
+    // Used only by the Phase 1 state.test.ts smoke. In production the
+    // Map machinery is the source of truth. Kept behavior-compatible:
+    // assigning null disposes the active hub; assigning a HubConnection
+    // registers it under whatever URL it already carries (or a synthetic
+    // key if it doesn't have one — the tests build a hub without an
+    // authenticate() call).
+    if (v === null) {
+      this.reset();
+      return;
+    }
+    const url = v.hubUrl || '__unattached__';
+    this.hubs.set(url, v);
+    this.activeHubUrl = url;
+  }
 
   constructor() {
     // Resolve the bundle version asynchronously.
@@ -129,11 +172,39 @@ export class AppState {
       void this.refreshVaultStatus();
       void requestPersistentStorage();
     }
+    // v0.4.69: migrate legacy single-hub localStorage keys and restore
+    // the persisted hub list as unauthenticated placeholders. The user
+    // unlocks per-hub through AuthPanel; the placeholders just tell the
+    // sidebar switcher which hubs the user has ever joined.
+    this.restoreHubsFromStorage();
+  }
+
+  /** v0.4.69: idempotent boot-time restore. Safe to call multiple times;
+   *  won't clobber a hub that's already been authenticated in this
+   *  session. */
+  private restoreHubsFromStorage(): void {
+    migrateLegacyKeys();
+    for (const url of loadHubUrls()) {
+      if (!this.hubs.has(url)) {
+        const hub = new HubConnection(this, url);
+        hub.thread = loadThreadFor(url) ?? hub.thread;
+        this.hubs.set(url, hub);
+      }
+    }
+    const stored = loadActiveHubUrl();
+    if (stored && this.hubs.has(stored)) {
+      this.activeHubUrl = stored;
+    } else if (this.activeHubUrl === null && this.hubs.size > 0) {
+      // Pick any restored hub as active if we don't have a stored pointer.
+      this.activeHubUrl = this.hubs.keys().next().value ?? null;
+    }
   }
 
   // ---------------------------------------------------------------------
-  // Delegating getters — per-hub state proxied through the active hub
-  // (Phase 1: `this.hub`. Phase 2: `this.activeHub`.)
+  // Delegating getters — per-hub state proxied through the active hub.
+  // `this.hub` is a backward-compat alias for `this.activeHub`; both
+  // point at the same instance. The 67 consumer .svelte sites keep
+  // working unchanged.
   // ---------------------------------------------------------------------
 
   get authStatus(): AuthStatus {
@@ -440,12 +511,67 @@ export class AppState {
   }
 
   // ---------------------------------------------------------------------
-  // Reset — dispose the current HubConnection
+  // Reset — dispose all HubConnections
   // ---------------------------------------------------------------------
 
-  reset() {
-    this.hub?.dispose();
-    this.hub = null;
+  /** v0.4.69: dispose every joined hub, clear the Map, clear the
+   *  in-memory priv material, wipe the persisted hub list. Semantically
+   *  a "log out of everything". */
+  logoutAll() {
+    for (const hub of this.hubs.values()) hub.dispose();
+    this.hubs = new Map();
+    this.activeHubUrl = null;
+    this.livePriv = null;
+    saveHubUrls([]);
+    saveActiveHubUrl(null);
+  }
+  /** Backward-compat alias. Phase 1 tests + any existing caller use
+   *  `reset()`; behavior is now "log out of everything." */
+  reset() { this.logoutAll(); }
+
+  // ---------------------------------------------------------------------
+  // Multi-hub ops (Phase 2)
+  // ---------------------------------------------------------------------
+
+  /** v0.4.69: get-or-create the HubConnection for `hubUrl`. Idempotent
+   *  — calling with a URL that's already in the Map returns the existing
+   *  instance without disturbing its state. New URLs are added to
+   *  localStorage so the placeholder shows up in the switcher across
+   *  reloads even before the user authenticates. */
+  addHub(hubUrl: string): HubConnection {
+    const existing = this.hubs.get(hubUrl);
+    if (existing) return existing;
+    const hub = new HubConnection(this, hubUrl);
+    hub.thread = loadThreadFor(hubUrl) ?? hub.thread;
+    this.hubs.set(hubUrl, hub);
+    saveHubUrls([...this.hubs.keys()]);
+    return hub;
+  }
+
+  /** v0.4.69: focus the switcher on the given hub. Persists the choice
+   *  so the next launch restores the same active hub. No-op if `hubUrl`
+   *  isn't in the Map (caller should addHub first). */
+  switchToHub(hubUrl: string): void {
+    if (!this.hubs.has(hubUrl)) return;
+    if (this.activeHubUrl === hubUrl) return;
+    this.activeHubUrl = hubUrl;
+    saveActiveHubUrl(hubUrl);
+  }
+
+  /** v0.4.69: dispose the given hub and drop it from the Map + storage.
+   *  If the removed hub was active, fall back to any remaining hub
+   *  (arbitrary pick) or leave the session unauthenticated. */
+  removeHub(hubUrl: string): void {
+    const hub = this.hubs.get(hubUrl);
+    if (!hub) return;
+    hub.dispose();
+    this.hubs.delete(hubUrl);
+    removeHubUrl(hubUrl);
+    if (this.activeHubUrl === hubUrl) {
+      const fallback = this.hubs.keys().next().value ?? null;
+      this.activeHubUrl = fallback;
+      saveActiveHubUrl(fallback);
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -622,11 +748,17 @@ export class AppState {
    *     roundtrips through Rust.
    */
   async connect(opts: ConnectOpts): Promise<void> {
-    // Dispose any existing hub (Phase 1: single-hub). Phase 2 will
-    // switch to add-or-replace-by-URL semantics.
-    this.hub?.dispose();
-    const hub = new HubConnection(this);
-    this.hub = hub;
+    // v0.4.69: route through addHub so the URL lands in the switcher
+    // list + localStorage; then switch to it and authenticate. If the
+    // user is re-authenticating an existing hub, addHub returns the
+    // existing instance and we auth into it in place.
+    if (opts.mode === 'paste' && opts.privateKey) {
+      // Remember the priv for a subsequent add-hub-mode flow. Same
+      // threat-model as today's paste-mode session.
+      this.livePriv = opts.privateKey;
+    }
+    const hub = this.addHub(opts.hubUrl);
+    this.switchToHub(opts.hubUrl);
     await hub.authenticate(opts);
   }
 }

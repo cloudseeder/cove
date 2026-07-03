@@ -4,6 +4,69 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.69] — 2026-07-03
+
+### Added
+- **Federation UI, Phase 2: talk to N hubs from one client session.**
+  Builds on Phase 1's `HubConnection` extraction (v0.4.68). One
+  keypair, N hubs; same identity attested by each hub's board. See
+  /home/brooks/.claude/plans/glimmering-fluttering-boole.md.
+
+  **Multi-hub state model.** `AppState` now holds
+  `hubs: Map<HubUrl, HubConnection>` + `activeHubUrl: string | null`
+  + `activeHub` derived getter. All existing per-hub surfaces
+  (`app.entries`, `app.thread`, `app.client`, etc.) proxy through
+  `activeHub`, so the 67 consumer `.svelte` sites keep working
+  unchanged. New methods: `addHub(url)`, `switchToHub(url)`,
+  `removeHub(url)`, `logoutAll()`.
+
+  **Sidebar hub switcher.** New `HubSwitcher.svelte` component sits
+  between the sidebar header and the thread list. One row per joined
+  hub (labelled by hostname), active hub highlighted with the gold
+  accent. Placeholder hubs (restored from localStorage but not yet
+  authenticated this session) show a small lock icon. "+ Add
+  another hub" opens the `AddHubPanel` modal.
+
+  **Add-hub modal.** New `AddHubPanel.svelte` — the user is already
+  authenticated on some hub, so we reuse the live keypair (Tauri:
+  OS keychain; PWA/paste: `AppState.livePriv` set at unlock time).
+  All the panel asks for is the new hub URL. On success the new
+  hub joins the switcher and becomes active.
+
+  **Persistence.** New `hubs.ts` helper module with
+  `cove.hubs` (JSON array of hub URLs), `cove.activeHubUrl`, and
+  `cove.thread.${hubUrl}` per-hub last-viewed thread keys. Boot-time
+  one-shot legacy migration folds `cove.hubUrl` + `cove.thread`
+  from v0.4.68 and earlier into the new shape.
+
+  **`cove.thread` collision fixed.** Previously a single global key —
+  switching to Hub B would silently rehydrate Hub A's last-viewed
+  thread name. Now keyed per hub.
+
+  **Signer sharing.** `AppState.livePriv` (memory-only, cleared on
+  `logoutAll()`) holds the PWA/paste-mode priv so a second
+  `HubConnection` can be constructed without asking the user to
+  re-paste. Same threat-model exposure as today's paste-mode session
+  priv — just a controlled reference point.
+
+### Fixed
+- **`AppState.reset()`** now semantically "log out of everything":
+  disposes every joined hub, clears the Map, wipes `livePriv`, clears
+  persisted `cove.hubs` + `cove.activeHubUrl`. Aliased to the new
+  `logoutAll()` for clarity.
+
+### Testing
+- New `hubs.test.ts` (15 tests): hub-list round-trip, activeHubUrl
+  round-trip, per-hub thread key isolation, `removeHubUrl`, four
+  legacy-migration cases, `hubLabel` hostname parsing.
+- Extended `state.test.ts` (+10 tests): `addHub` idempotency,
+  `switchToHub`, `removeHub` with fallback, `logoutAll`, delegator
+  routing through active hub, restore-from-storage on boot, legacy
+  migration on boot.
+- Extended `hub.test.ts` (+1 test): two-hub `switchThread`
+  isolation regression cover.
+- **Total suite: 161 tests, all green.**
+
 ## [0.4.68] — 2026-07-03
 
 ### Changed

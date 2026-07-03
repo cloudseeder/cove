@@ -10,6 +10,7 @@
 <script lang="ts">
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
+  import HubSwitcher from './HubSwitcher.svelte';
 
   let { app }: { app: AppState } = $props();
 
@@ -184,6 +185,13 @@
       </button>
     </div>
   </header>
+
+  <!-- v0.4.69: hub switcher. Renders only when the user has joined at
+       least one hub (i.e., always after initial onboarding). Clicking
+       a row swaps the active hub; every delegating getter on AppState
+       follows so the thread list, inbox, and everything else in the
+       pane flip to that hub's data. -->
+  <HubSwitcher {app} />
 
   {#snippet activeSubNav()}
     <ul class="sub">

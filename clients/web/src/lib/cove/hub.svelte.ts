@@ -36,6 +36,7 @@ import type {
 } from './types';
 import { DEFAULT_CAPABILITIES_BY_ROLE } from './types';
 import { hashManifest } from './verify';
+import { saveThreadFor } from './hubs';
 
 // Same errMsg helper as state.svelte.ts. Tauri's invoke() rejects with a
 // raw string when the Rust side returns Err(String); casting that to
@@ -132,8 +133,11 @@ export class HubConnection {
   private myReceiptSeq: Map<string, number> = new Map();
   /** Track ids we've already shown so we never double-render after dedup. */
   private seenIds = new Set<string>();
-  /** Captured at connect() time so subscribe can hand them to Rust. */
-  private hubUrl = '';
+  /** v0.4.69: the hub this connection is bound to. Set at construction
+   *  time (Phase 2 restores placeholders from localStorage before any
+   *  auth has run) and re-affirmed by authenticate() on the wire. Public
+   *  so the sidebar switcher / storage helpers can read it. */
+  hubUrl: string;
   private sessionToken = '';
 
   client: Client | null = null;
@@ -144,7 +148,9 @@ export class HubConnection {
    *  a handful of vault/keychain refreshes. Phase 2 keeps N HubConnection
    *  instances, all pointing at the same AppState — the app-wide state
    *  is genuinely singleton. */
-  constructor(private app: AppState) {}
+  constructor(private app: AppState, hubUrl: string = '') {
+    this.hubUrl = hubUrl;
+  }
 
   // ---------------------------------------------------------------------
   // Auth / lifecycle
@@ -542,10 +548,11 @@ export class HubConnection {
     if (name === this.thread && this.app.route === 'thread') return;
     this.app.route = 'thread';
     this.thread = name;
-    // v0.4.9: persist last-viewed thread for AuthPanel pre-fill.
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('cove.thread', name);
-    }
+    // v0.4.69: persist last-viewed thread per-hub. Previously used a
+    // single global `cove.thread` key which collided when the client
+    // talks to multiple hubs — switching to Hub B would silently
+    // rehydrate Hub A's last-viewed thread name.
+    saveThreadFor(this.hubUrl, name);
     this.entries = [];
     this.seenIds = new Set();
     // Pair with entries=[] so /sync?since=N replays from scratch.

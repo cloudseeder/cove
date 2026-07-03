@@ -135,4 +135,34 @@ describe('HubConnection', () => {
     hub.myAttestation = { role: 'member' } as any;
     expect(hub.isBoardMember).toBe(false);
   });
+
+  test('two-hub switchThread isolation', async () => {
+    // Phase 2 regression cover: switchThread on one HubConnection must
+    // not disturb another's thread/entries. Uses mock clients whose
+    // sync() is a no-op so we can drive switchThread without a network.
+    const app = mockApp({ route: 'inbox' });
+    const a = new HubConnection(app, 'https://a.example');
+    const b = new HubConnection(app, 'https://b.example');
+    // Minimal client stub — switchThread calls sync/resetHighWater on it.
+    const stubClient = () => ({
+      sync: vi.fn().mockResolvedValue([]),
+      resetHighWater: vi.fn(),
+      dispose: vi.fn(),
+      latestSth: vi.fn().mockReturnValue(null),
+      fetchSth: vi.fn().mockResolvedValue({}),
+      postReceipt: vi.fn().mockResolvedValue(0),
+    });
+    a.client = stubClient() as any;
+    b.client = stubClient() as any;
+    a.thread = 'a-thread-initial';
+    b.thread = 'b-thread-initial';
+    a.entries = [{ entry: { id: 'sha256:aa', thread: 'a-thread-initial' }, seq: 0 } as any];
+
+    await a.switchThread('a-thread-2');
+
+    expect(a.thread).toBe('a-thread-2');
+    expect(a.entries).toEqual([]);
+    // b is untouched.
+    expect(b.thread).toBe('b-thread-initial');
+  });
 });

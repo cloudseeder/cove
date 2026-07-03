@@ -9,6 +9,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { AppState } from '$lib/cove/state.svelte';
+  import AddHubPanel from './AddHubPanel.svelte';
   import AuthPanel from './AuthPanel.svelte';
   import OnboardingPanel from './OnboardingPanel.svelte';
   import ThreadView from './ThreadView.svelte';
@@ -36,6 +37,13 @@
 
 {#if app.authStatus.kind === 'authenticated'}
   <ThreadView {app} />
+  <!-- v0.4.69: add-hub modal overlay. Triggered by the sidebar
+       switcher's "+ Add another hub" button; renders on top of
+       ThreadView so the current-hub context stays visible behind
+       it. -->
+  {#if app.addHubOpen}
+    <AddHubPanel {app} />
+  {/if}
 {:else if onboarding}
   <OnboardingPanel {app} onBack={leaveOnboarding} />
 {:else}
