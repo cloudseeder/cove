@@ -67,17 +67,23 @@ cove-state/
 
 Cove's whole security model depends on the root private key not living on the running hub. If it stays, an attacker who compromises the host can forge attestations, revoke members, and rewrite the directory.
 
+The essential move is **get the bits somewhere durable that isn't this host, then delete locally**. How you do the first half is your choice — password manager, physical media, an encrypted archive on a workstation, whatever your team's practice is:
+
 ```sh
-# Example: encrypt to a passphrase-protected file for backup,
-# then delete the plaintext copy on the host.
-gpg --symmetric --output ~/root.priv.gpg cove-state/keys/root.priv
+# One option: read the hex and paste into a password manager.
+cat cove-state/keys/root.priv
+
+# Another: copy to physical media / another host.
+# scp cove-state/keys/root.priv you@workstation:/somewhere-safe/
+
+# Then delete the on-host copy.
 shred -u cove-state/keys/root.priv    # or just rm on filesystems without shred
 
 # Verify:
 ls cove-state/keys/root.priv          # should say: No such file or directory
 ```
 
-Store the encrypted backup somewhere off the host — USB, password manager, offline machine, paper. When you need to revoke a member or add a new attestation later, you'll temporarily decrypt it, sign the new manifest on your workstation, and never let it touch the hub again.
+Store the offline backup somewhere durable — USB, password manager, offline machine, paper. When you need to revoke a member or add a new attestation later, you'll temporarily bring it back to a signing workstation, sign the new manifest, and never let it touch the hub again.
 
 The hub runner refuses to start if it finds `keys/root.priv` on the state volume — that's not paranoia, that's the security model enforcing itself.
 
