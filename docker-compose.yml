@@ -10,13 +10,16 @@
 # multiple pilots, etc.) without editing this file. See .env.example
 # for defaults; either copy it to .env or pass the vars per-invocation:
 #
-#     COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state \
-#       COVE_CONTAINER_NAME=cove-testbed \
+#     COMPOSE_PROJECT_NAME=brooks COVE_HUB_PORT=8001 \
+#       COVE_STATE_DIR=./testbed-state COVE_CONTAINER_NAME=cove-testbed \
 #       docker compose --profile setup run --rm bootstrap \
 #         --org-name "Testbed" --members brooks
 #
-# See docker/README.md for the full walk-through (single-hub AND
-# second-hub-on-same-host).
+# COMPOSE_PROJECT_NAME is the load-bearing one when running N hubs from
+# ONE compose file: without a distinct project name per hub, Compose
+# tracks them as the same service instance and any `docker compose up
+# hub` silently destroys the other's container. See docker/README.md
+# "Running a second hub on the same host" for the full walk-through.
 
 services:
   hub:

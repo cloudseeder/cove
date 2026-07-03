@@ -182,26 +182,31 @@ Once the keymaster is authenticated, they can mint invite codes for the rest of 
 
 ## Running a second hub on the same host (personal testbed)
 
-Common case: a production hub is already running (systemd or an earlier `docker compose up`) on port 8000 and you want a separate testbed you can wipe/rebuild without touching production. The compose file is parameterized so you don't edit it — you set three env vars per invocation:
+Common case: a production hub is already running (systemd or an earlier `docker compose up`) on port 8000 and you want a separate testbed you can wipe/rebuild without touching production. The compose file is parameterized so you don't edit it — you set four env vars per invocation:
 
 | Var | Default | Change to |
 |---|---|---|
+| `COMPOSE_PROJECT_NAME` | derived from dir (`cove`) | distinct project (e.g. `brooks`) |
 | `COVE_HUB_PORT` | `8000` | free port (e.g. `8001`) |
 | `COVE_STATE_DIR` | `./cove-state` | distinct dir (e.g. `./testbed-state`) |
 | `COVE_CONTAINER_NAME` | `cove-hub` | distinct name (e.g. `cove-testbed`) |
+
+**`COMPOSE_PROJECT_NAME` is the load-bearing one.** Without it, both hubs default to the same project name (from the directory) and Compose tracks them as the same service instance — so `docker compose up hub` on one silently destroys the other's container. Give each hub its own project name and Compose treats them as independent projects that can never step on each other.
 
 Two ways to set them.
 
 **Ad-hoc** — one command at a time:
 
 ```sh
-COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state COVE_CONTAINER_NAME=cove-testbed \
+COMPOSE_PROJECT_NAME=brooks COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state \
+    COVE_CONTAINER_NAME=cove-testbed \
     docker compose --profile setup run --rm bootstrap \
     --org-name "Brooks Testbed" --members brooks
 
 # Move testbed-state/keys/root.priv offline (§3 in the main flow).
 
-COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state COVE_CONTAINER_NAME=cove-testbed \
+COMPOSE_PROJECT_NAME=brooks COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state \
+    COVE_CONTAINER_NAME=cove-testbed \
     docker compose up -d hub
 ```
 
