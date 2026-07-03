@@ -37,6 +37,8 @@ If you'd rather not clone the whole client + landing repo, you only need `Docker
 
 This is a **one-time** step. It generates the root + hub keypairs, signs the initial directory manifest, and writes state to `./cove-state/`.
 
+**Do the `mkdir` yourself first.** If the state directory doesn't exist when compose runs, the docker daemon creates it as `root:root` and the container's non-root `cove` user can't write into it. Pre-creating it as your host user avoids the `PermissionError: [Errno 13]` you'd otherwise hit inside bootstrap.
+
 ```sh
 mkdir -p ./cove-state
 docker compose --profile setup run --rm bootstrap \
@@ -45,6 +47,10 @@ docker compose --profile setup run --rm bootstrap \
 ```
 
 `--members` is a comma-separated list of member handles the ceremony creates keypairs for. For a one-person bootstrap where you (the operator) are the keymaster, `keymaster` alone is enough — everyone else onboards later via invite codes ([v0.4.33 flow](../CHANGELOG.md#0433)) once the hub is up.
+
+**Important role gotcha.** `--members` **always** attests each name at `role=member`. Under the default capability map (board → admin+archive, nobody else has caps), that means the keymaster you just bootstrapped **cannot** mint invite codes, edit groups, revoke members, or archive threads — everything gated on the `admin` capability is closed to them. Fine if you're bootstrapping a hub where a separate board will be attested later, wrong if the keymaster IS the sole admin.
+
+For a solo-admin bootstrap (personal testbed, keymaster-is-you), use the roster CSV path in the next section instead — it lets you set `role=board`.
 
 After the ceremony:
 
@@ -62,6 +68,32 @@ cove-state/
   manifest.jsonl     ← manifest chain head
   data/              ← SQLite + blobs, created lazily
 ```
+
+### Alternate: roster CSV (solo-admin, federation-friendly, or multi-role bootstrap)
+
+The `--roster` flag lets you attest members with fine-grained control over role, affiliation, title, and pubkey.
+
+Write a small CSV:
+
+```csv
+display_name,affiliation,role,pubkey
+Alice,Your Org,board,
+```
+
+Required columns: `display_name`, `affiliation`, `role` (`member`|`officer`|`board`). Optional: `title`, `key_name`, `pubkey`.
+
+- Leaving `pubkey` empty → bootstrap generates a fresh keypair for that row, drops the `.priv` at `keys/members/<key_name>.priv` (hand it off to the person, then delete the on-host copy per §3).
+- Filling `pubkey` with a 64-char hex value → bootstrap **skips** keypair generation and attests the provided pubkey directly. Enables federation-friendly bring-ups: a keymaster with an existing Cove identity (already attested by another hub, paired to a vault, whatever) is attested here under the same pubkey, so **one keypair works across N hubs**. The bootstrap output flags each row with `[pubkey provided — no .priv written]` and drops the "hand each member their .priv" step from the custody banner since there's nothing to hand off.
+
+Mount the CSV into the bootstrap container and pass `--roster`:
+
+```sh
+docker compose --profile setup run --rm \
+    -v $(pwd)/roster.csv:/roster.csv:ro bootstrap \
+    --org-name "Your Org" --roster /roster.csv
+```
+
+**Getting a user's pubkey.** The client stores each user's private key locally and never leaves the device, so pubkey isn't obvious. In the desktop app / PWA (v0.4.65+), the bottom of the left sidebar shows a truncated pubkey chip below your display name — **click it to copy the full 64-char hex to clipboard**. Paste that into the `pubkey` column when attesting on another hub.
 
 ## 3. ⚠️ Move `root.priv` offline. Non-negotiable.
 

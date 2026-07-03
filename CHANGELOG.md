@@ -4,6 +4,40 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.65] — 2026-07-03
+
+### Added
+- **Identity chip in the sidebar footer surfaces the user's own
+  pubkey.** Auto-generated on-device keys never had a UI surface —
+  a user couldn't tell a *different* hub's admin what pubkey to
+  attest without fishing it out of devtools or a manifest. Now the
+  bottom of the left sidebar shows a compact chip with your display
+  name + `abcdef…1234` truncated pubkey; click to copy the full
+  64-char hex to clipboard (with a brief `✓ copied` feedback). The
+  hex is also `user-select: all` for a fallback drag-and-copy.
+  Unlocks the federation workflow: paste the copied hex into
+  another hub's `roster.csv` under the `pubkey` column and that
+  hub attests you under the same identity.
+- **Bootstrap `--roster` CSV accepts an optional `pubkey` column.**
+  Reuse an existing keypair on a new hub without generating a fresh
+  one. When present, bootstrap skips keypair generation for that
+  row, drops the "hand each member their .priv" step from the
+  custody banner (nothing to hand off), and flags the row in the
+  completion output as `[pubkey provided — no .priv written]`.
+  Enables the one-keypair-N-hubs federation pattern from CLAUDE.md
+  §7 — same identity attested by multiple orgs.
+
+### Changed
+- **`docker/README.md` documents three gotchas hit during the
+  personal-testbed bring-up:** (1) pre-`mkdir` the state directory
+  before bootstrap so the docker daemon doesn't create it as
+  root-owned and lock the container user out; (2) `--members`
+  always attests at `role=member` (fine for pilots with a separate
+  board, wrong for solo-admin bootstraps) — solo admins want the
+  roster CSV path; (3) roster CSV can now reuse an existing pubkey
+  via the `pubkey` column, with a pointer to the sidebar chip for
+  finding your own hex.
+
 ## [0.4.64] — 2026-07-03
 
 ### Added

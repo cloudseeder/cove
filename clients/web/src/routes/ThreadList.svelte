@@ -15,6 +15,32 @@
 
   let newThreadName = $state('');
 
+  /** v0.4.65: user's own pubkey — needed for federation flows where
+   *  the user tells a different hub's admin what to attest. Auto-
+   *  generated on-device by the client, so historically never surfaced
+   *  in the UI. Now shown as a truncated chip at the bottom of the
+   *  sidebar; click to copy the full 64-char hex to clipboard. */
+  const myPk = $derived(
+    app.authStatus.kind === 'authenticated' ? app.authStatus.pubkey : '',
+  );
+  const myName = $derived(app.myAttestation?.display_name ?? '');
+  const shortPk = $derived(
+    myPk ? `${myPk.slice(0, 6)}…${myPk.slice(-4)}` : '',
+  );
+  let copyState = $state<'idle' | 'copied' | 'failed'>('idle');
+  let copyResetTimer: ReturnType<typeof setTimeout> | null = null;
+  async function copyMyPubkey() {
+    if (!myPk) return;
+    try {
+      await navigator.clipboard.writeText(myPk);
+      copyState = 'copied';
+    } catch {
+      copyState = 'failed';
+    }
+    if (copyResetTimer) clearTimeout(copyResetTimer);
+    copyResetTimer = setTimeout(() => (copyState = 'idle'), 1500);
+  }
+
   /** v0.1.10: file count for the active thread, derived from the
    *  attachments across all loaded entries (top-level + replies).
    *  Shown next to the 'Files' sub-button so the user can see at a
@@ -273,6 +299,26 @@
     <button type="submit" disabled={!newThreadName.trim()}>+</button>
   </form>
 
+  <!-- v0.4.65: identity chip. Surfaces the user's own pubkey so a
+       cross-hub attestation flow — telling a different hub's admin
+       "attest me under X" — doesn't require them to fish it out of
+       a manifest or a devtools session. Click to copy the full hex. -->
+  {#if myPk}
+    <button type="button" class="identity"
+      title="Click to copy your full public key"
+      onclick={copyMyPubkey}>
+      <span class="identity-row">
+        {#if myName}
+          <span class="identity-name">{myName}</span>
+        {/if}
+        <span class="identity-copy-state" aria-live="polite">
+          {#if copyState === 'copied'}✓ copied{:else if copyState === 'failed'}⚠ failed{/if}
+        </span>
+      </span>
+      <span class="identity-key" title={myPk}>{shortPk}</span>
+    </button>
+  {/if}
+
   {#if app.appVersion}
     <footer class="version" title="Cove app version">
       v{app.appVersion}
@@ -501,11 +547,56 @@
     font-weight: 700;
     cursor: pointer;
   }
+  /* v0.4.65: identity chip in the sidebar footer. Truncated pubkey +
+     name; click to copy the full hex. Hover picks up the gold accent
+     so it's visibly interactive. */
+  .identity {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    width: 100%;
+    background: transparent;
+    border: none;
+    border-top: 1px solid var(--border);
+    color: var(--fg);
+    padding: 0.55rem 1.25rem 0.35rem;
+    text-align: left;
+    cursor: pointer;
+    font: inherit;
+    transition: background 120ms ease;
+  }
+  .identity:hover {
+    background: rgba(212, 175, 55, 0.05);
+  }
+  .identity-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.35rem;
+  }
+  .identity-name {
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--fg);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .identity-copy-state {
+    font-size: 0.7rem;
+    color: rgba(212, 175, 55, 0.9);
+    white-space: nowrap;
+  }
+  .identity-key {
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    user-select: all;
+  }
   .version {
     color: var(--muted);
     font-size: 0.72rem;
-    padding: 0.55rem 1.25rem 0.75rem;
-    border-top: 1px solid var(--border);
+    padding: 0.4rem 1.25rem 0.75rem;
     text-align: center;
     user-select: none;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
