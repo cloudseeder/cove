@@ -15,7 +15,7 @@ Workflow:
   3. Keymaster runs:
 
        python scripts/attest_member.py \\
-           --hub https://lwccoa.cove.oap.dev \\
+           --hub https://lwccoa-hub.oap.dev \\
            --root-key ~/cove-root.priv \\
            --pubkey <hex from QR> \\
            --name "Jane Doe" \\
@@ -91,7 +91,7 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--hub", required=True,
-                   help="Hub base URL, e.g. https://lwccoa.cove.oap.dev")
+                   help="Hub base URL, e.g. https://lwccoa-hub.oap.dev")
     p.add_argument("--root-key", required=True, type=Path,
                    help="Path to root.priv (64-char hex on a single line)")
     p.add_argument("--pubkey", required=True,

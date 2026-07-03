@@ -203,7 +203,7 @@
     <label>
       <span>Hub URL</span>
       <input type="url" bind:value={hubUrl}
-        placeholder="https://lwccoa.cove.oap.dev"
+        placeholder="https://lwccoa-hub.oap.dev"
         disabled={vaultUnlocking} />
     </label>
 

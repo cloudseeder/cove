@@ -4,6 +4,22 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.67] — 2026-07-03
+
+### Changed
+- **Client default hub URL: `lwccoa.cove.oap.dev` → `lwccoa-hub.oap.dev`.**
+  Follows up on v0.4.66: the two-level `*.cove.oap.dev` subdomain
+  pattern turned out not to be covered by Cloudflare's Universal SSL
+  wildcard (which only covers one level of subdomain — `*.oap.dev`),
+  so requests to `lwccoa.cove.oap.dev` and `brooks.cove.oap.dev`
+  both failed with `sslv3 alert handshake failure`. Rather than pay
+  for Advanced Certificate Manager to get a `*.cove.oap.dev` wildcard,
+  we flattened one level: LWCCOA moves to `lwccoa-hub.oap.dev`,
+  personal testbed to `brooks-hub.oap.dev`. Both are first-level
+  subdomains of `oap.dev` and covered by the free Universal SSL
+  wildcard. Client `OnboardingPanel`, `AuthPanel`, and
+  `scripts/attest_member.py` all updated.
+
 ## [0.4.66] — 2026-07-03
 
 ### Changed
