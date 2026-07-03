@@ -273,6 +273,18 @@ export class AppState {
   }): Promise<void> {
     await this.hub?.approvePending(opts);
   }
+  /** v0.4.71: attest an arbitrary pubkey. Same shape as
+   *  approvePending but doesn't require the pubkey to be in the
+   *  pending queue. Used for federation and manual member add. */
+  async attestPubkey(opts: {
+    pubkey: string;
+    displayName: string;
+    affiliation: string;
+    role: 'member' | 'officer' | 'board' | string;
+    title?: string | null;
+  }): Promise<void> {
+    await this.hub?.attestPubkey(opts);
+  }
   async updateMember(opts: {
     pubkey: string;
     displayName: string;

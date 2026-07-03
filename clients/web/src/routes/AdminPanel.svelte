@@ -432,6 +432,49 @@
     }
   }
 
+  // ---- v0.4.71: manual attest (no pending queue required) -------------
+  // Federation use case: a member has an identity on another hub already
+  // and wants THIS hub to attest the same pubkey. Their client's identity
+  // chip shows the pubkey; they paste it into the field below and the
+  // keymaster attests. Also useful for out-of-band member add without
+  // running the invite/pending dance.
+  let manualPubkey = $state('');
+  let manualDisplayName = $state('');
+  let manualAffiliation = $state('');
+  let manualRole = $state<'member' | 'officer' | 'board'>('member');
+  let manualTitle = $state('');
+
+  function manualPubkeyValid(): boolean {
+    const s = manualPubkey.trim().toLowerCase();
+    return s.length === 64 && /^[0-9a-f]+$/.test(s);
+  }
+  function manualFormReady(): boolean {
+    return manualPubkeyValid()
+      && manualDisplayName.trim().length > 0
+      && !app.members.some((m) => m.member_pubkey === manualPubkey.trim().toLowerCase());
+  }
+  const manualAlreadyMember = $derived(
+    manualPubkeyValid()
+      && app.members.some((m) => m.member_pubkey === manualPubkey.trim().toLowerCase()),
+  );
+  async function submitManualAttest() {
+    if (!manualFormReady()) return;
+    await app.attestPubkey({
+      pubkey: manualPubkey.trim().toLowerCase(),
+      displayName: manualDisplayName.trim(),
+      affiliation: manualAffiliation.trim(),
+      role: manualRole,
+      title: manualTitle.trim() || null,
+    });
+    if (app.adminStatus.kind === 'idle') {
+      manualPubkey = '';
+      manualDisplayName = '';
+      manualAffiliation = '';
+      manualRole = 'member';
+      manualTitle = '';
+    }
+  }
+
   async function importRoot() {
     rootImportError = null;
     rootImporting = true;
@@ -571,6 +614,71 @@
         </li>
       {/each}
     </ul>
+  {/if}
+
+  {#if app.rootKeysPresent}
+    <!-- v0.4.71: manual attest. A member with an existing identity on
+         another Cove hub can paste their pubkey here to join THIS hub
+         under the same keypair. The identity chip in the sidebar
+         footer shows the full hex; a keymaster on the target hub
+         pastes it here + fills in the display name/role and this hub
+         signs an attestation over it. Same admin/attest endpoint as
+         approve-pending; the pending queue just isn't involved. -->
+    <section class="manual-attest">
+      <h2>Attest a public key</h2>
+      <p class="muted">
+        Paste a public key that already exists on another hub (or a new
+        keypair generated out-of-band). The board's root signs an
+        attestation binding the key to a name and role. Members with
+        identities on multiple hubs use this to federate.
+      </p>
+      <div class="row-form">
+        <label>
+          <span>Public key (64-char hex)</span>
+          <textarea bind:value={manualPubkey} rows="2"
+            spellcheck="false" autocomplete="off"
+            placeholder="e.g. d0c2dde31e14d1d4625b7fa3a69b1db937b86032d0ed03283519f3a3f2950a0a"></textarea>
+        </label>
+        {#if manualPubkey.trim().length > 0 && !manualPubkeyValid()}
+          <p class="small warning">Must be exactly 64 hex chars (Ed25519 pubkey).</p>
+        {/if}
+        {#if manualAlreadyMember}
+          <p class="small warning">This pubkey is already an attested member on this hub.</p>
+        {/if}
+        <label>
+          <span>Display name</span>
+          <input type="text" bind:value={manualDisplayName}
+            placeholder="e.g. Kevin Brooks (phone)" />
+        </label>
+        <label>
+          <span>Affiliation</span>
+          <input type="text" bind:value={manualAffiliation}
+            placeholder="e.g. LWCCOA / Board / Lot 42 — freeform" />
+        </label>
+        <label>
+          <span>Role</span>
+          <select bind:value={manualRole}>
+            <option value="member">member</option>
+            <option value="officer">officer</option>
+            <option value="board">board</option>
+          </select>
+        </label>
+        <label>
+          <span>Title (optional)</span>
+          <input type="text" bind:value={manualTitle}
+            placeholder="e.g. President, VP Engineering" />
+        </label>
+        <div class="row-actions">
+          <button type="button" onclick={submitManualAttest}
+            disabled={!manualFormReady() || app.adminStatus.kind === 'submitting'}>
+            {app.adminStatus.kind === 'submitting' ? 'Signing…' : 'Attest'}
+          </button>
+        </div>
+        {#if app.adminStatus.kind === 'error'}
+          <p class="small error">{app.adminStatus.message}</p>
+        {/if}
+      </div>
+    </section>
   {/if}
 
   {#if app.rootKeysPresent && app.members.length > 0}
@@ -1265,6 +1373,39 @@
     border: 1px solid rgba(220, 38, 38, 0.4);
     color: #fca5a5; font-size: 0.88rem;
   }
+  /* v0.4.71: manual attest section. Same top-border + spacing rhythm
+     as the .members section so the panel reads as a stack of same-
+     shaped org-admin blocks. */
+  .manual-attest {
+    margin-top: 2rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .manual-attest h2 { margin: 0 0 0.3rem; }
+  .manual-attest > .muted {
+    color: var(--muted); margin: 0 0 0.9rem; font-size: 0.9rem; line-height: 1.5;
+  }
+  .manual-attest .row-form {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 1rem 1.2rem;
+    background: var(--panel);
+  }
+  .manual-attest textarea {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.84rem;
+  }
+  .manual-attest .row-actions {
+    display: flex; justify-content: flex-end; margin-top: 0.6rem;
+  }
+  .manual-attest .small.warning {
+    color: rgba(212, 175, 55, 0.9);
+    margin: -0.3rem 0 0.4rem;
+  }
+  .manual-attest .small.error {
+    color: #fca5a5; margin: 0.6rem 0 0;
+  }
+
   /* v0.4.23: membership editor styles. Sits between the pending queue
      and Org settings; rows are slightly tighter than queue rows so the
      panel scales to a real org's roster without dominating the view. */

@@ -651,6 +651,73 @@ export class HubConnection {
     }
   }
 
+  /** v0.4.71: attest an arbitrary pubkey. Same wire path as
+   *  approvePending (issueAttestation → issueDirectory → submit) but
+   *  the pubkey does NOT need to be in the pending queue. Used to
+   *  federate an identity that already exists on another hub — the
+   *  keymaster paste the pubkey (copied from the other device's
+   *  identity chip) instead of waiting for an invite-code flow. */
+  async attestPubkey(opts: {
+    pubkey: string;
+    displayName: string;
+    affiliation: string;
+    role: 'member' | 'officer' | 'board' | string;
+    title?: string | null;
+  }): Promise<void> {
+    if (this.client === null) {
+      this.adminStatus = { kind: 'error', message: 'Not connected.' };
+      return;
+    }
+    if (!this.app.rootKeysPresent) {
+      this.adminStatus = {
+        kind: 'error',
+        message: 'Root key not loaded. Import root.priv before attesting.',
+      };
+      return;
+    }
+    this.adminStatus = { kind: 'submitting' };
+    const signer: RootSigner = {
+      sign: (m) => rootKeychain.signMessage(m),
+      pubkey: async () => (await rootKeychain.status()).public_key!,
+    };
+    try {
+      const current = await this.client.fetchDirectory();
+      const rootPub = await signer.pubkey();
+      if (rootPub !== current.org) {
+        throw new Error(
+          'Root key on this device does not match the hub org pubkey.',
+        );
+      }
+      const newAtt = await issueAttestation(signer, {
+        memberPubkey: opts.pubkey,
+        displayName: opts.displayName,
+        affiliation: opts.affiliation,
+        role: opts.role,
+        title: opts.title ?? null,
+      });
+      const newManifest = await issueDirectory(signer, {
+        org: current.org,
+        attestations: [...current.attestations, newAtt],
+        revocations: [...current.revocations],
+        prevManifestHash: hashManifest(current),
+        defaultThread: current.default_thread,
+        capabilitiesByRole: current.capabilities_by_role ?? null,
+        groups: current.groups ?? null,
+      });
+      await this.client.submitAttestation(newManifest);
+      this.adminStatus = { kind: 'idle' };
+      // Refresh local snapshots so the AdminPanel members list shows
+      // the newly-attested pubkey without waiting for the WS push.
+      await this.client.fetchDirectory();
+      this.myAttestation = this.client.myAttestation();
+      this.manifest = this.client.currentManifest();
+      this.members = this.client.currentMembers();
+      this.revoked = this.client.recentlyRevoked();
+    } catch (err) {
+      this.adminStatus = { kind: 'error', message: errMsg(err) };
+    }
+  }
+
   /** v0.4.23: re-attest an existing member with updated fields. */
   async updateMember(opts: {
     pubkey: string;

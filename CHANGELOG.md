@@ -4,6 +4,23 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.71] — 2026-07-03
+
+### Added
+- **"Attest a public key" section in the admin panel.** Until now the
+  only path from "someone has a pubkey" to "that pubkey is attested"
+  was the invite → pending → approve dance. Federation surfaced the
+  gap: to attest an identity that already exists on another hub, the
+  keymaster had to paste-in the pubkey but had nowhere in the UI to do
+  it. New section sits between "Pending approvals" and "Members" with
+  a form for pubkey + display name + affiliation + role + optional
+  title. Validates 64-char hex on the pubkey field. Warns if the
+  pubkey is already an attested member. Wire path: new
+  `HubConnection.attestPubkey()` method + `AppState.attestPubkey()`
+  delegator; the actual attestation issuance reuses the same
+  `issueAttestation` → `issueDirectory` → `submitAttestation` chain
+  as `approvePending`.
+
 ## [0.4.70] — 2026-07-03
 
 ### Fixed
