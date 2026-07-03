@@ -4,6 +4,17 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.60] — 2026-07-03
+
+### Changed
+- **Inbox previews truncate at 100 chars with an ellipsis.** The hub
+  caps `body_preview` at 140 already but the Inbox row is a one-line
+  index — anything past ~100 chars was getting clipped by CSS
+  ellipsis-overflow at typical widths, which is resolution-dependent
+  and inconsistent. Now `previewBody()` in `InboxPanel.svelte` truncates
+  strings longer than 100 chars to `slice(0,100).trimEnd() + '…'` for
+  a clean, deterministic cut. Full body still shows in the thread view.
+
 ## [0.4.59] — 2026-07-03
 
 ### Fixed

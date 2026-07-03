@@ -31,12 +31,21 @@
     return e.author.slice(0, 8) + '…';
   }
 
+  /** v0.4.60: Inbox previews truncate at 100 chars. The hub caps
+   *  body_preview at 140 already (see api.py `_PREVIEW_MAX`), but the
+   *  Inbox row is a one-line index — anything past ~100 gets clipped
+   *  by ellipsis-overflow CSS anyway on typical widths, so cap the
+   *  string itself for a clean, resolution-independent cut. Leaves the
+   *  underlying entry body untouched — the thread view still shows it
+   *  in full. */
   function previewBody(row: InboxRow): string {
     const e = row.latest_entry;
     if (!e) return '(no activity)';
     if (e.kind === 'branch') return '↗ branched a new thread';
     if (e.kind === 'supersede') return 'edited an earlier entry';
-    return e.body_preview || '(attachment)';
+    const body = e.body_preview || '(attachment)';
+    if (body.length <= 100) return body;
+    return body.slice(0, 100).trimEnd() + '…';
   }
 
   // v0.4.25: archived threads are filtered out of the main list by
