@@ -20,6 +20,7 @@
   import Attachment from '$lib/cove/Attachment.svelte';
   import DeliveryIndicator from '$lib/cove/DeliveryIndicator.svelte';
   import ExpandableBody from '$lib/cove/ExpandableBody.svelte';
+  import ReplyPreview from '$lib/cove/ReplyPreview.svelte';
   import VerificationChain from '$lib/cove/VerificationChain.svelte';
 
   interface Props {
@@ -27,6 +28,8 @@
     showHeader: boolean;
     client?: Client | null;
     replyCount?: number;
+    /** v0.4.63: freshest reply, surfaced inline as a preview chip. */
+    latestReply?: VerifiedEntry | null;
     onReply?: () => void;
     onFollowBranch?: (subThread: string) => void;
     isNew?: boolean;
@@ -35,7 +38,8 @@
   }
 
   let { ve, showHeader, client = null, replyCount = 0,
-        onReply, onFollowBranch, isNew = false, members = [] }: Props = $props();
+        latestReply = null, onReply, onFollowBranch,
+        isNew = false, members = [] }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
   const isBoard = $derived(ve.attestation.role === 'board');
@@ -96,12 +100,15 @@
       </div>
     {/if}
 
+    <!-- v0.4.63: latest-reply preview (chat variant is denser). -->
+    {#if latestReply && onReply}
+      <ReplyPreview {latestReply} totalReplyCount={replyCount} onOpen={onReply} dense />
+    {/if}
+
     {#if onReply || (client && members.length > 0 && ve.entry.id)}
       <div class="footer-row">
-        {#if onReply}
-          <button type="button" class="reply-link" onclick={onReply}>
-            {#if replyCount === 0}Reply{:else if replyCount === 1}1 reply{:else}{replyCount} replies{/if}
-          </button>
+        {#if onReply && !latestReply}
+          <button type="button" class="reply-link" onclick={onReply}>Reply</button>
         {/if}
         {#if client && members.length > 0 && ve.entry.id}
           <DeliveryIndicator {client} entryId={ve.entry.id} {members} />

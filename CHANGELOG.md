@@ -4,6 +4,31 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.63] — 2026-07-03
+
+### Changed
+- **Latest reply surfaces inline under the parent message.** Replaces
+  the small "1 reply / N replies" footer link with a visible chip
+  showing the reply's author + a 100-char preview + the total count,
+  clickable to open the reply panel (same effect as the old link).
+  Applies to both Cards and Chat modes via a new shared
+  `$lib/cove/ReplyPreview.svelte` (dense variant for Chat). Parents
+  with zero replies still show the plain "Reply" button. Since the
+  reply chip is the parent's opener, the footer no longer double-shows
+  a "Reply" button when a preview is present. Both `EntryCard` and
+  `ChatMessage` now take a `latestReply` prop; `ThreadView` computes
+  it once per parent via a small `latestReplyFor()` helper that scans
+  `app.entries`.
+
+### Fixed
+- **Reply panel: new replies no longer land off-screen under the
+  compose box.** After posting a reply into a full list, the entry
+  appended at the bottom of `.scroll` — below the compose-wrap fold —
+  because scroll position didn't move on content growth. `ReplyPanel`
+  now scroll-locks to bottom whenever `replies.length` changes and on
+  panel open (parent flip from null → entry), so the freshest message
+  is always visible above the compose input.
+
 ## [0.4.62] — 2026-07-03
 
 ### Changed

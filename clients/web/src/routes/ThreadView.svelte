@@ -188,6 +188,20 @@
     }
     return n;
   }
+  /** v0.4.63: latest reply to a parent (by seq — verify-time ordering
+   *  is already monotonic). Rendered inline under the parent so a
+   *  fresh reply — usually the most recent thing said in the thread —
+   *  is visible in the feed instead of hidden behind a discovery click. */
+  function latestReplyFor(parentId: string | null) {
+    if (!parentId) return null;
+    let latest: (typeof app.entries)[number] | null = null;
+    for (const ve of app.entries) {
+      if (ve.entry.parents.includes(parentId)) {
+        if (latest === null || ve.seq > latest.seq) latest = ve;
+      }
+    }
+    return latest;
+  }
 </script>
 
 <div class="layout" class:sidebar-open={app.sidebarOpen} class:sidebar-closed={!app.sidebarOpen}>
@@ -430,6 +444,7 @@
               isNew={freshlyArrived.has(ve.entry.id!)}
               client={app.client}
               replyCount={replyCountFor(ve.entry.id)}
+              latestReply={latestReplyFor(ve.entry.id)}
               onReply={() => app.openReplyPanel(ve)}
               onFollowBranch={(sub) => app.switchThread(sub)}
               members={app.members}
@@ -450,6 +465,7 @@
               isNew={freshlyArrived.has(ve.entry.id!)}
               client={app.client}
               replyCount={replyCountFor(ve.entry.id)}
+              latestReply={latestReplyFor(ve.entry.id)}
               onReply={() => app.openReplyPanel(ve)}
               onFollowBranch={(sub) => app.switchThread(sub)}
               members={app.members}

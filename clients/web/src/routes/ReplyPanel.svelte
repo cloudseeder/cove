@@ -43,6 +43,24 @@
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   });
+
+  /** v0.4.63: keep the freshest reply visible above the compose box.
+   *  Without this, posting a reply into a full list leaves the new
+   *  entry appended at the bottom of `.scroll` — off-screen under
+   *  `.compose-wrap` — because the scroll position doesn't move on
+   *  content growth. Runs on any change to replies.length (own post
+   *  or someone else's) and on panel open, so entering the panel
+   *  always lands on the latest message. */
+  let scrollEl: HTMLDivElement | undefined = $state();
+  $effect(() => {
+    // Reactive dep: fire on replies count change AND on parent change
+    // (panel open — parent flips from null to a VerifiedEntry).
+    const _reactivity = replies.length + (parent === null ? 0 : 1);
+    void _reactivity;
+    if (scrollEl) {
+      scrollEl.scrollTop = scrollEl.scrollHeight;
+    }
+  });
 </script>
 
 {#if parent !== null}
@@ -54,7 +72,7 @@
         aria-label="Close thread">×</button>
     </header>
 
-    <div class="scroll">
+    <div class="scroll" bind:this={scrollEl}>
       <!-- Pinned parent — same EntryCard, no reply CTA inside the panel
            (you're already 'in' the reply context). -->
       <div class="parent">

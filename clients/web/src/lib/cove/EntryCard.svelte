@@ -12,6 +12,7 @@
   import Attachment from './Attachment.svelte';
   import DeliveryIndicator from './DeliveryIndicator.svelte';
   import ExpandableBody from './ExpandableBody.svelte';
+  import ReplyPreview from './ReplyPreview.svelte';
   import Seal from './Seal.svelte';
   import VerificationChain from './VerificationChain.svelte';
   import { smartTimestamp } from './chat';
@@ -28,6 +29,10 @@
      *  Computed by ThreadView from app.entries; passed in rather than
      *  derived locally so the card stays cheap to render. */
     replyCount?: number;
+    /** v0.4.63: the freshest reply to this entry, surfaced inline as a
+     *  preview chip. Null when there are no replies (chip hidden) or
+     *  when the card is rendered inside the reply panel itself. */
+    latestReply?: VerifiedEntry | null;
     /** v0.1.9: fired when the user clicks 'Reply' — opens the reply
      *  panel pinned to this entry. */
     onReply?: () => void;
@@ -42,7 +47,8 @@
   }
 
   let { ve, isNew = false, client = null, replyCount = 0,
-        onReply, onFollowBranch, members = [] }: Props = $props();
+        latestReply = null, onReply, onFollowBranch,
+        members = [] }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
 
@@ -114,18 +120,17 @@
     </div>
   {/if}
 
+  <!-- v0.4.63: latest-reply preview. When the parent has any replies,
+       show the freshest one inline; clicking opens the reply panel
+       (same effect as the old "N replies" footer link). -->
+  {#if latestReply && onReply}
+    <ReplyPreview {latestReply} totalReplyCount={replyCount} onOpen={onReply} />
+  {/if}
+
   {#if onReply || (client && members.length > 0 && ve.entry.id)}
     <footer>
-      {#if onReply}
-        <button type="button" class="reply" onclick={onReply}>
-          {#if replyCount === 0}
-            Reply
-          {:else if replyCount === 1}
-            1 reply
-          {:else}
-            {replyCount} replies
-          {/if}
-        </button>
+      {#if onReply && !latestReply}
+        <button type="button" class="reply" onclick={onReply}>Reply</button>
       {/if}
       {#if client && members.length > 0 && ve.entry.id}
         <DeliveryIndicator {client} entryId={ve.entry.id} {members} />
