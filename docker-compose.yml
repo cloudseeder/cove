@@ -5,48 +5,53 @@
 #   bootstrap  — one-shot ceremony for genesis state. Run once, then
 #                MOVE keys/root.priv OFFLINE and never run again.
 #
-# Usage on a fresh host:
+# Every host-facing knob is a variable so ONE compose file can run N
+# hubs on the same host (personal testbed alongside a production hub,
+# multiple pilots, etc.) without editing this file. See .env.example
+# for defaults; either copy it to .env or pass the vars per-invocation:
 #
-#     mkdir -p ./cove-state
-#     docker compose run --rm bootstrap \
-#         --org-name "Your Org" \
-#         --members keymaster
+#     COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state \
+#       COVE_CONTAINER_NAME=cove-testbed \
+#       docker compose --profile setup run --rm bootstrap \
+#         --org-name "Testbed" --members brooks
 #
-#     # ⚠️ move ./cove-state/keys/root.priv to offline storage
-#     # (USB, password manager, paper backup) and delete it here.
-#     mv ./cove-state/keys/root.priv ~/somewhere-safe/
-#
-#     docker compose up -d hub
-#
-# See docker/README.md for the full walk-through, including TLS via
-# Cloudflare Tunnel or Caddy.
+# See docker/README.md for the full walk-through (single-hub AND
+# second-hub-on-same-host).
 
 services:
   hub:
     build: .
     image: cove-hub:latest
-    container_name: cove-hub
+    # v0.4.64: container name is a variable so a second hub on the
+    # same host can pick e.g. `cove-testbed` without editing this file.
+    container_name: ${COVE_CONTAINER_NAME:-cove-hub}
     restart: unless-stopped
     ports:
       # Bind to loopback only by default — production runs behind a
-      # reverse proxy that terminates TLS. Change to "8000:8000" to
-      # bind to all interfaces if you're behind a real firewall.
-      - "127.0.0.1:8000:8000"
+      # reverse proxy that terminates TLS. Change the host side of the
+      # port via COVE_HUB_PORT to avoid collisions when running a
+      # second hub. Container side stays 8000 (that's what uvicorn
+      # binds inside the image).
+      - "127.0.0.1:${COVE_HUB_PORT:-8000}:8000"
     volumes:
-      - ./cove-state:/state
+      # Host path is a variable so a second hub can point at its own
+      # state directory without touching this file.
+      - ${COVE_STATE_DIR:-./cove-state}:/state
     environment:
       COVE_STATE_DIR: /state
 
   # One-shot genesis ceremony. Runs scripts/bootstrap_pilot.py with
   # any args you pass after the service name:
-  #     docker compose run --rm bootstrap --org-name X --members Y,Z
+  #     docker compose --profile setup run --rm bootstrap \
+  #         --org-name X --members Y,Z
   # After the ceremony finishes, this service does not run again.
   bootstrap:
     build: .
     image: cove-hub:latest
     profiles: ["setup"]
     volumes:
-      - ./cove-state:/state
+      # Bootstrap writes into the same state directory the hub reads.
+      - ${COVE_STATE_DIR:-./cove-state}:/state
     environment:
       COVE_STATE_DIR: /state
     entrypoint: ["python", "scripts/bootstrap_pilot.py", "--state-dir", "/state"]

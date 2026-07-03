@@ -142,6 +142,49 @@ Give whoever holds `cove-state/keys/members/keymaster.priv` a way to import it i
 
 Once the keymaster is authenticated, they can mint invite codes for the rest of the group from the Admin panel (v0.4.33 flow).
 
+## Running a second hub on the same host (personal testbed)
+
+Common case: a production hub is already running (systemd or an earlier `docker compose up`) on port 8000 and you want a separate testbed you can wipe/rebuild without touching production. The compose file is parameterized so you don't edit it — you set three env vars per invocation:
+
+| Var | Default | Change to |
+|---|---|---|
+| `COVE_HUB_PORT` | `8000` | free port (e.g. `8001`) |
+| `COVE_STATE_DIR` | `./cove-state` | distinct dir (e.g. `./testbed-state`) |
+| `COVE_CONTAINER_NAME` | `cove-hub` | distinct name (e.g. `cove-testbed`) |
+
+Two ways to set them.
+
+**Ad-hoc** — one command at a time:
+
+```sh
+COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state COVE_CONTAINER_NAME=cove-testbed \
+    docker compose --profile setup run --rm bootstrap \
+    --org-name "Brooks Testbed" --members brooks
+
+# Move testbed-state/keys/root.priv offline (§3 in the main flow).
+
+COVE_HUB_PORT=8001 COVE_STATE_DIR=./testbed-state COVE_CONTAINER_NAME=cove-testbed \
+    docker compose up -d hub
+```
+
+**Persistent** — copy `.env.example` and edit:
+
+```sh
+cp .env.example testbed.env
+$EDITOR testbed.env   # set the three vars
+
+docker compose --env-file testbed.env --profile setup run --rm bootstrap \
+    --org-name "Brooks Testbed" --members brooks
+# ... move root.priv offline ...
+docker compose --env-file testbed.env up -d hub
+```
+
+Now `docker ps` shows both `cove-hub` (production) and `cove-testbed` (testbed) side by side. `docker logs -f cove-testbed` follows just the testbed. Wiping the testbed is `rm -rf ./testbed-state` (or `scripts/wipe_hub.sh` pointed at it) — the production hub is untouched.
+
+**TLS for the testbed.** Same choices as §5. If you already run the production hub behind Cloudflare Tunnel at `hub.yourorg.example`, add a second `hostname` in `~/.cloudflared/config.yml` pointing at `http://127.0.0.1:8001` — one `cloudflared` process can serve multiple hostnames.
+
+**Which hub does my client talk to?** The desktop app and PWA both remember the hub URL you paired against. Point the testbed session at the new URL/port (or the tunneled hostname) and it keeps the LWCCOA session on the production URL. This does mean two separate client installs / browser profiles today — the "one client, N hubs" federation UI is banked in [[deferred-slices]] and not yet built.
+
 ## Upgrading
 
 ```sh

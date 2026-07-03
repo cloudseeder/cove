@@ -12,6 +12,12 @@ keys/
 *.sqlite3
 data/
 
+# docker hub state bind-mounts. Anything the docker-compose file might
+# create when COVE_STATE_DIR is a repo-relative path (./cove-state/,
+# ./testbed-state/, etc). Keys + sqlite inside are already covered by
+# rules above; this hides the top-level dirs from `git status` too.
+/*-state/
+
 # python
 __pycache__/
 *.py[cod]
