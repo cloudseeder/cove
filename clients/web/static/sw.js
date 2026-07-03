@@ -18,7 +18,15 @@
  * make a new SW take over immediately rather than waiting for every
  * tab to close.
  */
-const CACHE = 'cove-shell-v0.4.29';
+// v0.4.56: this constant is REWRITTEN at build time to match the
+// current package.json version via scripts/bump-sw-cache.js
+// (registered as a `postbuild` script in package.json). Previously
+// sat at 'cove-shell-v0.4.29' across 26 releases because nothing
+// bumped it; the SW's activate handler only prunes caches whose
+// name doesn't match the running one, so nothing ever fired. The
+// value below is only the source-file default (for `pnpm dev`);
+// production builds get the current version substituted in.
+const CACHE = 'cove-shell-vDEV';
 const SHELL = [
   '/',
   '/manifest.json',

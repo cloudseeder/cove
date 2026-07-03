@@ -4,6 +4,25 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.56] — 2026-07-02
+
+### Fixed
+- **PWA service worker cache never invalidated across releases.** The
+  `CACHE` constant in `static/sw.js` sat at `'cove-shell-v0.4.29'`
+  across 26 releases because nothing bumped it. The SW's `activate`
+  handler only prunes caches whose name doesn't match the current
+  one, so cleanup never fired and installed PWAs accumulated stale
+  asset caches — old JS chunks, old shell HTML, old-shape localStorage
+  reads, all coexisting with whatever was fresh. Plausible cause of
+  Brooks's "thread-red" phantom row on the phone (sidebar rendering
+  driven by stale JS behavior that no longer exists in the current
+  codebase). Now: `scripts/bump-sw-cache.js` runs as a `postbuild`
+  step and rewrites `build/sw.js`'s CACHE constant to include the
+  current package.json version, so every release gets a distinct
+  cache name and old caches get pruned on next activation. The
+  source-file default (`'cove-shell-vDEV'`) covers `pnpm dev` where
+  no build step runs.
+
 ## [0.4.55] — 2026-07-02
 
 ### Fixed
@@ -437,6 +456,7 @@ GitHub. Notable prior ships:
 - **0.4.19** — `/inbox` landing view.
 - **0.4.0** — first pilot-ready ship.
 
+[0.4.56]: https://github.com/cloudseeder/cove/releases/tag/v0.4.56
 [0.4.55]: https://github.com/cloudseeder/cove/releases/tag/v0.4.55
 [0.4.54]: https://github.com/cloudseeder/cove/releases/tag/v0.4.54
 [0.4.53]: https://github.com/cloudseeder/cove/releases/tag/v0.4.53
