@@ -13,6 +13,9 @@
   import { onMount } from 'svelte';
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
+  import {
+    loadActiveHubUrl, loadHubUrls, loadThreadFor, saveActiveHubUrl,
+  } from '$lib/cove/hubs';
 
   interface Props {
     app: AppState;
@@ -21,7 +24,18 @@
   }
   let { app, onOnboard }: Props = $props();
 
-  let hubUrl = $state('http://localhost:8000');
+  // v0.4.72: initialise from the multi-hub persistence layer so a
+  // reload lands the user back on their last-connected hub URL.
+  // Previously this read the legacy `cove.hubUrl` key which
+  // migrateLegacyKeys() wipes on every boot after cove.hubs is
+  // populated — the URL disappeared after the first successful
+  // connect. `loadActiveHubUrl()` is the source of truth AppState.connect
+  // writes on every successful auth.
+  let hubUrl = $state<string>(
+    loadActiveHubUrl()
+      ?? loadHubUrls()[0]
+      ?? 'https://lwccoa-hub.oap.dev',
+  );
   let priv = $state('');
   let pub = $state('');
   let importing = $state(false);
@@ -45,28 +59,30 @@
   // 'general') so AppState has a value for the sidebar's current-
   // thread highlight while the user picks from Inbox.
   onMount(async () => {
-    const savedHub = localStorage.getItem('cove.hubUrl');
-    if (savedHub) hubUrl = savedHub;
     await app.refreshKeychain();
   });
 
-  // Save hub URL on every change — partial typing gets persisted too,
-  // which is fine: next launch shows whatever was last typed and the
-  // user fixes it once. No need to gate on connect-success.
+  // v0.4.72: save hub URL to cove.activeHubUrl on every change so the
+  // pre-fill survives a reload even before the first successful
+  // connect. It's a controlled value — my AppState.restoreHubsFromStorage
+  // only *activates* the stored URL if it also appears in cove.hubs,
+  // and cove.hubs is only written by addHub() after a successful auth.
+  // So a partial URL typed here won't accidentally get "activated" as a
+  // hub connection.
   $effect(() => {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem('cove.hubUrl', hubUrl);
-    }
+    saveActiveHubUrl(hubUrl);
   });
 
-  /** v0.4.22: silent default thread — last-viewed (from
-   *  localStorage.cove.thread, populated by AppState.switchThread) or
-   *  'general' if the user has never opened a thread on this device.
-   *  Never surfaced as a form field; the Inbox is the entry point. */
+  /** v0.4.22: silent default thread — last-viewed for the currently-
+   *  typed hub URL, or 'general' if the user has never opened a thread
+   *  on this device. Never surfaced as a form field; the Inbox is the
+   *  entry point.
+   *  v0.4.72: reads the per-hub key `cove.thread.${hubUrl}` instead of
+   *  the legacy `cove.thread` global (which was collision-prone across
+   *  hubs). */
   function defaultThread(): string {
-    if (typeof localStorage === 'undefined') return 'general';
-    const saved = localStorage.getItem('cove.thread');
-    return sanitizeThreadName(saved ?? '') || 'general';
+    const saved = loadThreadFor(hubUrl) ?? '';
+    return sanitizeThreadName(saved) || 'general';
   }
 
   async function dropKeyfile(ev: DragEvent) {

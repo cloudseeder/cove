@@ -4,6 +4,28 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.72] — 2026-07-03
+
+### Fixed
+- **Hub URL didn't persist across launches.** `AuthPanel` and
+  `OnboardingPanel` still read/wrote the legacy `cove.hubUrl`
+  localStorage key. My v0.4.69 `migrateLegacyKeys()` wipes that key
+  on every boot after `cove.hubs` is populated (correct behavior for
+  the *migration*, wrong assumption about who else was using it) —
+  so after the first successful connect, the URL vanished from the
+  input on every subsequent launch. Both panels now source their
+  pre-fill from `loadActiveHubUrl()` (the multi-hub source of truth
+  written by `AppState.connect` on every successful auth), fall back
+  to `loadHubUrls()[0]`, then to the LWCCOA default. `AuthPanel`
+  now also writes to `cove.activeHubUrl` per-keystroke so partial
+  typing survives a reload — safe because `restoreHubsFromStorage`
+  only *activates* a stored URL if it also appears in `cove.hubs`
+  (which is only written by a successful `addHub()`).
+- **`OnboardingPanel`'s local-fallback thread now uses the per-hub
+  key** (`cove.thread.${hubUrl}` via `loadThreadFor`) instead of the
+  legacy global `cove.thread`. Same fix as the v0.4.69 `switchThread`
+  update, extended to onboarding.
+
 ## [0.4.71] — 2026-07-03
 
 ### Added

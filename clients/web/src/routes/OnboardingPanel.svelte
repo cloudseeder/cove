@@ -15,6 +15,7 @@
 -->
 <script lang="ts">
   import type { AppState } from '$lib/cove/state.svelte';
+  import { loadActiveHubUrl, loadHubUrls, loadThreadFor } from '$lib/cove/hubs';
   import { qrSvg } from '$lib/cove/pairing';
   import { sanitizeThreadName } from '$lib/cove/threadname';
 
@@ -25,7 +26,13 @@
   }
   let { app, onBack }: Props = $props();
 
-  let hubUrl = $state('https://lwccoa-hub.oap.dev');
+  // v0.4.72: pre-fill with the last-connected hub URL, same as
+  // AuthPanel. Falls back to the LWCCOA default.
+  let hubUrl = $state<string>(
+    loadActiveHubUrl()
+      ?? loadHubUrls()[0]
+      ?? 'https://lwccoa-hub.oap.dev',
+  );
   let nameHint = $state('');
   // v0.4.33: invite code is required. The keymaster mints it via
   // AdminPanel and delivers it out-of-band (text / Signal / paper);
@@ -52,11 +59,12 @@
   });
   // Default thread for the new member's first landing. Priority:
   //   1. v0.4.13+ hub-side default_thread hint from /directory
-  //   2. localStorage cove.thread (this device's prior Cove history)
+  //   2. per-hub last-viewed thread from the multi-hub persistence layer
   //   3. 'general' as a final fallback
   // Resolved at start() time so the hub URL the user typed is honored.
-  const localFallback = (typeof localStorage !== 'undefined'
-    && localStorage.getItem('cove.thread')) || 'general';
+  // v0.4.72: the legacy `cove.thread` global was collision-prone across
+  // multiple hubs; use the per-hub key from hubs.ts instead.
+  const localFallback = $derived(loadThreadFor(hubUrl) || 'general');
 
   // ---- derived views into the AppState onboarding state machine ----
   const status = $derived(app.onboardStatus);
