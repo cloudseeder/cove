@@ -18,6 +18,10 @@ data/
 # rules above; this hides the top-level dirs from `git status` too.
 /*-state/
 
+# roster CSVs used at bootstrap. Real-org rosters may hold names +
+# affiliations that shouldn't live in git.
+/roster*.csv
+
 # python
 __pycache__/
 *.py[cod]

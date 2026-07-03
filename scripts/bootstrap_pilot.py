@@ -67,7 +67,17 @@ def _load_roster(path: Path) -> list[dict]:
     """Parse a CSV roster.
 
     Required columns: display_name, affiliation, role.
-    Optional columns: title, key_name (defaults to slugified display_name).
+    Optional columns:
+      - title: human-readable role title (President, VP Engineering).
+      - key_name: overrides slugified display_name for the on-disk .priv
+        filename. Ignored when `pubkey` is set (no key files written).
+      - pubkey (v0.4.65+): 64-char hex pubkey to REUSE instead of
+        generating fresh. The bootstrap skips keypair generation for
+        that row and just attests the provided pubkey. Enables
+        federation-friendly bring-ups: a keymaster with an existing
+        Cove identity (attested by another hub, paired to a vault,
+        etc.) is attested here under the same pubkey, so one keypair
+        works across N hubs.
 
     Role must be one of member|officer|board (matches HubConfig tier
     table in cove/config.py). Anything else is rejected loudly rather
@@ -98,6 +108,7 @@ def _load_roster(path: Path) -> list[dict]:
             role = (raw.get("role") or "").strip().lower()
             title = (raw.get("title") or "").strip() or None
             key_name = (raw.get("key_name") or "").strip() or _slug(display_name)
+            pubkey = (raw.get("pubkey") or "").strip().lower() or None
             if not display_name:
                 raise SystemExit(f"roster row {i}: display_name is required")
             if role not in _VALID_ROLES:
@@ -108,12 +119,21 @@ def _load_roster(path: Path) -> list[dict]:
                     f"roster row {i}: key_name {key_name!r} is duplicated "
                     "(add a key_name column to disambiguate)")
             seen_slugs.add(key_name)
+            if pubkey is not None:
+                # Ed25519 pubkey: 32 bytes = 64 hex chars. Any other
+                # length is a typo — reject loudly rather than write a
+                # nonsense attestation.
+                if len(pubkey) != 64 or not all(c in "0123456789abcdef" for c in pubkey):
+                    raise SystemExit(
+                        f"roster row {i}: pubkey must be 64 hex chars, "
+                        f"got {len(pubkey)} chars ({pubkey[:16]}…)")
             rows.append({
                 "display_name": display_name,
                 "affiliation": affiliation,
                 "role": role,
                 "title": title,
                 "key_name": key_name,
+                "pubkey": pubkey,
             })
     if not rows:
         raise SystemExit(f"roster {path} has no member rows")
@@ -189,17 +209,28 @@ def main() -> int:
     else:
         # Legacy --members path: every member gets role='member' and the
         # org name as their affiliation (no real per-member info to put).
+        # No `pubkey` column here — --members always generates fresh.
         roster = [
             {"display_name": n.strip(), "affiliation": args.org_name,
-             "role": "member", "title": None, "key_name": _slug(n.strip())}
+             "role": "member", "title": None, "key_name": _slug(n.strip()),
+             "pubkey": None}
             for n in args.members.split(",") if n.strip()
         ]
     attestations = []
     for r in roster:
-        m_priv, m_pub = crypto.generate_keypair()
         key_name = r["key_name"]
-        _write(members_dir / f"{key_name}.priv", m_priv + "\n", mode=0o600)
-        _write(members_dir / f"{key_name}.pub", m_pub + "\n", mode=0o644)
+        if r.get("pubkey"):
+            # v0.4.65: reuse an existing pubkey. Skip keypair generation
+            # and don't write any .priv — the keymaster already has one
+            # somewhere else (paired vault, another hub, USB stick).
+            m_pub = r["pubkey"]
+            # Still write .pub so the state dir reflects who's attested
+            # (useful for admin ops that grep for pubkeys on disk).
+            _write(members_dir / f"{key_name}.pub", m_pub + "\n", mode=0o644)
+        else:
+            m_priv, m_pub = crypto.generate_keypair()
+            _write(members_dir / f"{key_name}.priv", m_priv + "\n", mode=0o600)
+            _write(members_dir / f"{key_name}.pub", m_pub + "\n", mode=0o644)
         att = issue_attestation(
             root_priv, member_pubkey=m_pub,
             display_name=r["display_name"],
@@ -237,20 +268,25 @@ def main() -> int:
     print(f" Members         :")
     for r in roster:
         title_str = f" ({r['title']})" if r['title'] else ""
-        print(f"   - {r['display_name']}{title_str}")
+        origin = " [pubkey provided — no .priv written]" if r.get("pubkey") else ""
+        print(f"   - {r['display_name']}{title_str}{origin}")
         print(f"       affiliation={r['affiliation']!r:<18} "
               f"role={r['role']:<8} key={r['key_name']}")
     print()
+    generated_privs = [r for r in roster if not r.get("pubkey")]
     print(" Custody non-negotiable (CLAUDE.md #1) — DO THIS NOW:")
     print(f"   1. Move {keys_dir/'root.priv'}")
     print(f"      to OFFLINE storage (USB key, password manager, paper).")
     print(f"      Then delete it from this box:")
     print(f"        shred -u {keys_dir/'root.priv'}")
     print()
-    print(f"   2. Hand each member their .priv from {members_dir}/")
-    print(f"      and delete the copy on this box once they have it.")
-    print()
-    print(f"   3. Hub keeps {keys_dir/'hub.priv'} — it stays.")
+    step_n = 2
+    if generated_privs:
+        print(f"   {step_n}. Hand each member their .priv from {members_dir}/")
+        print(f"      and delete the copy on this box once they have it.")
+        print()
+        step_n += 1
+    print(f"   {step_n}. Hub keeps {keys_dir/'hub.priv'} — it stays.")
     print()
     print(" To run the hub:")
     print(f"   COVE_STATE_DIR={state} uvicorn scripts.run_hub:app "
