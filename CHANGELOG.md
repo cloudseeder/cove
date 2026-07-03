@@ -4,16 +4,32 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
-## [0.4.60] — 2026-07-03
+## [0.4.61] — 2026-07-03
 
 ### Changed
-- **Inbox previews truncate at 100 chars with an ellipsis.** The hub
-  caps `body_preview` at 140 already but the Inbox row is a one-line
-  index — anything past ~100 chars was getting clipped by CSS
-  ellipsis-overflow at typical widths, which is resolution-dependent
-  and inconsistent. Now `previewBody()` in `InboxPanel.svelte` truncates
-  strings longer than 100 chars to `slice(0,100).trimEnd() + '…'` for
-  a clean, deterministic cut. Full body still shows in the thread view.
+- **Long messages in the thread view truncate at 100 chars with a
+  "Show more / Show less" toggle.** Applies to both cards mode
+  (`EntryCard`) and chat mode (`ChatMessage`) so the two render paths
+  keep identical truncation semantics. Introduced a shared
+  `$lib/cove/ExpandableBody.svelte` component that owns the 100-char
+  threshold, the ellipsis, and the per-message expand state — the
+  parent component picks the typography via a `dense` prop (chat mode
+  uses dense; cards mode uses reading-rhythm defaults). Toggling
+  expand/collapse is per-message so long threads don't force a global
+  choice between "everything expanded" and "everything trimmed".
+- **Reverted the v0.4.60 Inbox preview cap.** Brooks clarified the
+  ask was for the thread view, not Inbox. `previewBody()` in
+  `InboxPanel.svelte` returns to using the hub's 140-char cap. The
+  full v0.4.60 diff is undone.
+
+### Removed
+- Dead `.body` CSS block in `EntryCard.svelte` (superseded by
+  `ExpandableBody`'s own body styling) and `.body` + `.row.notice
+  .body` blocks in `ChatMessage.svelte`. The `.row.notice .body`
+  font-size bump for notice bodies in chat mode is gone; notices still
+  stand out via gold row border + NOTICE badge.
+
+## [0.4.60] — 2026-07-03 — REVERTED
 
 ## [0.4.59] — 2026-07-03
 

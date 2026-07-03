@@ -19,6 +19,7 @@
   import { authorColor, initials, smartTimestamp } from '$lib/cove/chat';
   import Attachment from '$lib/cove/Attachment.svelte';
   import DeliveryIndicator from '$lib/cove/DeliveryIndicator.svelte';
+  import ExpandableBody from '$lib/cove/ExpandableBody.svelte';
   import VerificationChain from '$lib/cove/VerificationChain.svelte';
 
   interface Props {
@@ -84,7 +85,7 @@
         </span>
       </button>
     {:else if ve.entry.body}
-      <p class="body">{ve.entry.body}</p>
+      <ExpandableBody body={ve.entry.body} dense />
     {/if}
 
     {#if ve.entry.blobs.length > 0 && client}
@@ -148,9 +149,6 @@
   .row.notice.revealed {
     background: rgba(212, 175, 55, 0.08);
   }
-  .row.notice .body {
-    font-size: 0.98rem;
-  }
   .notice-badge {
     font-size: 0.66rem;
     letter-spacing: 0.1em;
@@ -208,13 +206,6 @@
     color: var(--muted);
     font-size: 0.74rem;
     margin-left: auto;
-  }
-  .body {
-    margin: 0;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-    line-height: 1.45;
-    font-size: 0.94rem;
   }
   .branch-link {
     appearance: none;

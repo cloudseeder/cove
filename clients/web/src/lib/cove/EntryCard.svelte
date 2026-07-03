@@ -11,6 +11,7 @@
   import type { Attestation } from './types';
   import Attachment from './Attachment.svelte';
   import DeliveryIndicator from './DeliveryIndicator.svelte';
+  import ExpandableBody from './ExpandableBody.svelte';
   import Seal from './Seal.svelte';
   import VerificationChain from './VerificationChain.svelte';
   import { smartTimestamp } from './chat';
@@ -93,7 +94,7 @@
       {/if}
     </button>
   {:else if ve.entry.body}
-    <p class="body">{ve.entry.body}</p>
+    <ExpandableBody body={ve.entry.body} />
   {/if}
 
   {#if ve.entry.blobs.length > 0 && client}
@@ -171,13 +172,6 @@
     font-size: 0.82rem;
     font-feature-settings: 'tnum';
     white-space: nowrap;
-  }
-
-  .body {
-    margin: 0;
-    line-height: 1.55;
-    white-space: pre-wrap;
-    word-break: break-word;
   }
 
   .attachments {
