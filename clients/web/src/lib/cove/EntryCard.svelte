@@ -13,6 +13,7 @@
   import DeliveryIndicator from './DeliveryIndicator.svelte';
   import Seal from './Seal.svelte';
   import VerificationChain from './VerificationChain.svelte';
+  import { smartTimestamp } from './chat';
 
   interface Props {
     ve: VerifiedEntry;
@@ -53,18 +54,21 @@
   const personTitle = $derived(ve.attestation.title);
   const tooltipTitle = $derived(
     personTitle
-      ? `Verified from ${ve.attestation.display_name}, ${personTitle}`
-      : `Verified from ${ve.attestation.display_name}`,
+      ? `Verified from ${ve.attestation.display_name}, ${personTitle} (${ve.attestation.role})`
+      : `Verified from ${ve.attestation.display_name} (${ve.attestation.role})`,
   );
-  const created = $derived(ve.entry.created_at);
+  /** v0.4.57: raw ISO for the <time datetime> a11y attribute; the visible
+   *  string is smartTimestamp() so the header doesn't waste screen space
+   *  on a full ISO literal. */
+  const createdIso = $derived(ve.entry.created_at);
+  const createdShort = $derived(smartTimestamp(ve.entry.created_at));
 </script>
 
 <article class="card" class:board={isBoard} class:fresh={isNew} class:branch={isBranch}>
   <header>
     <Seal
       state="verified"
-      title={tooltipTitle}
-      summary={ve.attestation.role}
+      tooltip={tooltipTitle}
       onReveal={() => (revealed = !revealed)}
     />
     <div class="byline">
@@ -73,7 +77,7 @@
         <span class="title">{personTitle}</span>
       {/if}
     </div>
-    <time>{created}</time>
+    <time datetime={createdIso} title={createdIso}>{createdShort}</time>
   </header>
 
   {#if isBranch && onFollowBranch}
@@ -143,7 +147,7 @@
   header {
     display: flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.7rem;
     margin-bottom: 0.6rem;
   }
   .byline {

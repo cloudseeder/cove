@@ -18,18 +18,21 @@
 
   interface Props {
     state: State;
-    title?: string;       // e.g. "Verified from Board"
-    summary?: string;     // one-line chain summary for the reveal modal
+    title?: string;       // e.g. "Verified from Board" — visible pill text
+    summary?: string;     // one-line chain summary next to the pill text
+    tooltip?: string;     // v0.4.57: hover-tooltip only, doesn't add pill text
     onReveal?: () => void;
   }
 
-  let { state, title = '', summary = '', onReveal }: Props = $props();
+  let { state, title = '', summary = '', tooltip = '', onReveal }: Props = $props();
 </script>
 
 <button
   class="seal seal-{state}"
+  class:compact={!title && !summary}
   type="button"
-  aria-label={title || state}
+  title={tooltip || title || undefined}
+  aria-label={tooltip || title || state}
   onclick={onReveal}
   disabled={!onReveal}
 >
@@ -72,6 +75,18 @@
     color: inherit;
     cursor: pointer;
     transition: transform 120ms ease, background 200ms ease, border-color 200ms ease;
+  }
+  /* v0.4.57: icon-only mode — used by EntryCard so the seal reads as a
+     golden emblem next to the byline instead of a wide pill that
+     repeats the member name and role. Text sites (demo/showcase) keep
+     the pill treatment by passing title/summary. */
+  .seal.compact {
+    padding: 0.3rem;
+    gap: 0;
+  }
+  .seal.compact .seal-glyph {
+    width: 1.55em;
+    height: 1.55em;
   }
   .seal:disabled {
     cursor: default;

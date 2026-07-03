@@ -4,6 +4,35 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.57] — 2026-07-03
+
+### Changed
+- **Cards-mode entry header, slimmer and less redundant.** The gold
+  seal used to render as a wide pill with "Verified from *Name*,
+  *Title*" text plus a "board" role summary — repeating the byline
+  that sat inches to its right and, on narrower widths, overlapping
+  the timestamp. Now the seal is a compact icon-only emblem next to
+  the byline (`Seal` gained a `compact` mode and a `tooltip` prop for
+  the hover-only "Verified from …" text), the byline stays as the
+  single source of the name/title, and the timestamp uses
+  `smartTimestamp()` (`just now` / `12m` / `3:15 PM` / `Jul 3` / `Jul 3,
+  2025`) instead of the raw ISO literal. The full ISO is preserved
+  on the `<time datetime>` attribute for screen readers and on `title`
+  for hover.
+
+### Fixed
+- **Desktop sidebar-toggle button rendered on top of the "Inbox" title
+  when the sidebar was open.** The v0.4.51 fix — a
+  `:global(.layout.sidebar-open) .sidebar-toggle` descendant selector
+  in ThreadView's scoped styles — didn't reliably shift the button
+  past the sidebar's right edge under Svelte's CSS scoper, so the
+  button stayed at `left: 0.6rem` right on top of the sidebar header.
+  Switched to a direct `class:pushed={app.sidebarOpen}` binding on the
+  button with a plain `.sidebar-toggle.pushed` selector — no `:global`
+  ambiguity. Also collapsed two competing `transition:` declarations
+  on `.sidebar-toggle` into one; the second was clobbering the first,
+  which is why the shift snapped instantly instead of animating.
+
 ## [0.4.56] — 2026-07-02
 
 ### Fixed

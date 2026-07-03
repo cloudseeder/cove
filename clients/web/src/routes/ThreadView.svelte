@@ -197,6 +197,7 @@
        reachable from any panel; on desktop the sidebar is usually
        inline and the button collapses it back. -->
   <button type="button" class="sidebar-toggle"
+    class:pushed={app.sidebarOpen}
     title={app.sidebarOpen ? 'Hide threads panel' : 'Show threads panel'}
     aria-label={app.sidebarOpen ? 'Hide threads panel' : 'Show threads panel'}
     aria-expanded={app.sidebarOpen}
@@ -843,7 +844,6 @@
        boundary (chevron collapsing inward) instead of on top of the
        sidebar's own header. Mobile behavior is unchanged (drawer is
        an overlay; button overlays it and taps to close). */
-    transition: left 120ms ease;
     z-index: 20;
     background: var(--panel);
     color: var(--fg);
@@ -856,7 +856,11 @@
     line-height: 1;
     cursor: pointer;
     opacity: 0.75;
-    transition: opacity 120ms, border-color 120ms;
+    /* v0.4.57: single transition declaration — the earlier `transition:
+       left 120ms ease;` at the top of this block was being clobbered by
+       the second transition further down, so the `left` shift on
+       .pushed snapped instantly. Combined here. */
+    transition: left 120ms ease, opacity 120ms, border-color 120ms;
   }
   .sidebar-toggle:hover {
     opacity: 1;
@@ -864,9 +868,15 @@
   }
   /* v0.4.51: on viewports where the sidebar sits inline (not overlay),
      push the toggle out of the sidebar's column when it's open. 240px
-     matches the sidebar's width in ThreadList.svelte. */
+     matches the sidebar's width in ThreadList.svelte.
+     v0.4.57: switched from a `:global(.layout.sidebar-open) .sidebar-toggle`
+     descendant selector to a direct `.sidebar-toggle.pushed` class binding.
+     The descendant form was landing under Svelte's CSS scoper in a way
+     that kept the button at left:0.6rem — right on top of the sidebar
+     header — even when the sidebar was open. The direct class avoids
+     any :global() interaction and is simpler to reason about. */
   @media (min-width: 641px) {
-    :global(.layout.sidebar-open) .sidebar-toggle {
+    .sidebar-toggle.pushed {
       left: calc(240px + 0.6rem);
     }
   }
