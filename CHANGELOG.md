@@ -4,6 +4,24 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.59] — 2026-07-03
+
+### Fixed
+- **Compose box was visually narrower than the message feed above it.**
+  Both `.feed` and `.compose` are direct children of the flex-column
+  `.thread` and both get `max-width: 720px; margin: 0 auto` from
+  `.thread > :global(*)` — so on paper they should be the same width.
+  Under `box-sizing: content-box` (default) the 720px caps only the
+  content area; `.feed` has no padding/border so its outer box is 720px,
+  but `.compose` has `padding: 0.6rem` + `border: 1px` so its content
+  is 720px and its outer is ~741px. Combined with cross-axis auto
+  margins in a flex column parent, this can leave the compose
+  intrinsic-sized to less than 720px on some layouts.
+  Fixed by giving `.compose` `box-sizing: border-box`, an explicit
+  `width: 100%`, and `align-self: stretch` — the OUTER box now caps at
+  720px, matching `.feed`'s outer, and there's no path for
+  intrinsic-sizing to shrink it below the cross-axis fill.
+
 ## [0.4.58] — 2026-07-03
 
 ### Fixed

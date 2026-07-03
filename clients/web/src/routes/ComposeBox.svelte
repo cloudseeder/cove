@@ -278,9 +278,23 @@
     border-radius: 14px;
     backdrop-filter: blur(10px);
     transition: border-color 120ms ease, background 120ms ease;
-    /* Don't let compose stretch when parent is a flex column — it
-       should hug its content and sit at the bottom. */
-    flex: 0 0 auto;
+    /* Don't grow to fill the parent flex column vertically — hug
+       content and sit at the bottom. flex-shrink stays 1 so cross-axis
+       margin/box calc behavior matches .feed's default. */
+    flex: 0 1 auto;
+    /* v0.4.59: match .feed's cross-axis width exactly. Without these,
+       the auto margins from `.thread > *` (max-width:720px; margin:auto)
+       interact with the compose's own padding/border under content-box
+       sizing in a way that leaves the compose visually narrower than
+       .feed on wide viewports. `box-sizing: border-box` makes max-width
+       include padding+border so the OUTER box is 720px (matching .feed's
+       720px content-box, which has no padding). `width: 100%` prevents
+       the flex column parent from ever intrinsic-sizing the compose
+       to its content-width — it always fills the cross-axis up to
+       max-width. `align-self: stretch` is explicit for the same reason. */
+    box-sizing: border-box;
+    width: 100%;
+    align-self: stretch;
   }
   .compose.drag {
     border-color: rgba(212, 175, 55, 0.7);
