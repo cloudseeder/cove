@@ -407,17 +407,28 @@ export class AppState {
     await this.refreshKeychain();
   }
 
-  /** Re-read the root keychain slot. */
+  /** v0.4.73: current active hub's org pubkey, used to scope root-key
+   *  operations to the correct hub. Null when no active hub is loaded
+   *  or the manifest hasn't come back yet — root ops fall back to the
+   *  legacy un-suffixed keychain slot in that case. */
+  private activeOrgKey(): string | undefined {
+    return this.activeHub?.manifest?.org;
+  }
+
+  /** Re-read the root keychain slot for the active hub. Sets
+   *  `rootKeysPresent` to reflect whether *the currently-active hub's*
+   *  root key is loaded. */
   async refreshRootKeychain(): Promise<void> {
     if (!this.inTauri) { this.rootKeysPresent = false; return; }
-    const st = await rootKeychain.status();
+    const st = await rootKeychain.status(this.activeOrgKey());
     this.rootKeysPresent = st.has_keys;
   }
 
-  /** Import the org root keypair into the dedicated keychain slot. */
+  /** Import the org root keypair into the active hub's dedicated slot.
+   *  Multiple hubs each get their own slot keyed by org pubkey. */
   async importRootKeys(privateKey: string, publicKey: string): Promise<void> {
     if (!this.inTauri) throw new Error('root key custody requires the Tauri shell');
-    await rootKeychain.import(privateKey, publicKey);
+    await rootKeychain.import(privateKey, publicKey, this.activeOrgKey());
     await this.refreshRootKeychain();
     if (!this.rootKeysPresent) {
       throw new Error(
@@ -428,10 +439,11 @@ export class AppState {
     }
   }
 
-  /** Wipe the root slot. */
+  /** Wipe the root slot for the active hub. Other hubs' root keys are
+   *  untouched. */
   async clearRootKeys(): Promise<void> {
     if (!this.inTauri) return;
-    await rootKeychain.clear();
+    await rootKeychain.clear(this.activeOrgKey());
     await this.refreshRootKeychain();
   }
 
@@ -580,6 +592,9 @@ export class AppState {
     if (hub.authStatus.kind === 'authenticated') {
       this.activeHubUrl = hubUrl;
       saveActiveHubUrl(hubUrl);
+      // v0.4.73: rootKeysPresent is per-hub; refresh so admin UI
+      // shows the correct import/clear state for the newly-active hub.
+      void this.refreshRootKeychain();
       return;
     }
 
@@ -595,6 +610,7 @@ export class AppState {
       // No live session anywhere — swap and let AuthPanel drive auth.
       this.activeHubUrl = hubUrl;
       saveActiveHubUrl(hubUrl);
+      void this.refreshRootKeychain();
       return;
     }
 
@@ -613,6 +629,7 @@ export class AppState {
     if (postAuthKind === 'authenticated') {
       this.activeHubUrl = hubUrl;
       saveActiveHubUrl(hubUrl);
+      void this.refreshRootKeychain();
     }
     // On failure, activeHubUrl stays put — the user keeps their
     // working session. The target hub's authStatus flipped to

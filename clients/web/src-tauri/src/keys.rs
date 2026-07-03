@@ -28,8 +28,31 @@ const PUB_SLOT: &str = "public_key";
 // the HUB never holding root.priv; the keymaster's client legitimately
 // holds it (their device IS the trust anchor). Slot names are distinct
 // so a keymaster who's also a member has both keys cleanly separated.
-const ROOT_PRIV_SLOT: &str = "root_private_key";
-const ROOT_PUB_SLOT: &str = "root_public_key";
+//
+// v0.4.73: per-hub slots. A keymaster who admins multiple hubs (Brooks
+// on LWCCOA + his personal testbed) needs each hub's root key
+// independently accessible without a forget-and-reimport dance every
+// switch. Slot names now suffix the org pubkey (the target hub's root
+// public key from its DirectoryManifest.org). `None` falls back to the
+// legacy un-suffixed slot for backward compat with pre-v0.4.73 installs
+// that already have a root imported.
+const ROOT_PRIV_SLOT_LEGACY: &str = "root_private_key";
+const ROOT_PUB_SLOT_LEGACY: &str = "root_public_key";
+
+/// Build the priv-slot name for a given org pubkey. `None` returns the
+/// legacy un-suffixed name (backward compat).
+fn root_priv_slot(org: Option<&str>) -> String {
+    match org {
+        None => ROOT_PRIV_SLOT_LEGACY.to_string(),
+        Some(o) => format!("{ROOT_PRIV_SLOT_LEGACY}.{o}"),
+    }
+}
+fn root_pub_slot(org: Option<&str>) -> String {
+    match org {
+        None => ROOT_PUB_SLOT_LEGACY.to_string(),
+        Some(o) => format!("{ROOT_PUB_SLOT_LEGACY}.{o}"),
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum KeyError {
@@ -344,20 +367,37 @@ fn sign_with_slot(slot: &str, message: &[u8]) -> Result<String, KeyError> {
 
 // ---- v0.4.0: root keychain slot (keymaster-only) -----------------------
 
-/// Status of the keymaster's root.priv slot. Distinct from the member
-/// status so a keymaster who's also a member sees both clearly.
-pub fn root_status() -> Result<KeyStatus, KeyError> {
-    Ok(match backend().get(ROOT_PUB_SLOT)? {
-        Some(pk) => KeyStatus { has_keys: true, public_key: Some(pk) },
-        None => KeyStatus { has_keys: false, public_key: None },
-    })
+/// Status of the keymaster's root.priv slot for the given org. When
+/// `org` is None, checks the legacy un-suffixed slot for backward
+/// compat with pre-v0.4.73 installs. When Some, checks the per-hub
+/// slot AND falls back to the legacy slot if the legacy pubkey
+/// happens to match — that way a pre-v0.4.73 keymaster who already
+/// has (say) LWCCOA's root imported gets `has_keys: true` for
+/// LWCCOA without re-importing.
+pub fn root_status(org: Option<&str>) -> Result<KeyStatus, KeyError> {
+    let kc = backend();
+    // Preferred: per-hub slot.
+    if let Some(pk) = kc.get(&root_pub_slot(org))? {
+        return Ok(KeyStatus { has_keys: true, public_key: Some(pk) });
+    }
+    // Fallback: legacy un-suffixed slot IF it holds the same pub the
+    // caller asked about. This catches the migration case cleanly.
+    if let Some(org_pub) = org {
+        if let Some(legacy_pub) = kc.get(ROOT_PUB_SLOT_LEGACY)? {
+            if legacy_pub == org_pub {
+                return Ok(KeyStatus { has_keys: true, public_key: Some(legacy_pub) });
+            }
+        }
+    }
+    Ok(KeyStatus { has_keys: false, public_key: None })
 }
 
-/// Import a paired root (priv, pub) into the dedicated root slot. Same
+/// Import a paired root (priv, pub) into the per-hub root slot. Same
 /// derivation check as import() — if the claimed pub doesn't derive
-/// from priv we refuse, so a paste-typo doesn't end up storing a
-/// useless key. Same readback verification too.
-pub fn root_import(private_key_hex: &str, public_key_hex: &str) -> Result<(), KeyError> {
+/// from priv we refuse. `org` is the target hub's org pubkey; None
+/// writes to the legacy un-suffixed slot.
+pub fn root_import(private_key_hex: &str, public_key_hex: &str,
+                   org: Option<&str>) -> Result<(), KeyError> {
     let priv_bytes = hex::decode(private_key_hex)?;
     let pub_bytes = hex::decode(public_key_hex)?;
     let priv_arr: [u8; 32] = priv_bytes.as_slice().try_into()
@@ -369,9 +409,11 @@ pub fn root_import(private_key_hex: &str, public_key_hex: &str) -> Result<(), Ke
         return Err(KeyError::KeysMismatched);
     }
     let kc = backend();
-    kc.set(ROOT_PRIV_SLOT, private_key_hex)?;
-    kc.set(ROOT_PUB_SLOT, public_key_hex)?;
-    match kc.get(ROOT_PUB_SLOT)? {
+    let priv_slot = root_priv_slot(org);
+    let pub_slot = root_pub_slot(org);
+    kc.set(&priv_slot, private_key_hex)?;
+    kc.set(&pub_slot, public_key_hex)?;
+    match kc.get(&pub_slot)? {
         Some(ref s) if s == public_key_hex => {}
         Some(_) => return Err(KeyError::ReadbackMismatch),
         None => return Err(KeyError::ReadbackFailed),
@@ -379,22 +421,47 @@ pub fn root_import(private_key_hex: &str, public_key_hex: &str) -> Result<(), Ke
     Ok(())
 }
 
-/// Wipe the root slot. Used when retiring a device that was previously
-/// the keymaster station.
-pub fn root_clear() -> Result<(), KeyError> {
+/// Wipe the root slot for the given org. When `org` is None, clears the
+/// legacy un-suffixed slot.
+pub fn root_clear(org: Option<&str>) -> Result<(), KeyError> {
     let kc = backend();
-    for slot in [ROOT_PRIV_SLOT, ROOT_PUB_SLOT] {
-        kc.delete(slot)?;
+    for slot in [root_priv_slot(org), root_pub_slot(org)] {
+        kc.delete(&slot)?;
     }
     Ok(())
 }
 
-/// Sign arbitrary bytes with the root private key. Used by the admin
-/// UI to sign attestations (canonical-content bytes) and directory
-/// manifests (canonical-content bytes) — same two-step sign-once-per-
-/// piece pattern the Python admin tool uses. Returns 64-byte hex sig.
-pub fn root_sign_message(message: &[u8]) -> Result<String, KeyError> {
-    sign_with_slot(ROOT_PRIV_SLOT, message)
+/// Sign arbitrary bytes with the root private key for the given org.
+/// Falls back to the legacy un-suffixed slot when `org` is None OR
+/// when the per-hub slot is empty but the legacy pub matches (same
+/// migration convenience as root_status).
+pub fn root_sign_message(message: &[u8], org: Option<&str>) -> Result<String, KeyError> {
+    // Fast path: per-hub slot has a priv.
+    let priv_slot = root_priv_slot(org);
+    if let Some(hex_priv) = backend().get(&priv_slot)? {
+        return sign_priv_hex(&hex_priv, message);
+    }
+    // Fallback: legacy un-suffixed slot if the caller asked about a
+    // specific org AND the legacy pub matches.
+    if let Some(org_pub) = org {
+        if let Some(legacy_pub) = backend().get(ROOT_PUB_SLOT_LEGACY)? {
+            if legacy_pub == org_pub {
+                return sign_with_slot(ROOT_PRIV_SLOT_LEGACY, message);
+            }
+        }
+    }
+    Err(KeyError::NotImported)
+}
+
+/// Same body as sign_with_slot but takes the hex priv directly so we
+/// can avoid a second keychain lookup on the migration path.
+fn sign_priv_hex(priv_hex: &str, message: &[u8]) -> Result<String, KeyError> {
+    let priv_bytes = hex::decode(priv_hex)?;
+    let priv_arr: [u8; 32] = priv_bytes.as_slice().try_into()
+        .map_err(|_| KeyError::InvalidPrivateKey)?;
+    let sk = SigningKey::from_bytes(&priv_arr);
+    let sig = sk.sign(message);
+    Ok(hex::encode(sig.to_bytes()))
 }
 
 #[cfg(test)]

@@ -47,28 +47,28 @@ pub fn sign_message(message: Vec<u8>) -> Result<String, String> {
 // ---- v0.4.0: root keychain slot (keymaster-only admin signing) ---------
 
 #[tauri::command]
-pub fn root_status() -> Result<keys::KeyStatus, String> {
-    keys::root_status().map_err(Into::into)
+pub fn root_status(org: Option<String>) -> Result<keys::KeyStatus, String> {
+    keys::root_status(org.as_deref()).map_err(Into::into)
 }
 
 #[tauri::command]
-pub fn root_import(private_key: String, public_key: String) -> Result<(), String> {
-    keys::root_import(&private_key, &public_key).map_err(Into::into)
+pub fn root_import(private_key: String, public_key: String,
+                   org: Option<String>) -> Result<(), String> {
+    keys::root_import(&private_key, &public_key, org.as_deref()).map_err(Into::into)
 }
 
 #[tauri::command]
-pub fn root_clear() -> Result<(), String> {
-    keys::root_clear().map_err(Into::into)
+pub fn root_clear(org: Option<String>) -> Result<(), String> {
+    keys::root_clear(org.as_deref()).map_err(Into::into)
 }
 
 /// Sign canonical-content bytes (attestation OR manifest) with the
-/// stored root key. Used twice per admin attestation: once for the
-/// new Attestation, once for the new DirectoryManifest. The JS layer
-/// owns canonicalization (RFC 8785) so this command is just a
-/// signature surface.
+/// stored root key for the given org. `org` scopes to a per-hub slot
+/// (v0.4.73+); None falls back to the legacy un-suffixed slot for
+/// backward compat.
 #[tauri::command]
-pub fn root_sign_message(message: Vec<u8>) -> Result<String, String> {
-    keys::root_sign_message(&message).map_err(Into::into)
+pub fn root_sign_message(message: Vec<u8>, org: Option<String>) -> Result<String, String> {
+    keys::root_sign_message(&message, org.as_deref()).map_err(Into::into)
 }
 
 /// Start the background /stream subscriber. Replaces any prior

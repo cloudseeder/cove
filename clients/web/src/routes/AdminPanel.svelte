@@ -19,6 +19,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { authorColor, initials } from '$lib/cove/chat';
+  import { hubLabel } from '$lib/cove/hubs';
   import { fingerprint } from '$lib/cove/pairing';
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
@@ -31,6 +32,13 @@
     app: AppState;
   }
   let { app }: Props = $props();
+
+  /** v0.4.73: active-hub label for the root-key custody UX. Reactively
+   *  updates when the user switches hubs in the sidebar. Falls back to
+   *  "this hub" if the URL is missing. */
+  const activeHubLabel = $derived(
+    app.activeHubUrl ? hubLabel(app.activeHubUrl) : 'this hub',
+  );
 
   /** v0.4.23: per-row edit / revoke state for the membership editor.
    *  Only one row open at a time so the form doesn't compete with
@@ -504,14 +512,17 @@
   </header>
 
   {#if !app.rootKeysPresent}
-    <!-- Step 1: Import root keys (one-time setup per keymaster device). -->
+    <!-- Step 1: Import root keys (one-time per keymaster device PER HUB). -->
     <div class="root-setup">
-      <h2>Set up root key custody</h2>
+      <h2>Set up root key custody for {activeHubLabel}</h2>
       <p class="muted">
-        This device is the keymaster station. Import your org root keypair
-        so you can attest members from inside Cove. The private key goes
-        straight to your OS keychain — it never returns to the app and
-        never reaches the hub.
+        This device is the keymaster station for
+        <code>{activeHubLabel}</code>. Import that hub's
+        root keypair so you can attest members and edit the manifest.
+        The private key goes straight to your OS keychain — a separate
+        slot per hub — never returns to the app, and never reaches
+        the hub. If you admin multiple hubs, import each one here after
+        switching to it in the sidebar.
       </p>
       <label>
         <span>Root private key (hex)</span>
@@ -529,7 +540,7 @@
       <div class="actions">
         <button type="button" onclick={importRoot}
           disabled={rootImporting || !rootPriv.trim() || !rootPub.trim()}>
-          {rootImporting ? 'Importing…' : 'Import root key'}
+          {rootImporting ? 'Importing…' : `Import root key for ${activeHubLabel}`}
         </button>
       </div>
     </div>
@@ -1236,7 +1247,7 @@
 
     <section class="danger-zone">
       <button type="button" class="ghost" onclick={clearRoot}>
-        Forget root key on this device
+        Forget {activeHubLabel}'s root key on this device
       </button>
     </section>
   {/if}

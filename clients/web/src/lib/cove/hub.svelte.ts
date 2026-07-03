@@ -212,6 +212,19 @@ export class HubConnection {
     }
   }
 
+  /** v0.4.73: root-signer scoped to THIS hub's org pubkey. Every admin
+   *  op that would previously build a fresh RootSigner uses this
+   *  helper so per-hub root-keychain slots (Rust side) are addressed
+   *  correctly. Falls back to the legacy un-suffixed slot when the
+   *  manifest hasn't loaded yet — same behavior as pre-v0.4.73. */
+  private rootSigner(): RootSigner {
+    const org = this.manifest?.org;
+    return {
+      sign: (m) => rootKeychain.signMessage(m, org),
+      pubkey: async () => (await rootKeychain.status(org)).public_key!,
+    };
+  }
+
   /** Tear down all per-hub resources. Called by AppState.reset() and by
    *  Phase 2's removeHub(). */
   dispose(): void {
@@ -610,10 +623,7 @@ export class HubConnection {
       return;
     }
     this.adminStatus = { kind: 'submitting' };
-    const signer: RootSigner = {
-      sign: (m) => rootKeychain.signMessage(m),
-      pubkey: async () => (await rootKeychain.status()).public_key!,
-    };
+    const signer: RootSigner = this.rootSigner();
     try {
       const current = await this.client.fetchDirectory();
       const rootPub = await signer.pubkey();
@@ -676,10 +686,7 @@ export class HubConnection {
       return;
     }
     this.adminStatus = { kind: 'submitting' };
-    const signer: RootSigner = {
-      sign: (m) => rootKeychain.signMessage(m),
-      pubkey: async () => (await rootKeychain.status()).public_key!,
-    };
+    const signer: RootSigner = this.rootSigner();
     try {
       const current = await this.client.fetchDirectory();
       const rootPub = await signer.pubkey();
@@ -738,10 +745,7 @@ export class HubConnection {
       return;
     }
     this.adminStatus = { kind: 'submitting' };
-    const signer: RootSigner = {
-      sign: (m) => rootKeychain.signMessage(m),
-      pubkey: async () => (await rootKeychain.status()).public_key!,
-    };
+    const signer: RootSigner = this.rootSigner();
     try {
       const current = await this.client.fetchDirectory();
       const rootPub = await signer.pubkey();
@@ -795,10 +799,7 @@ export class HubConnection {
       return;
     }
     this.adminStatus = { kind: 'submitting' };
-    const signer: RootSigner = {
-      sign: (m) => rootKeychain.signMessage(m),
-      pubkey: async () => (await rootKeychain.status()).public_key!,
-    };
+    const signer: RootSigner = this.rootSigner();
     try {
       const current = await this.client.fetchDirectory();
       const rootPub = await signer.pubkey();
@@ -850,10 +851,7 @@ export class HubConnection {
       return;
     }
     this.adminStatus = { kind: 'submitting' };
-    const signer: RootSigner = {
-      sign: (m) => rootKeychain.signMessage(m),
-      pubkey: async () => (await rootKeychain.status()).public_key!,
-    };
+    const signer: RootSigner = this.rootSigner();
     try {
       const current = await this.client.fetchDirectory();
       const rootPub = await signer.pubkey();
@@ -899,10 +897,7 @@ export class HubConnection {
       return;
     }
     this.adminStatus = { kind: 'submitting' };
-    const signer: RootSigner = {
-      sign: (m) => rootKeychain.signMessage(m),
-      pubkey: async () => (await rootKeychain.status()).public_key!,
-    };
+    const signer: RootSigner = this.rootSigner();
     try {
       const current = await this.client.fetchDirectory();
       const rootPub = await signer.pubkey();
@@ -948,7 +943,7 @@ export class HubConnection {
     this.adminStatus = { kind: 'submitting' };
     try {
       const payload = { pubkey: opts.pubkey, tier: opts.tier };
-      const sig = await rootKeychain.signMessage(canonicalize(payload));
+      const sig = await rootKeychain.signMessage(canonicalize(payload), this.manifest?.org);
       await this.client.submitTierOverride({ payload, sig });
       this.adminStatus = { kind: 'idle' };
     } catch (err) {
@@ -992,7 +987,7 @@ export class HubConnection {
       if (opts.nameHint && opts.nameHint.trim()) {
         payload.name_hint = opts.nameHint.trim();
       }
-      const sig = await rootKeychain.signMessage(canonicalize(payload));
+      const sig = await rootKeychain.signMessage(canonicalize(payload), this.manifest?.org);
       const inv = await this.client.submitInviteMint({ payload, sig });
       this.adminStatus = { kind: 'idle' };
       this.invites = [...this.invites, inv];
@@ -1008,7 +1003,7 @@ export class HubConnection {
     this.adminStatus = { kind: 'submitting' };
     try {
       const payload = { code };
-      const sig = await rootKeychain.signMessage(canonicalize(payload));
+      const sig = await rootKeychain.signMessage(canonicalize(payload), this.manifest?.org);
       await this.client.submitInviteRevoke({ code, payload, sig });
       this.adminStatus = { kind: 'idle' };
       this.invites = this.invites.filter((i) => i.code !== code);
@@ -1031,10 +1026,7 @@ export class HubConnection {
       throw new Error('root key not loaded');
     }
     this.adminStatus = { kind: 'submitting' };
-    const signer: RootSigner = {
-      sign: (m) => rootKeychain.signMessage(m),
-      pubkey: async () => (await rootKeychain.status()).public_key!,
-    };
+    const signer: RootSigner = this.rootSigner();
     try {
       const current = await this.client.fetchDirectory();
       const rootPub = await signer.pubkey();

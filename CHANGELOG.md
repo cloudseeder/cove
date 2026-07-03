@@ -4,6 +4,51 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.73] — 2026-07-03
+
+### Added
+- **Per-hub root-key custody.** A keymaster admining multiple hubs
+  (Brooks on LWCCOA + his personal testbed) previously had to
+  forget-and-reimport every time they switched hubs — one OS-keychain
+  slot for all root keys, keyed against the wrong org sig. Now each
+  hub gets its own slot keyed by that hub's `org` pubkey (from
+  `DirectoryManifest.org`).
+  - **Rust** (`clients/web/src-tauri/src/keys.rs`): slot names are
+    now suffixed with the org pubkey (`root_private_key.<org>` /
+    `root_public_key.<org>`). All four `root_*` functions
+    (`root_status`, `root_import`, `root_clear`, `root_sign_message`)
+    accept an `Option<&str>` org parameter. When `None`, they fall
+    back to the legacy un-suffixed slot for **backward compat with
+    pre-v0.4.73 installs** — an existing single-hub keymaster keeps
+    working without touching anything, AND if the legacy slot's
+    pubkey matches the org they're now asking about, the migration
+    happens automatically at read time.
+  - **Tauri commands** pass the org through as an optional string
+    argument.
+  - **TypeScript** (`tauri.ts`): `rootKeychain.{status,import,clear,
+    signMessage}` all accept `org?: string`.
+  - **`HubConnection`** builds a per-hub `rootSigner()` scoped to
+    `this.manifest.org`; every admin op (attest, revoke, edit caps,
+    save groups, tier override, mint/revoke invite, set default
+    thread, `attestPubkey`) now signs against the correct hub's root.
+  - **`AppState`** methods (`refreshRootKeychain` /
+    `importRootKeys` / `clearRootKeys`) scope to the active hub via
+    a private `activeOrgKey()` helper.
+  - **`switchToHub`** refreshes `rootKeysPresent` on every path so
+    the AdminPanel reactively reflects whether the newly-active hub
+    has its root loaded.
+  - **`AdminPanel`** copy names the active hub — "Set up root key
+    custody for `lwccoa-hub.oap.dev`", "Import root key for
+    `lwccoa-hub.oap.dev`", "Forget `brooks-hub.oap.dev`'s root key
+    on this device" — via a new `activeHubLabel` derived value.
+    Switching hubs in the sidebar reactively flips all of this.
+
+  **Migration path** for pre-v0.4.73 keymasters: nothing to do
+  proactively. The keychain slot you already have keeps working
+  against whichever hub its pub matches. When you connect to a
+  *second* hub and open Admin, you'll be prompted to import that
+  hub's root key — into a new slot, without touching the first.
+
 ## [0.4.72] — 2026-07-03
 
 ### Fixed

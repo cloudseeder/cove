@@ -111,21 +111,32 @@ export const keychain = {
  * present?". A device that's both keymaster and member sees two
  * independent states. The hub never holds root.priv (CLAUDE.md
  * non-negotiable #1); this is on the admin's device only.
+ *
+ * v0.4.73: per-hub scoping. Every op accepts an optional `org` (the
+ * target hub's org pubkey from its DirectoryManifest.org). A keymaster
+ * on N hubs holds N independent root slots, keyed by org. Omitting
+ * `org` falls back to the legacy un-suffixed slot on the Rust side
+ * — pre-v0.4.73 installs with a single root imported keep working.
  */
 export const rootKeychain = {
-  status(): Promise<KeyStatus> {
-    return invoke<KeyStatus>('root_status');
+  status(org?: string): Promise<KeyStatus> {
+    return invoke<KeyStatus>('root_status', { org: org ?? null });
   },
-  import(privateKey: string, publicKey: string): Promise<void> {
-    return invoke<void>('root_import', { privateKey, publicKey });
+  import(privateKey: string, publicKey: string, org?: string): Promise<void> {
+    return invoke<void>('root_import', {
+      privateKey, publicKey, org: org ?? null,
+    });
   },
-  clear(): Promise<void> {
-    return invoke<void>('root_clear');
+  clear(org?: string): Promise<void> {
+    return invoke<void>('root_clear', { org: org ?? null });
   },
   /** Sign canonical-content bytes (Attestation or DirectoryManifest)
-   *  with the root private key. Bytes in, hex string out. */
-  signMessage(message: Uint8Array): Promise<string> {
-    return invoke<string>('root_sign_message', { message: Array.from(message) });
+   *  with the root private key for the given org. Bytes in, hex out. */
+  signMessage(message: Uint8Array, org?: string): Promise<string> {
+    return invoke<string>('root_sign_message', {
+      message: Array.from(message),
+      org: org ?? null,
+    });
   },
 };
 
