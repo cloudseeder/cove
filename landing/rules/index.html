@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How Cove decides who sees what — Rules</title>
+  <meta name="description" content="The visibility, membership, and history rules that govern Cove threads. Written for the people using Cove, not the people writing it." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E🪶%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #fbf7ee;
+      --panel: #ffffff;
+      --fg: #2b2620;
+      --muted: #6f6a60;
+      --border: #e6ddc9;
+      --gold: #b8892f;
+      --gold-soft: #f0e2b8;
+      --code-bg: #f2ecdc;
+      --serif: "Iowan Old Style", "Palatino", "Georgia", ui-serif, serif;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17140f;
+        --panel: #1e1a13;
+        --fg: #f2ead8;
+        --muted: #9c948a;
+        --border: #33291b;
+        --gold: #d4af37;
+        --gold-soft: rgba(212, 175, 55, 0.15);
+        --code-bg: #23200c;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--sans);
+      font-size: 17px;
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 4rem;
+    }
+    .back {
+      display: inline-block;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-decoration: none;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px dotted var(--border);
+    }
+    .back:hover { color: var(--gold); border-color: var(--gold); }
+    h1 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: clamp(1.9rem, 4.5vw, 2.6rem);
+      line-height: 1.15;
+      letter-spacing: -0.01em;
+      margin: 0 0 0.6rem;
+    }
+    .subhead {
+      color: var(--muted);
+      font-size: 1.08rem;
+      margin: 0 0 2.5rem;
+      line-height: 1.45;
+    }
+    h2 {
+      font-family: var(--serif);
+      font-weight: 400;
+      font-size: 1.6rem;
+      margin: 3rem 0 0.4rem;
+      letter-spacing: -0.005em;
+      border-top: 1px solid var(--border);
+      padding-top: 2.2rem;
+    }
+    h2:first-of-type { border-top: none; padding-top: 0; }
+    h3 {
+      font-family: var(--sans);
+      font-weight: 600;
+      font-size: 1.05rem;
+      margin: 1.8rem 0 0.4rem;
+    }
+    p { margin: 0 0 1rem; }
+    a { color: var(--gold); text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--fg); }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 0.9em;
+    }
+    ul, ol { padding-left: 1.4rem; }
+    ul li, ol li { margin: 0.35rem 0; }
+    .rule {
+      background: var(--panel);
+      border-left: 3px solid var(--gold);
+      padding: 0.7rem 1rem;
+      margin: 1.2rem 0;
+      border-radius: 0 8px 8px 0;
+      font-size: 0.94rem;
+    }
+    .rule strong { color: var(--fg); }
+    .toc {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1rem 1.4rem;
+      margin: 1rem 0 2.5rem;
+      font-size: 0.94rem;
+    }
+    .toc h3 {
+      margin: 0 0 0.4rem;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .toc ol { margin: 0; padding-left: 1.2rem; }
+    .toc a { color: var(--fg); text-decoration: none; }
+    .toc a:hover { color: var(--gold); }
+    footer {
+      margin-top: 4rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.88rem;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+    }
+    footer a { color: var(--muted); border-bottom: 1px dotted var(--border); text-decoration: none; }
+    footer a:hover { color: var(--gold); border-color: var(--gold); }
+    @media (max-width: 480px) {
+      .wrap { padding: 1.5rem 1.1rem 3rem; }
+      h1 { font-size: 1.7rem; }
+      h2 { font-size: 1.35rem; margin: 2.4rem 0 0.4rem; padding-top: 1.8rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/" class="back">&larr; back to overview</a>
+
+  <h1>How Cove decides who sees what.</h1>
+  <p class="subhead">
+    The visibility, membership, and history rules that govern threads. Written for the people using Cove &mdash; board members, keymasters, curious skeptics &mdash; not the people writing it.
+  </p>
+
+  <nav class="toc">
+    <h3>What&rsquo;s in here</h3>
+    <ol>
+      <li><a href="#membership">Who&rsquo;s in the directory</a></li>
+      <li><a href="#threads">Public and private threads</a></li>
+      <li><a href="#joining">Joining and leaving a group thread</a></li>
+      <li><a href="#history">History and what a new member sees</a></li>
+      <li><a href="#ephemeral">Ephemeral threads</a></li>
+      <li><a href="#tombstoning">Deleting a thread</a></li>
+      <li><a href="#revocation">Revoking a member</a></li>
+      <li><a href="#delivery">Delivery and receipts</a></li>
+    </ol>
+  </nav>
+
+  <!-- ============================================================ -->
+  <h2 id="membership">Who&rsquo;s in the directory.</h2>
+  <p>
+    Everyone participating in a Cove hub is a keypair &mdash; an Ed25519 public key attested by the group&rsquo;s root, plus the private key that lives on their device and nowhere else. The attestation is a signed record in the directory manifest: it names the person, their affiliation, their role, and the pubkey those things belong to.
+  </p>
+  <p>
+    You&rsquo;re not a &ldquo;user&rdquo; with a username and password. You&rsquo;re an attested keypair. Every message you post is signed by that private key on your own device before it leaves. The hub can prove <em>you</em> wrote it. Nobody can post in your name without your private key.
+  </p>
+  <div class="rule">
+    <strong>Rule.</strong> One member = one keypair. If you use Cove on your laptop and your phone with different keys, they&rsquo;re two attested identities, even if they have the same display name.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="threads">Public and private threads.</h2>
+  <p>
+    Threads come in two visibility shapes:
+  </p>
+  <ul>
+    <li><strong>Public</strong> &mdash; every attested member of the hub can see the thread and every message in it. This is the default. When you type a new thread name in the sidebar and just start posting, that&rsquo;s a public thread.</li>
+    <li><strong>Audience-scoped (private)</strong> &mdash; only listed pubkeys can see the thread. A signed <code>kind=&rsquo;audience&rsquo;</code> entry establishes the list. Anyone not in the list will not see the thread in their sidebar, their inbox, or their <code>/sync</code> response &mdash; the hub filters them out at every surface.</li>
+  </ul>
+  <div class="rule">
+    <strong>Rule.</strong> If a thread has ever had an audience entry, it&rsquo;s private. The audience is the pubkeys named in the most recent valid audience entry.
+  </div>
+  <p>
+    The audience-entry-establishes-visibility rule is enforced hub-side. A member who isn&rsquo;t in the audience can&rsquo;t just guess the thread name and read it &mdash; <code>/sync</code> returns an empty list to them, same as if the thread didn&rsquo;t exist. The hub doesn&rsquo;t 404 on private threads (that would leak existence); it just looks empty from the outside.
+  </p>
+
+  <!-- ============================================================ -->
+  <h2 id="joining">Joining and leaving a group thread.</h2>
+
+  <h3>Adding someone to an existing thread</h3>
+  <p>
+    Anyone currently in the audience can rewrite the audience. To add Amy to a group thread you&rsquo;re in, you tap the audience chip at the top of the thread, check her name, and save. Cove signs a new audience entry with the updated list.
+  </p>
+  <p>
+    The rule is <em>anyone currently in the audience can grow (or shrink) the audience</em>, not <em>only the creator can</em>. Cove doesn&rsquo;t treat the creator as a permanent custodian of the group. If the group is you and two others, any of the three can add a fourth.
+  </p>
+  <div class="rule">
+    <strong>Rule.</strong> A new audience entry is honored only if its author was in the audience at the time. Anyone outside the group signing an audience entry into it gets rejected by the hub.
+  </div>
+
+  <h3>Removing someone</h3>
+  <p>
+    Same mechanism. Anyone in the audience opens the audience chip, unchecks the person, and saves. That signs a new audience entry with the shorter list. From that point forward, the removed person&rsquo;s <code>/sync</code> requests return an empty list for that thread and it disappears from their sidebar.
+  </p>
+  <p>
+    Everything they saw <em>before</em> their removal stays visible to them locally &mdash; Cove can&rsquo;t reach into their client and yank prior messages. But no new entries flow to them, and the hub won&rsquo;t serve the thread&rsquo;s history to them again if they clear their cache.
+  </p>
+
+  <h3>Leaving yourself</h3>
+  <p>
+    Not yet a first-class action &mdash; the UI currently guards against accidentally unchecking yourself in the audience-edit dialog. The intended way to leave today is to ask another member of the group to remove you. For a group of three that&rsquo;s a text message; for a group of two, archiving the thread is usually the honest signal.
+  </p>
+  <p>
+    A proper &ldquo;Leave this thread&rdquo; button is on the roadmap. When it lands, it&rsquo;ll respect the same rule &mdash; you sign an audience entry with yourself removed &mdash; just without the click-through required to talk another member into doing it.
+  </p>
+
+  <!-- ============================================================ -->
+  <h2 id="history">History and what a new member sees.</h2>
+  <p>
+    When Cove decides whether to hand you a message, it consults the <em>current</em> audience &mdash; not the audience at the time the message was posted. This has a consequence people don&rsquo;t always expect:
+  </p>
+  <div class="rule">
+    <strong>Rule.</strong> A member added to an audience-scoped thread sees the thread&rsquo;s <em>entire history</em>, from the first message onward &mdash; not just messages posted after their addition.
+  </div>
+  <p>
+    That&rsquo;s deliberate. A board that adds a new officer to a private &ldquo;board only&rdquo; thread is welcoming them into the ongoing conversation, not into a walled section of it. Cove doesn&rsquo;t make you re-explain last month&rsquo;s decision every time somebody new joins.
+  </p>
+  <p>
+    If you need &ldquo;only-from-here-onward&rdquo; visibility for a specific member, use a fresh thread instead. That&rsquo;s the honest signal: this is a different conversation.
+  </p>
+  <p>
+    Public threads follow the same logic. Every newly-attested member automatically sees every past public thread from the beginning. Notices posted before someone joined the group are readable by them the moment they authenticate.
+  </p>
+
+  <!-- ============================================================ -->
+  <h2 id="ephemeral">Ephemeral threads.</h2>
+  <p>
+    Ephemeral threads carry a TTL &mdash; a delete-by date declared at creation. Everything works exactly like a permanent thread while it&rsquo;s alive: signed messages, signed receipts, tamper-evident per-thread log, verifiable inclusion proofs. At expiration, the hub deletes the entries and publishes a signed <em>tombstone</em> in the main log that pins the thread&rsquo;s final signed tree head.
+  </p>
+  <div class="rule">
+    <strong>Rule.</strong> Ephemeral threads can carry an audience. A private ephemeral thread &mdash; a recital discussion for just three people that expires in 30 days &mdash; is a valid, first-class configuration. The audience entry lives in the ephemeral log and dies with the thread.
+  </div>
+  <p>
+    Anything you can do in a permanent thread you can do in an ephemeral one, <em>except</em>: notices, membership entries, supersede entries, revocations, branches, archives, and reopens. Those are governance actions and don&rsquo;t belong in a container that&rsquo;s going to disappear. Ephemeral threads carry conversation and audience, nothing structural.
+  </p>
+
+  <!-- ============================================================ -->
+  <h2 id="tombstoning">Deleting a thread.</h2>
+  <p>
+    Only ephemeral threads can be deleted. Permanent threads are permanent by definition &mdash; the whole point of the tamper-evident log.
+  </p>
+  <p>
+    An ephemeral thread ends in one of two ways:
+  </p>
+  <ul>
+    <li><strong>Auto-seal at TTL.</strong> The hub&rsquo;s background task notices the thread&rsquo;s deadline has passed and runs the seal ceremony automatically. Uses a pre-signed tombstone entry the creator provided at open time.</li>
+    <li><strong>Manual seal.</strong> The creator opens the thread, taps the &hellip; menu in the banner, and confirms <em>Delete this thread now</em>. Only the creator can seal early &mdash; if you want the board to have that power, the way to get it today is to revoke the creator, which is a governance act.</li>
+  </ul>
+  <div class="rule">
+    <strong>Rule.</strong> Once sealed, a thread accepts no further writes &mdash; not from the creator, not from anyone in the audience. The hub rejects them. The tombstone entry is durable and public in the main log; the sealed final STH is durable in a separate table. Members who kept a local copy of an entry can still prove it existed against the sealed STH.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="revocation">Revoking a member.</h2>
+  <p>
+    Revocation is a governance action, signed by the root key. It says &ldquo;this pubkey is no longer a valid participant on this hub, as of this timestamp.&rdquo;
+  </p>
+  <p>
+    From that moment:
+  </p>
+  <ul>
+    <li>The revoked member can&rsquo;t authenticate &mdash; their session token is rejected, they can&rsquo;t post, they can&rsquo;t <code>/sync</code>, they can&rsquo;t /stream.</li>
+    <li>They stop appearing in the delivery-status card on future messages. The card lists <em>currently-attested</em> members only.</li>
+    <li>Anything they signed before revocation stays verifiable. Their receipts stay durable in the log. Their past posts remain readable. Cove doesn&rsquo;t retroactively erase history when someone leaves.</li>
+    <li>They stay in the directory manifest as a revoked entry with a timestamp &mdash; the record of their tenure survives, even though their access is cut.</li>
+  </ul>
+  <div class="rule">
+    <strong>Rule.</strong> Revocation is by timestamp. Entries signed <em>before</em> the revocation are still valid; entries signed <em>after</em> are rejected by the hub.
+  </div>
+
+  <!-- ============================================================ -->
+  <h2 id="delivery">Delivery and receipts.</h2>
+  <p>
+    Every notice, post, and reply generates a signed receipt from each recipient when they read it. The receipts are entries in the log &mdash; verifiable, timestamped, tamper-evident. They&rsquo;re what makes &ldquo;did Alice read this&rdquo; a factual question with an audit trail, not a matter of trust.
+  </p>
+  <p>
+    The delivery-status card you can tap on any message answers &ldquo;who has ack&rsquo;d this?&rdquo; against the current membership:
+  </p>
+  <ul>
+    <li>The <em>author</em> of the message is treated as ack&rsquo;d by construction &mdash; they signed it, they saw it.</li>
+    <li><em>Currently-attested members</em> are partitioned into acked / not-yet.</li>
+    <li><em>Revoked members</em> are filtered out entirely &mdash; their historical receipts are still in the log for auditors, but the delivery card is a &ldquo;who&rsquo;s this been delivered to <em>now</em>&rdquo; surface, and a revoked member can&rsquo;t ack anymore anyway.</li>
+    <li>On <em>audience-scoped threads</em>, the card partitions only the audience, not the whole hub. Non-audience members are not &ldquo;behind&rdquo; on a message they were never a recipient of.</li>
+  </ul>
+  <p>
+    The receipt log is what makes &ldquo;I never got the email&rdquo; a claim that can be examined. The delivery card is what makes the examination cheap.
+  </p>
+
+  <!-- ============================================================ -->
+  <p style="margin-top: 3rem; color: var(--muted); font-style: italic;">
+    Rules can change &mdash; the shipped code is authoritative. If something on this page disagrees with what the current hub actually does, the hub wins and this doc is out of date. Ping the source repo with the discrepancy and we&rsquo;ll fix it.
+  </p>
+
+  <footer>
+    <span>Cove is a project by <a href="https://oap.dev">oap.dev</a>.</span>
+    <span>
+      <a href="https://github.com/cloudseeder/cove">Source</a> &middot;
+      <a href="/">Home</a> &middot;
+      <a href="/start">Get started</a>
+    </span>
+  </footer>
+
+</div>
+</body>
+</html>
