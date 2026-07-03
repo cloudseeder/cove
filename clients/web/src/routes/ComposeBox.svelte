@@ -262,8 +262,13 @@
 
 <style>
   .compose {
-    position: sticky;
-    bottom: 1rem;
+    /* v0.4.58: no longer position: sticky. The parent .thread in
+       ThreadView is now a flex column with .feed as the scrolling
+       child, so .compose sits at the true bottom of the pane and the
+       feed scrolls above it. The old sticky+bottom:1rem shape was
+       floating the compose over the feed with a ~40px gap under it —
+       messages ran behind the box instead of terminating at its top
+       edge. */
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -273,6 +278,9 @@
     border-radius: 14px;
     backdrop-filter: blur(10px);
     transition: border-color 120ms ease, background 120ms ease;
+    /* Don't let compose stretch when parent is a flex column — it
+       should hug its content and sit at the bottom. */
+    flex: 0 0 auto;
   }
   .compose.drag {
     border-color: rgba(212, 175, 55, 0.7);

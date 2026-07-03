@@ -143,6 +143,19 @@
       >
         ↻
       </button>
+      <!-- v0.4.58: collapse chevron lives INSIDE the sidebar header so it
+           can never overlap sidebar content. The complementary "expand"
+           button (☰) lives over the main pane in ThreadView, shown only
+           when the sidebar is closed — mutually exclusive with this one. -->
+      <button
+        type="button"
+        class="collapse"
+        title="Hide threads panel"
+        aria-label="Hide threads panel"
+        onclick={() => app.closeSidebar()}
+      >
+        ‹
+      </button>
     </div>
   </header>
 
@@ -294,7 +307,7 @@
   .header-actions {
     display: flex; align-items: center; gap: 0.25rem;
   }
-  .refresh, .new-thread {
+  .refresh, .new-thread, .collapse {
     background: transparent;
     border: none;
     color: var(--muted);
@@ -304,10 +317,11 @@
     border-radius: 4px;
     line-height: 1;
   }
-  .refresh:hover, .new-thread:hover {
+  .refresh:hover, .new-thread:hover, .collapse:hover {
     background: rgba(255, 255, 255, 0.04);
     color: var(--fg);
   }
+  .collapse { font-size: 1.25em; }
   .new-thread {
     /* The + button is the primary action; tint it gold so it doesn't
        disappear next to the refresh control. */
@@ -461,6 +475,11 @@
   }
   input {
     flex: 1;
+    /* v0.4.58: without min-width:0 a flex text input refuses to shrink
+       below its intrinsic content size (~150-180px), pushing the +
+       submit button past the sidebar's 240px column and getting clipped
+       by the .thread-list overflow:hidden. */
+    min-width: 0;
     background: var(--bg);
     color: var(--fg);
     border: 1px solid var(--border);

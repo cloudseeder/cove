@@ -4,6 +4,46 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.58] — 2026-07-03
+
+### Fixed
+- **Sidebar-toggle button no longer overlaps sidebar content — for
+  real this time.** v0.4.51 and v0.4.57 both tried to *push* the
+  absolute-positioned toggle past the sidebar's edge with a `left`
+  offset gated on the sidebar-open class. Both attempts had subtle
+  failure modes (Svelte's `:global()` scoper in one, and the reactive
+  class binding in the other appeared not to update the button's
+  visual position on the desktop-app webview). Replaced the whole
+  approach with two mutually-exclusive buttons: a `☰` hamburger over
+  the main pane that only renders when the sidebar is CLOSED, and a
+  `‹` close-chevron *inside* the sidebar header (`ThreadList`) that
+  only exists when the sidebar is OPEN. They live in different DOM
+  parents and are gated by `{#if}` — structurally impossible to
+  overlap.
+- **"Start a new thread…" input clipped the `+` submit button on the
+  right of the sidebar.** The flex text-input's default
+  `min-width: auto` (min-content) kept it from shrinking below its
+  intrinsic ~150–180px, pushing the submit past the 240px sidebar
+  column where `overflow: hidden` on `.thread-list` clipped it.
+  Added `min-width: 0` to the input — the classic flexbox text-input
+  fix.
+- **Compose box floated ~1rem above the pane bottom and messages
+  scrolled behind it instead of terminating at its top edge.**
+  `.compose` was `position: sticky; bottom: 1rem;` inside the same
+  scroll container as the feed, so it floated with a gap under it
+  and the feed's content scrolled *through* the compose area. Made
+  `.thread` a flex column with `.feed` (`flex: 1; overflow-y: auto`)
+  as the single scrolling child and compose (`flex: 0 0 auto`) as a
+  natural block below it. Compose now sits flush at the pane bottom
+  (with `env(safe-area-inset-bottom)` clearance on iPhone) and the
+  feed scrolls above it, not under it.
+
+### Added
+- `AppState.openSidebar()` complements `closeSidebar()`. Each new
+  mutually-exclusive toggle button calls the direction it means
+  rather than sharing `toggleSidebar()`, so an accidental double-click
+  can't overshoot into the wrong state.
+
 ## [0.4.57] — 2026-07-03
 
 ### Changed

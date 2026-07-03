@@ -1640,6 +1640,17 @@ export class AppState {
       localStorage.setItem('cove.sidebarOpen', 'false');
     }
   }
+  /** v0.4.58: complements closeSidebar. The two mutually-exclusive
+   *  toggle buttons in ThreadView / ThreadList each call the direction
+   *  they mean rather than share toggleSidebar(), so an accidental
+   *  double-click on the same button can't overshoot. */
+  openSidebar(): void {
+    if (this.sidebarOpen) return;
+    this.sidebarOpen = true;
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('cove.sidebarOpen', 'true');
+    }
+  }
 
   /** v0.4.19: pull the landing-view bundle from /inbox and prime the
    *  receipt-tracker so re-entering a thread the user already acked in

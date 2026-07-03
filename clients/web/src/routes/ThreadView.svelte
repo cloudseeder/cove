@@ -191,19 +191,19 @@
 </script>
 
 <div class="layout" class:sidebar-open={app.sidebarOpen} class:sidebar-closed={!app.sidebarOpen}>
-  <!-- v0.4.45: sidebar toggle. Always visible; renders as a hamburger
-       when the sidebar is closed and a chevron when it's open. On
-       mobile it stays fixed at the top-left of the viewport so it's
-       reachable from any panel; on desktop the sidebar is usually
-       inline and the button collapses it back. -->
-  <button type="button" class="sidebar-toggle"
-    class:pushed={app.sidebarOpen}
-    title={app.sidebarOpen ? 'Hide threads panel' : 'Show threads panel'}
-    aria-label={app.sidebarOpen ? 'Hide threads panel' : 'Show threads panel'}
-    aria-expanded={app.sidebarOpen}
-    onclick={() => app.toggleSidebar()}>
-    {#if app.sidebarOpen}‹{:else}☰{/if}
-  </button>
+  <!-- v0.4.58: sidebar-toggle now renders ONLY when the sidebar is
+       closed — the hamburger to open it. The "close" chevron lives
+       inside the sidebar header (ThreadList) so it can never overlap
+       sidebar content. Two buttons, mutually exclusive by {#if}. -->
+  {#if !app.sidebarOpen}
+    <button type="button" class="sidebar-toggle"
+      title="Show threads panel"
+      aria-label="Show threads panel"
+      aria-expanded="false"
+      onclick={() => app.openSidebar()}>
+      ☰
+    </button>
+  {/if}
 
   <!-- v0.4.45: mobile backdrop. Only visible when the sidebar is open
        on a narrow viewport; tapping it closes the sidebar. CSS gates
@@ -866,20 +866,11 @@
     opacity: 1;
     border-color: rgba(212, 175, 55, 0.5);
   }
-  /* v0.4.51: on viewports where the sidebar sits inline (not overlay),
-     push the toggle out of the sidebar's column when it's open. 240px
-     matches the sidebar's width in ThreadList.svelte.
-     v0.4.57: switched from a `:global(.layout.sidebar-open) .sidebar-toggle`
-     descendant selector to a direct `.sidebar-toggle.pushed` class binding.
-     The descendant form was landing under Svelte's CSS scoper in a way
-     that kept the button at left:0.6rem — right on top of the sidebar
-     header — even when the sidebar was open. The direct class avoids
-     any :global() interaction and is simpler to reason about. */
-  @media (min-width: 641px) {
-    .sidebar-toggle.pushed {
-      left: calc(240px + 0.6rem);
-    }
-  }
+  /* v0.4.58: the "push toggle past the sidebar edge when open" trick
+     is gone — the sidebar-toggle is now only rendered when the sidebar
+     is CLOSED (via {#if !app.sidebarOpen} in the markup). The complement
+     is the .collapse chevron inside ThreadList's header, which lives
+     structurally within the sidebar and cannot overlap its content. */
   /* v0.4.45: mobile sidebar backdrop. Hidden on desktop; shown on
      narrow viewports only when the sidebar is open. */
   .sidebar-backdrop {
@@ -895,15 +886,26 @@
   }
   .thread {
     flex: 1;
-    overflow-y: auto;
+    /* v0.4.58: .thread is now a flex column that holds the header, the
+       scrolling .feed, and the compose box in vertical order — with
+       .feed as the only scrollable child. This puts the compose at the
+       true bottom of the pane (no more sticky-float over content) and
+       leaves the feed to scroll on its own axis. `min-height: 0` is
+       required for a flex child to allow an inner scrollable descendant
+       to shrink below its content size. */
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow: hidden;
     padding: 1.5rem;
     /* v0.4.46: leave headroom for the toggle button so the first line
        of the header doesn't sit under it. On PWAs installed to home
        screen, add the iPhone status-bar / notch safe area on top of
        that clearance so the toggle isn't cramped against the top edge. */
     padding-top: calc(env(safe-area-inset-top, 0px) + 3.25rem);
-    /* The .feed + compose box are the centered column; the
-       scrollable region itself stretches to fill the pane. */
+    /* v0.4.58: iPhone home-indicator clearance — the compose bottom
+       edge should sit above the indicator, not under it. */
+    padding-bottom: max(1.5rem, env(safe-area-inset-bottom, 0px));
   }
   /* On mobile, sidebar becomes an overlay drawer. Fixed position,
      full height, slides in from the left. Backdrop dims the content. */
@@ -939,7 +941,8 @@
       padding-top: calc(env(safe-area-inset-top, 0px) + 3.25rem);
       padding-left: 0.9rem;
       padding-right: 0.9rem;
-      padding-bottom: 1rem;
+      /* v0.4.58: iPhone home-indicator clearance under the compose box. */
+      padding-bottom: max(1rem, env(safe-area-inset-bottom, 0px));
     }
     /* v0.4.50: on mobile, stack the header vertically. A long thread
        name gets the whole first line; the view-toggle + status +
@@ -1013,6 +1016,15 @@
     50%      { opacity: 1; }
   }
   .feed {
+    /* v0.4.58: .feed is the scrollable region inside .thread's flex
+       column. flex:1 takes the remaining vertical space between header
+       and compose; overflow-y:auto puts the scrollbar on the feed
+       instead of the whole pane. min-height:0 is required so the flex
+       child can shrink below its content size (otherwise the scroll
+       region can't clip). */
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
     margin-bottom: 1rem;
   }
   .feed.chat-mode {
