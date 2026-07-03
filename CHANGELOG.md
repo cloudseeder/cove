@@ -4,6 +4,38 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.68] — 2026-07-03
+
+### Changed
+- **Extracted `HubConnection` class from `AppState`.** Phase 1 of the
+  federation UI slice (see /home/brooks/.claude/plans/glimmering-fluttering-boole.md).
+  All per-hub state (client, entries, threads, inboxRows, members,
+  manifest, myAttestation, revoked, pending queue, invites,
+  newThreadDialog, view, replyOpen, threadStatus, thread, authStatus,
+  session token, WS teardown, seenIds, myReceiptSeq) moved from
+  `AppState` into a new `HubConnection` class in
+  `clients/web/src/lib/cove/hub.svelte.ts`. `AppState` now holds a
+  single `hub: HubConnection | null` field with backward-compat
+  delegating getters/methods for every existing surface. All 67
+  consumer sites across `.svelte` files are unchanged. Zero
+  user-visible change — Phase 2 (v0.4.69) will grow this to
+  `hubs: Map<HubUrl, HubConnection>` and add the sidebar switcher.
+
+  **Fragile join points preserved:**
+  - `onSessionRefreshed` closure now captures `this` on the
+    HubConnection, ready for Phase 2's per-hub isolation.
+  - Directory-view mirror pattern (`myAttestation` / `manifest` /
+    `members` / `revoked` re-copied after every `fetchDirectory`)
+    kept intact; `$derived` refactor deferred to Phase 3.
+  - `resetHighWater` + `entries=[]` pairing lives inside
+    `HubConnection.switchThread()` — locality preserves the invariant.
+  - `pwaTransientPriv` stays on `AppState` — bridges the pre-hub gap
+    during onboarding.
+
+  **New tests:** `hub.test.ts` (7 smokes) + `state.test.ts` (4
+  delegation smokes). Total suite: 135 tests, all green. The 124
+  pre-existing tests pass unmodified.
+
 ## [0.4.67] — 2026-07-03
 
 ### Changed
