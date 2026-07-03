@@ -4,6 +4,43 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.70] — 2026-07-03
+
+### Fixed
+- **Failed add-hub no longer leaves a broken row in the switcher.**
+  Discovered from a phone-PWA test: the PWA's own generated identity
+  was attested only on brooks-hub, so trying to add lwccoa-hub failed
+  with "unknown identity" from the hub. The Map still held the row
+  though — the sidebar showed a lock icon, and re-opening the add-hub
+  modal said "Already connected." Now: on failure `AddHubPanel`
+  removes the just-added hub via `removeHub()` AND restores the
+  previously-active hub as active, so the user's working session
+  isn't disrupted at all.
+- **Clicking an unauth hub row no longer kicks the user to AuthPanel.**
+  Same phone test: clicking the failed lwccoa row swapped
+  `activeHubUrl` to lwccoa, which flipped `app.authStatus` to
+  unauthenticated, which made `+page.svelte` render `AuthPanel` — and
+  the user lost their brooks-hub session view. `switchToHub` is now
+  async and, if the target is unauthenticated AND a live signer is
+  available (Tauri keychain or PWA `livePriv`), silently attempts
+  re-auth first. Only swaps `activeHubUrl` on success; on failure the
+  current authenticated hub stays active.
+- **"Already connected" no longer blocks retry against a failed hub.**
+  The check now looks at auth status, not just Map membership.
+- **`AddHubPanel` translates "unknown identity" into an actionable
+  message.** Instead of the raw hub error, users see: "This hub
+  hasn't attested `abc12345…9876`. Ask the hub's keymaster to attest
+  your public key, then try again."
+
+### Added
+- **Per-row remove affordance in `HubSwitcher`.** Hover shows a ×
+  button on the right of each non-active row; click removes the hub
+  from the switcher + persisted list. Hidden on the active row (can't
+  accidentally cut the branch you're sitting on).
+- **Row status indicators.** Failed auth shows `⚠` with the hub's
+  error as a tooltip; `connecting` shows `…`; unauthenticated
+  placeholder shows the existing `🔒`.
+
 ## [0.4.69] — 2026-07-03
 
 ### Added

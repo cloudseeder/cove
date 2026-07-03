@@ -550,12 +550,62 @@ export class AppState {
 
   /** v0.4.69: focus the switcher on the given hub. Persists the choice
    *  so the next launch restores the same active hub. No-op if `hubUrl`
-   *  isn't in the Map (caller should addHub first). */
-  switchToHub(hubUrl: string): void {
-    if (!this.hubs.has(hubUrl)) return;
+   *  isn't in the Map (caller should addHub first).
+   *
+   *  v0.4.70: if the target hub isn't authenticated this session AND
+   *  we have a live signer on some other hub, silently attempt to
+   *  authenticate the target before switching. Prevents the "click
+   *  unauth hub → kicked to AuthPanel and lose the working session"
+   *  UX trap. Only swaps activeHubUrl on success; on failure the
+   *  current authenticated hub stays active and the caller sees the
+   *  target hub's authStatus flip to 'failed' for surfacing. */
+  async switchToHub(hubUrl: string): Promise<void> {
+    const hub = this.hubs.get(hubUrl);
+    if (!hub) return;
     if (this.activeHubUrl === hubUrl) return;
-    this.activeHubUrl = hubUrl;
-    saveActiveHubUrl(hubUrl);
+
+    // Fast path: hub is already authenticated → plain switch.
+    if (hub.authStatus.kind === 'authenticated') {
+      this.activeHubUrl = hubUrl;
+      saveActiveHubUrl(hubUrl);
+      return;
+    }
+
+    // Slow path: target is unauth. Only silent re-auth if we HAVE a
+    // live signer (either Tauri keychain or PWA/paste livePriv AND a
+    // currently-authenticated activeHub to source the pubkey from).
+    const current = this.activeHub;
+    const canReuseSigner =
+      current !== null
+      && current.authStatus.kind === 'authenticated'
+      && (this.inTauri || this.livePriv !== null);
+    if (!canReuseSigner) {
+      // No live session anywhere — swap and let AuthPanel drive auth.
+      this.activeHubUrl = hubUrl;
+      saveActiveHubUrl(hubUrl);
+      return;
+    }
+
+    const currentPubkey = (current.authStatus as { pubkey: string }).pubkey;
+    await hub.authenticate({
+      hubUrl,
+      publicKey: currentPubkey,
+      thread: hub.thread || 'annual-meeting',
+      mode: this.inTauri ? 'keychain' : 'paste',
+      privateKey: this.inTauri ? undefined : this.livePriv ?? undefined,
+    });
+    // The awaited authenticate() call above mutated hub.authStatus in
+    // place — re-read it after the fact. TS's narrowing from the
+    // earlier `!== 'authenticated'` guard is stale here.
+    const postAuthKind = (hub.authStatus as AuthStatus).kind;
+    if (postAuthKind === 'authenticated') {
+      this.activeHubUrl = hubUrl;
+      saveActiveHubUrl(hubUrl);
+    }
+    // On failure, activeHubUrl stays put — the user keeps their
+    // working session. The target hub's authStatus flipped to
+    // 'failed' with the hub's error message; the sidebar row will
+    // reflect that on the next paint.
   }
 
   /** v0.4.69: dispose the given hub and drop it from the Map + storage.

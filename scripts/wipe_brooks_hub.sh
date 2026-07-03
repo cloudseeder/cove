@@ -20,9 +20,9 @@
 
 set -euo pipefail
 
-STATE_DIR="${COVE_STATE_DIR:-$HOME/cove-state}"
+STATE_DIR="${COVE_STATE_DIR:-$HOME/dev/cove/brooks-state}"
 DATA_DIR="$STATE_DIR/data"
-SERVICE="cove-hub.service"
+SERVICE="brooks-hub"
 
 if [ ! -d "$STATE_DIR" ]; then
   echo "no state dir at $STATE_DIR — nothing to wipe" >&2
@@ -63,7 +63,7 @@ STAMP="$(date -u +%Y%m%d-%H%M%S)"
 BACKUP="$STATE_DIR/data.bak-$STAMP"
 
 echo "stopping $SERVICE…"
-sudo systemctl stop "$SERVICE"
+sg docker stop "$SERVICE"
 
 echo "backing up $DATA_DIR → $BACKUP"
 cp -a "$DATA_DIR" "$BACKUP"
@@ -74,7 +74,7 @@ rm -rf "$DATA_DIR/blobs"
 mkdir -p "$DATA_DIR/blobs"
 
 echo "starting $SERVICE…"
-sudo systemctl start "$SERVICE"
+sg docker start "$SERVICE"
 
 echo
 echo "✓ wipe complete. Backup at $BACKUP."

@@ -46,7 +46,11 @@
       error = 'Hub URL is required.';
       return;
     }
-    if (app.hubs.has(url)) {
+    // v0.4.70: allow retry against a hub that's in the Map but not
+    // authenticated. The previous "already connected" bail-out blocked
+    // retries after a failed add left a broken row.
+    const existing = app.hubs.get(url);
+    if (existing && existing.authStatus.kind === 'authenticated') {
       error = `Already connected to ${hubLabel(url)}. Pick it from the switcher instead.`;
       return;
     }
@@ -59,6 +63,12 @@
       error = 'Live private key not available. Sign back in on your current hub to reset the session.';
       return;
     }
+
+    // v0.4.70: remember whether the hub existed BEFORE our connect call
+    // so we know whether to rollback the addHub side-effect on failure.
+    const wasNewlyAdded = !app.hubs.has(url);
+    const previousActiveHubUrl = app.activeHubUrl;
+
     submitting = true;
     try {
       await app.connect({
@@ -68,21 +78,55 @@
         mode: app.inTauri ? 'keychain' : 'paste',
         privateKey: app.inTauri ? undefined : app.livePriv ?? undefined,
       });
-      // If auth succeeded, the newly-added hub is now active. Close.
-      if (app.activeHubUrl === url
-        && app.activeHub?.authStatus.kind === 'authenticated') {
+      const newHub = app.hubs.get(url);
+      if (newHub?.authStatus.kind === 'authenticated') {
         close();
-      } else {
-        // Auth flow set authStatus to 'failed' internally — expose the reason.
-        const st = app.activeHub?.authStatus;
-        if (st?.kind === 'failed') error = st.reason;
-        else error = 'Could not connect to that hub.';
+        return;
+      }
+      // Auth failed. Expose the reason.
+      const st = newHub?.authStatus;
+      const reason = st?.kind === 'failed' ? st.reason : 'Could not connect to that hub.';
+      error = friendlyAuthError(reason, myPubkey);
+
+      // v0.4.70: rollback. Remove the hub we just added AND put the
+      // previously-active hub back at the front. Prevents the "broken
+      // row lives forever + kicks me to AuthPanel when I click it"
+      // trap. If the hub already existed (retry against a broken row),
+      // we leave it in place but restore the previous active pointer
+      // so the user isn't yanked away from their working session.
+      if (wasNewlyAdded) {
+        app.removeHub(url);
+      }
+      if (previousActiveHubUrl !== null
+        && previousActiveHubUrl !== app.activeHubUrl
+        && app.hubs.has(previousActiveHubUrl)) {
+        await app.switchToHub(previousActiveHubUrl);
       }
     } catch (err) {
       error = (err as Error).message;
+      // Same rollback for exception paths.
+      if (wasNewlyAdded && app.hubs.has(url)) app.removeHub(url);
+      if (previousActiveHubUrl !== null
+        && previousActiveHubUrl !== app.activeHubUrl
+        && app.hubs.has(previousActiveHubUrl)) {
+        await app.switchToHub(previousActiveHubUrl);
+      }
     } finally {
       submitting = false;
     }
+  }
+
+  /** Translate hub-side error strings into something actionable. The
+   *  hub returns `unknown identity` when the caller's pubkey isn't in
+   *  the target hub's manifest — the fix is to have that hub's board
+   *  attest the pubkey, so tell the user that directly. */
+  function friendlyAuthError(reason: string, pubkey: string | null): string {
+    const short = pubkey ? `${pubkey.slice(0, 8)}…${pubkey.slice(-4)}` : 'this identity';
+    const lower = reason.toLowerCase();
+    if (lower.includes('unknown identity') || lower.includes('not attested')) {
+      return `This hub hasn't attested ${short}. Ask the hub's keymaster to attest your public key, then try again.`;
+    }
+    return reason;
   }
 
   function close() {
