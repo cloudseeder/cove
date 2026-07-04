@@ -141,13 +141,43 @@
   //   - In Tauri w/ keys already in keychain → tauri-unlock.
   //   - In Tauri, no stored keys, NOT opted into paste → tauri-import.
   //   - In Tauri, opted into paste → paste (uses InJSSigner this session).
+  //   - v0.4.74: In browser/PWA w/ Passkey → pwa-passkey. Takes
+  //     precedence over vault when both exist — better UX.
   //   - In browser/PWA w/ vault → pwa-unlock (v0.4.34).
   //   - In browser/PWA, no vault → paste (or Get started via onOnboard).
-  let mode = $derived<'tauri-unlock' | 'tauri-import' | 'pwa-unlock' | 'paste'>(
+  let mode = $derived<
+    'tauri-unlock' | 'tauri-import' | 'pwa-passkey' | 'pwa-unlock' | 'paste'
+  >(
     app.inTauri && !useTauriPaste
       ? (app.storedPublicKey ? 'tauri-unlock' : 'tauri-import')
-      : (app.vaultStatus.exists ? 'pwa-unlock' : 'paste'),
+      : (app.passkeySupported && app.passkeyStatus.exists
+        ? 'pwa-passkey'
+        : (app.vaultStatus.exists ? 'pwa-unlock' : 'paste')),
   );
+
+  let passkeyUnlocking = $state(false);
+  let passkeyUnlockError = $state<string | null>(null);
+
+  async function unlockPasskey() {
+    passkeyUnlockError = null;
+    passkeyUnlocking = true;
+    try {
+      await app.unlockFromPasskey({
+        hubUrl,
+        thread: defaultThread(),
+      });
+    } catch (err) {
+      passkeyUnlockError = (err as Error).message;
+    } finally {
+      passkeyUnlocking = false;
+    }
+  }
+
+  async function forgetPasskeyAndStartOver() {
+    if (!confirm("Forget this device's Passkey record? Your Passkey stays in your OS Passwords/Passkeys settings — this only wipes Cove's local pointer to it.")) return;
+    await app.clearPasskey();
+    passkeyUnlockError = null;
+  }
 
   async function unlockVault() {
     vaultUnlockError = null;
@@ -199,6 +229,46 @@
       <button type="button" class="ghost" onclick={forgetKeys}>Use a different key</button>
       <button type="button" onclick={connectKeychain} disabled={connecting}>
         {connecting ? 'Connecting…' : 'Unlock'}
+      </button>
+    </div>
+
+  {:else if mode === 'pwa-passkey'}
+    <!-- v0.4.74: returning PWA user with a Passkey. WebAuthn PRF
+         extension re-derives the Ed25519 priv on demand. Cross-device:
+         same Passkey (synced via iCloud/Google) → same priv → same
+         identity everywhere the user is signed in. -->
+    <h1>Welcome back</h1>
+    <p class="muted">
+      Your identity lives in your device's Passkey — the same one that
+      syncs across your Apple or Google-signed-in devices. No passphrase
+      to remember; the biometric or PIN prompt in a moment is the whole
+      unlock.
+    </p>
+
+    <div class="field">
+      <span class="field-label">Public key (from your Passkey)</span>
+      <code class="readonly">{app.passkeyStatus.pubkey}</code>
+    </div>
+
+    <label>
+      <span>Hub URL</span>
+      <input type="url" bind:value={hubUrl}
+        placeholder="https://lwccoa-hub.oap.dev"
+        disabled={passkeyUnlocking} />
+    </label>
+
+    {#if passkeyUnlockError}
+      <p class="failure" role="alert">{passkeyUnlockError}</p>
+    {/if}
+
+    <div class="actions">
+      <button type="button" class="ghost" onclick={forgetPasskeyAndStartOver}
+        disabled={passkeyUnlocking}>
+        Use a different key
+      </button>
+      <button type="button" onclick={unlockPasskey}
+        disabled={passkeyUnlocking}>
+        {passkeyUnlocking ? 'Signing in…' : 'Sign in with Passkey'}
       </button>
     </div>
 

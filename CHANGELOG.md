@@ -4,6 +4,97 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.74] — 2026-07-04
+
+### Added
+- **WebAuthn Passkey identity for the PWA — one keypair per PERSON,
+  synced across devices.** Extends the federation slice (v0.4.68–
+  v0.4.73, "one keypair, N hubs") with the missing cross-device
+  portability leg. Brooks's phone-PWA vs. laptop-PWA case surfaced
+  the pain: each device generated its own random keypair, so a
+  person ended up with N attestations across M hubs. Now the PWA
+  can derive its Ed25519 identity from a WebAuthn Passkey via the
+  PRF extension, and the Passkey syncs via iCloud Keychain / Google
+  Password Manager. Every device with the same synced Passkey
+  derives the same priv.
+
+  **Protocol layer unchanged.** Verifiers on hub + client still see
+  Ed25519 sigs over canonical bytes exactly like today. Only the
+  SOURCE of the priv material changes:
+  ```
+  Passkey → PRF (WebAuthn ext) → 32-byte pseudo-random output
+                              → HKDF-SHA256 (info="cove-ed25519-seed-v1")
+                              → 32-byte Ed25519 seed
+                              → @noble/curves keypair
+  ```
+
+  **New module** `clients/web/src/lib/cove/passkey.ts` (mirrors
+  `vault.ts` shape):
+  - `passkeySupported()` — feature detect via
+    `PublicKeyCredential.getClientCapabilities()` where available,
+    optimistic assumption otherwise (registerPasskey() will fail
+    cleanly if PRF isn't returned).
+  - `passkeyStatus()` — read the persisted `cove-passkey`
+    IndexedDB record (single-identity-per-device, keyed by pubkey).
+  - `registerPasskey()` — new-identity ceremony. rp.id = `cove.oap.dev`
+    (parent domain, covers all `*.cove.oap.dev` origins); user
+    verification required; residentKey required so the Passkey is
+    discoverable across devices. Persists pubkey + credentialId to IDB.
+  - `unlockWithPasskey()` — returning-user ceremony. Reads credentialId,
+    challenges via `navigator.credentials.get`, re-derives the priv,
+    verifies against the persisted pubkey.
+  - `clearPasskeyStorage()` — wipes the client-side record. Does NOT
+    delete the platform-level Passkey (WebAuthn doesn't expose that);
+    users are told to delete via OS Settings if they want.
+
+  **Fixed PRF salt:** `sha256("cove-passkey-prf-v1")` — same salt on
+  every ceremony so the output is stable across create/get and
+  across devices. Different apps using the same Passkey with a
+  different salt get a different PRF output by WebAuthn spec.
+
+  **AppState additions** parallel to the vault surface:
+  `passkeyStatus`, `passkeySupported`, `refreshPasskeyStatus()`,
+  `refreshPasskeySupport()`, `unlockFromPasskey({hubUrl, thread})`,
+  `clearPasskey()`, `generateAndPairWithPasskey({hubUrl, nameHint,
+  thread, invite})`. Constructor kicks off feature detect + status
+  refresh alongside the existing vault checks.
+
+  **AuthPanel** gains a 5th mode `pwa-passkey` (rendered when both
+  `app.passkeySupported` and `app.passkeyStatus.exists` are true).
+  Passkey takes precedence over vault when both exist — cleaner UX.
+  Welcome Back → "Sign in with Passkey" button → biometric/PIN prompt
+  → derived priv → standard `connect({mode: 'paste', ...})`. "Use a
+  different key" affordance clears the local Passkey pointer.
+
+  **OnboardingPanel** gains a top-of-form chooser (PWA-only, hidden
+  in Tauri or when Passkey isn't supported): two cards side-by-side —
+  🔑 Passkey (recommended, syncs across devices) vs. 🔒 passphrase
+  (device-local, old flow). Default derives from
+  `app.passkeySupported` via `$derived` so a late feature-detect
+  updates the default cleanly. Users can override with the chooser
+  buttons.
+
+  **Migration for existing members:** none forced. Existing vault
+  and paste-mode users keep their random-priv identity forever. To
+  adopt Passkey, create a Passkey via the OnboardingPanel Passkey
+  card → new derived pubkey → keymaster attests via the v0.4.71
+  "Attest a public key" AdminPanel section. Old pubkey stays valid
+  and unused; both coexist in the manifest.
+
+  **Tauri desktop unchanged.** Custom protocol origin isn't a
+  WebAuthn RP; Tauri stays on OS-keychain custody (v0.4.73 per-hub
+  slots). Users wanting cross-device sync use the PWA on all their
+  devices; users wanting native desktop use Tauri with a device-local
+  key. Documented tradeoff.
+
+  **Tests:** new `passkey.test.ts` (7 tests) — feature detection,
+  status shape, register writes IDB + roundtrips through
+  `ed25519.sign/verify`, unlock is deterministic across ceremonies,
+  unlock throws on pub mismatch, clear wipes IDB. Uses
+  `fake-indexeddb/auto` (already installed) + a hand-rolled
+  `navigator.credentials.{create,get}` mock returning canned PRF
+  output. Full suite: 168 tests, all green.
+
 ## [0.4.73] — 2026-07-03
 
 ### Added

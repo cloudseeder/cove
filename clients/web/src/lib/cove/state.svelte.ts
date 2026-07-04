@@ -31,6 +31,14 @@ import {
   unlockKey as unlockVaultKey, vaultStatus as readVaultStatus,
   type VaultStatus,
 } from './vault';
+import {
+  clearPasskeyStorage,
+  passkeyStatus as readPasskeyStatus,
+  passkeySupported as detectPasskeySupported,
+  registerPasskey,
+  unlockWithPasskey,
+  type PasskeyStatus,
+} from './passkey';
 
 // Tauri's invoke() rejects with a raw string when the Rust side returns
 // Err(String) (which all our #[tauri::command] handlers do). Casting that
@@ -86,6 +94,13 @@ export class AppState {
   storedPublicKey = $state<string | null>(null);
   /** v0.4.34: passphrase-encrypted vault status (PWA / browser-only). */
   vaultStatus = $state<VaultStatus>({ exists: false });
+  /** v0.4.74: WebAuthn Passkey status. Same shape as vault: does the
+   *  client have a registered Passkey identity on this device? */
+  passkeyStatus = $state<PasskeyStatus>({ exists: false });
+  /** v0.4.74: whether this browser can DO Passkey with PRF at all.
+   *  Feature-detected in the constructor. False → the UI hides the
+   *  Passkey affordance silently and falls through to vault/paste. */
+  passkeySupported = $state<boolean>(false);
   /** Updater status — drives the quiet 'Update available' affordance. */
   updateStatus = $state<UpdateStatus>({ kind: 'idle' });
   /** v0.4.11: chronological-feed visual mode. */
@@ -171,6 +186,12 @@ export class AppState {
     if (!this.inTauri) {
       void this.refreshVaultStatus();
       void requestPersistentStorage();
+      // v0.4.74: PWA-only Passkey path. Feature-detect + read the
+      // persisted status. If the browser doesn't support PRF, the
+      // status field stays exists:false and the UI treats it like
+      // no Passkey.
+      void this.refreshPasskeySupport();
+      void this.refreshPasskeyStatus();
     }
     // v0.4.69: migrate legacy single-hub localStorage keys and restore
     // the persisted hub list as unauthenticated placeholders. The user
@@ -370,6 +391,16 @@ export class AppState {
   /** v0.4.34: read the IndexedDB vault status into reactive state. */
   async refreshVaultStatus(): Promise<void> {
     this.vaultStatus = await readVaultStatus();
+  }
+
+  /** v0.4.74: read the persisted Passkey record. */
+  async refreshPasskeyStatus(): Promise<void> {
+    this.passkeyStatus = await readPasskeyStatus();
+  }
+
+  /** v0.4.74: feature-detect Passkey + PRF support. */
+  async refreshPasskeySupport(): Promise<void> {
+    this.passkeySupported = await detectPasskeySupported();
   }
 
   /** Re-read the keychain status. Call on app load. No-op outside Tauri. */
@@ -787,6 +818,99 @@ export class AppState {
     }
   }
 
+  /** v0.4.74: onboarding via a fresh Passkey. Registers a WebAuthn
+   *  credential with the PRF extension, derives a deterministic
+   *  Ed25519 keypair from the PRF output, then runs the standard
+   *  registerPending → watchPending → connect flow. Cross-device: the
+   *  Passkey syncs via iCloud Keychain / Google Password Manager, and
+   *  every device with the same Passkey derives the same keypair here.
+   *
+   *  The Passkey ceremony's biometric/PIN prompt is user-triggered
+   *  (this method is called from the OnboardingPanel's Passkey card
+   *  submit button), so the browser accepts the create() call. */
+  async generateAndPairWithPasskey(opts: {
+    hubUrl: string;
+    nameHint: string;
+    thread: string;
+    invite: string;
+  }): Promise<void> {
+    this.onboardStatus = { kind: 'generating' };
+    let pubkey: string;
+    let priv: string;
+    try {
+      const registered = await registerPasskey();
+      priv = registered.priv;
+      pubkey = registered.pub;
+      this.pwaTransientPriv = priv;
+      await this.refreshPasskeyStatus();
+    } catch (err) {
+      this.onboardStatus = {
+        kind: 'error',
+        message: `Passkey creation failed: ${errMsg(err)}`,
+      };
+      return;
+    }
+
+    // From here on the flow mirrors generateAndPair()'s tail —
+    // client construction, registerPending, watchPending, connect. Kept
+    // as duplicated code (not extracted into a shared helper) because
+    // the Passkey path is simple enough to read straight through, and
+    // the two flows will likely diverge over time (deep-link handling,
+    // Passkey-specific error reporting, etc.).
+    const client = new Client({
+      hubUrl: opts.hubUrl, publicKey: pubkey,
+      privateKey: priv,
+    });
+    try {
+      await client.registerPending({
+        pubkey, nameHint: opts.nameHint, invite: opts.invite,
+      });
+    } catch (err) {
+      if (errMsg(err) === 'already_attested') {
+        this.onboardStatus = { kind: 'attested', pubkey };
+        await this.connect({
+          hubUrl: opts.hubUrl, publicKey: pubkey,
+          thread: opts.thread, mode: 'paste', privateKey: priv,
+        });
+        return;
+      }
+      this.onboardStatus = {
+        kind: 'error',
+        message: `Could not register with the hub: ${errMsg(err)}`,
+      };
+      return;
+    }
+
+    const pairingLink = encodePairingLink({
+      hub: opts.hubUrl, pubkey, name: opts.nameHint,
+    });
+    this.onboardStatus = {
+      kind: 'waiting', pubkey, pairingLink,
+      fingerprint: fingerprintOf(pubkey),
+    };
+
+    const { promise, cancel } = client.watchPending(pubkey);
+    this.watchCancel = cancel;
+    try {
+      await promise;
+      this.watchCancel = null;
+      this.onboardStatus = { kind: 'attested', pubkey };
+      await this.connect({
+        hubUrl: opts.hubUrl, publicKey: pubkey,
+        thread: opts.thread, mode: 'paste', privateKey: priv,
+      });
+      this.pwaTransientPriv = null;
+    } catch (err) {
+      if (this.watchCancel !== null) {
+        this.onboardStatus = {
+          kind: 'error',
+          message: `Watch failed: ${errMsg(err)}`,
+        };
+      }
+      this.watchCancel = null;
+    }
+  }
+
   /** User backed out of the waiting screen. */
   cancelOnboarding(): void {
     if (this.watchCancel) {
@@ -794,6 +918,36 @@ export class AppState {
       this.watchCancel = null;
     }
     this.onboardStatus = { kind: 'idle' };
+  }
+
+  /** v0.4.74: PWA / browser-only — sign in with a Passkey. Derives the
+   *  Ed25519 keypair from the Passkey's PRF output (deterministic per
+   *  Passkey), then hands off to the same `connect` path as vault
+   *  unlock. Cross-device: any device with the same synced Passkey
+   *  derives the same priv here. */
+  async unlockFromPasskey(opts: {
+    hubUrl: string;
+    thread: string;
+  }): Promise<void> {
+    if (!this.passkeyStatus.exists) {
+      throw new Error('no Passkey on this device — create one first');
+    }
+    const { priv, pub } = await unlockWithPasskey();
+    this.pwaTransientPriv = priv;
+    await this.connect({
+      hubUrl: opts.hubUrl, privateKey: priv, publicKey: pub,
+      thread: opts.thread, mode: 'paste',
+    });
+    this.pwaTransientPriv = null;
+  }
+
+  /** v0.4.74: wipe the Passkey record from this device's IndexedDB.
+   *  Does NOT delete the actual Passkey on the platform (WebAuthn
+   *  doesn't expose that API). Users who want the Passkey gone
+   *  entirely need to delete it via OS Settings > Passwords/Passkeys. */
+  async clearPasskey(): Promise<void> {
+    await clearPasskeyStorage();
+    await this.refreshPasskeyStatus();
   }
 
   /** v0.4.34: PWA / browser-only — decrypt the vault with the user's

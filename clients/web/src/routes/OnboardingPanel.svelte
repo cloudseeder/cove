@@ -43,7 +43,23 @@
   let passphrase = $state('');
   let passphraseConfirm = $state('');
   let showPassphrase = $state(false);
-  const needPassphrase = $derived(!app.inTauri);
+  // v0.4.74: identity method chooser. When the browser supports Passkey
+  // with PRF, we default to Passkey (cross-device via iCloud/Google
+  // sync + no passphrase to remember). Users can flip to 'passphrase'
+  // if they want the old device-local flow. Non-Tauri only — Tauri
+  // uses OS keychain and doesn't enter this branch at all.
+  //
+  // `userSelectedMethod` is the user's override (null = "I haven't
+  // touched it"); `method` is the derived effective value that follows
+  // app.passkeySupported when the user hasn't overridden. This shape
+  // avoids a race where passkeySupported flips true post-render (async
+  // feature detect) and the panel is stuck on the wrong default.
+  let userSelectedMethod = $state<'passkey' | 'passphrase' | null>(null);
+  const method = $derived<'passkey' | 'passphrase'>(
+    userSelectedMethod
+      ?? (!app.inTauri && app.passkeySupported ? 'passkey' : 'passphrase'),
+  );
+  const needPassphrase = $derived(!app.inTauri && method === 'passphrase');
   const passphraseValid = $derived(
     !needPassphrase || (
       passphrase.length >= 12 && passphrase === passphraseConfirm
@@ -96,13 +112,22 @@
     } catch {
       // network error → silent fallback to localFallback
     }
-    await app.generateAndPair({
-      hubUrl: url,
-      nameHint: nameHint.trim(),
-      thread: sanitizeThreadName(chosenThread) || 'general',
-      invite: invite.trim(),
-      passphrase: needPassphrase ? passphrase : undefined,
-    });
+    if (method === 'passkey' && !app.inTauri) {
+      await app.generateAndPairWithPasskey({
+        hubUrl: url,
+        nameHint: nameHint.trim(),
+        thread: sanitizeThreadName(chosenThread) || 'general',
+        invite: invite.trim(),
+      });
+    } else {
+      await app.generateAndPair({
+        hubUrl: url,
+        nameHint: nameHint.trim(),
+        thread: sanitizeThreadName(chosenThread) || 'general',
+        invite: invite.trim(),
+        passphrase: needPassphrase ? passphrase : undefined,
+      });
+    }
   }
 
   let copied = $state(false);
@@ -133,6 +158,41 @@
       sees it. Your keymaster issues you an attestation that connects
       your key to your real name.
     </p>
+
+    <!-- v0.4.74: identity-method chooser. PWA only; Tauri hides this
+         and uses OS keychain unconditionally. If the browser doesn't
+         support Passkey with PRF, the chooser hides silently and the
+         passphrase flow runs as before. -->
+    {#if !app.inTauri && app.passkeySupported}
+      <div class="method-chooser">
+        <button type="button" class="method-card"
+          class:selected={method === 'passkey'}
+          onclick={() => (userSelectedMethod = 'passkey')}
+          disabled={isGenerating}>
+          <div class="method-top">
+            <span class="method-icon" aria-hidden="true">🔑</span>
+            <span class="method-title">Passkey <span class="badge">recommended</span></span>
+          </div>
+          <span class="method-body">
+            Uses your device's biometric or PIN. Syncs across your
+            Apple/Google-signed-in devices — no passphrase to remember.
+          </span>
+        </button>
+        <button type="button" class="method-card"
+          class:selected={method === 'passphrase'}
+          onclick={() => (userSelectedMethod = 'passphrase')}
+          disabled={isGenerating}>
+          <div class="method-top">
+            <span class="method-icon" aria-hidden="true">🔒</span>
+            <span class="method-title">Passphrase</span>
+          </div>
+          <span class="method-body">
+            Encrypts your key on this device only. Doesn't sync — you'll
+            re-onboard each device you use.
+          </span>
+        </button>
+      </div>
+    {/if}
 
     <label>
       <span>Invite code</span>
@@ -481,5 +541,66 @@
     border: 1px solid rgba(220, 38, 38, 0.4);
     color: #fca5a5;
     font-size: 0.9rem;
+  }
+  /* v0.4.74: identity method chooser. Two horizontally-stacked cards
+     with a selected/idle state; keyboard-focusable. */
+  .method-chooser {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.55rem;
+    margin: 0 0 1.4rem;
+  }
+  .method-card {
+    background: var(--bg);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.85rem 0.85rem 0.7rem;
+    cursor: pointer;
+    text-align: left;
+    font: inherit;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .method-card:hover:not(:disabled) {
+    border-color: rgba(212, 175, 55, 0.4);
+  }
+  .method-card.selected {
+    border-color: rgba(212, 175, 55, 0.8);
+    background: rgba(212, 175, 55, 0.05);
+  }
+  .method-card:disabled { opacity: 0.6; cursor: not-allowed; }
+  .method-top {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+  .method-icon { font-size: 1.15rem; }
+  .method-title {
+    font-weight: 600;
+    font-size: 0.94rem;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .method-title .badge {
+    font-size: 0.66rem;
+    font-weight: 500;
+    color: #0a0a0a;
+    background: #d4af37;
+    padding: 0.05rem 0.4rem;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .method-body {
+    color: var(--muted);
+    font-size: 0.82rem;
+    line-height: 1.4;
+  }
+  @media (max-width: 480px) {
+    .method-chooser { grid-template-columns: 1fr; }
   }
 </style>
