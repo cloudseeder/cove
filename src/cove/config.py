@@ -55,6 +55,14 @@ class HubConfig:
     # §5 session token TTL (seconds)
     session_ttl_seconds: int = 3600
 
+    # v0.4.76 identity vault: max wire size of a single vault record.
+    # Realistic vaults with 8 slots + a small content ciphertext land
+    # around 4 KiB. 64 KiB is 16× headroom, which comfortably covers
+    # future YubiKey slots (per-slot ephemeral pubkey wrappers) and label
+    # sprawl without letting a hostile client burn megabytes of storage
+    # under one pubkey.
+    max_vault_body_bytes: int = 64 * 1024
+
     # v0.4.37 ephemeral threads: upper bound on the TTL a creator may
     # request at POST /threads/ephemeral. Prevents a member from opening
     # a "delete in 100 years" thread that quietly evades the ephemeral

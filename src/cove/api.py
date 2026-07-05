@@ -41,6 +41,10 @@ from .store import EventStore
 from .throttle import ThrottleError, Throttler
 from .translog import TamperEvidentLog
 from .translog_ephemeral import EphemeralTransLog
+from .vaults import (
+    MalformedVaultError, StaleVaultError, VaultStore,
+    hash_vault, validate_shape,
+)
 
 
 # ---- WebSocket fan-out (§7.1 step 10) -----------------------------------
@@ -121,6 +125,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                pending: Optional[PendingRegistry] = None,
                invites: Optional[InviteRegistry] = None,
                ephemeral_translog: Optional[EphemeralTransLog] = None,
+               vaults: Optional[VaultStore] = None,
+               vault_db_path: str = "data/hub.db",
                config: HubConfig = DEFAULT) -> FastAPI:
     """Build a FastAPI app with all deps captured in closures.
 
@@ -141,6 +147,12 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         pending = PendingRegistry()
     if invites is None:
         invites = InviteRegistry()
+    if vaults is None:
+        # Same SQLite file as EventStore; distinct table. Callers building
+        # the app in-process (tests, most bootstrap scripts) pass an
+        # explicit VaultStore; the default keeps `uvicorn cove.api:app`
+        # from breaking on cold start.
+        vaults = VaultStore(vault_db_path)
     # /admin/limits applies overrides to the same Throttler the pipeline uses;
     # default to pipeline.throttler so existing callers don't need to pass it.
     if throttler is None:
@@ -1411,6 +1423,118 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         except InviteUnusable as e:
             return _err(400, error="invite_unusable", reason=str(e))
         return _invite_to_dict(inv)
+
+    # ---- /vault/{pubkey} (v0.4.76) --------------------------------------
+    # Cross-platform identity custody. The hub holds ciphertext ONLY;
+    # priv material never crosses the API boundary. See cove/vaults.py for
+    # the threat model + wire schema. Two endpoints:
+    #
+    #   GET  — public. Anyone who knows the pubkey can fetch its vault
+    #          ciphertext. The blob is opaque; discoverability of "this
+    #          pubkey has a vault" leaks nothing beyond what /directory
+    #          already publishes.
+    #
+    #   PUT  — auth'd. Only the vault-OWNER can write. Chained via
+    #          `prev_vault_hash` for CAS + audit trail.
+    #
+    # Non-negotiable #1 preserved: no plaintext key material EVER touches
+    # this endpoint. Sig verification uses the vault-owner pubkey, NOT the
+    # org root — this is what makes the vault a member-owned resource.
+
+    import base64 as _b64lib_vault
+
+    @api.get("/vault/{pubkey}")
+    def vault_get(pubkey: str):
+        body = vaults.get(pubkey)
+        if body is None:
+            return _err(404, error="vault_not_found")
+        head = vaults.head(pubkey)
+        # b64url-envelope the raw bytes so JSON transport doesn't mangle
+        # the JCS-canonical form (which contains newlines, unicode, etc.
+        # that would otherwise get re-encoded on parse+serialize).
+        return {
+            "pubkey": pubkey,
+            "version": head.version,
+            "hash": head.hash,
+            "updated_at": head.updated_at,
+            "body": _b64lib_vault.urlsafe_b64encode(body).rstrip(b"=").decode(),
+        }
+
+    @api.put("/vault/{pubkey}")
+    def vault_put(pubkey: str,
+                  body: dict = Body(...),
+                  caller: str = Depends(require_session)):
+        # 1. Caller-owns-key: the session pubkey must match the URL pubkey.
+        #    Prevents a valid member from bricking another member's vault.
+        if caller != pubkey:
+            return _err(403, error="forbidden", reason="pubkey_mismatch")
+        # 2. Body pubkey must match the URL pubkey (belt-and-suspenders
+        #    against a body-vs-URL split that would let a tampered vault
+        #    slip past the sig check).
+        if body.get("pubkey") != pubkey:
+            return _err(400, error="bad_vault", reason="pubkey_url_mismatch")
+        # 3. Envelope shape.
+        try:
+            validate_shape(body)
+        except MalformedVaultError as e:
+            return _err(400, error="bad_vault", reason="malformed", detail=str(e))
+        # 4. Membership: only attested + not-currently-revoked members can
+        #    write. Cheap check BEFORE the sig verify so garbage-body
+        #    attacks don't burn CPU on Ed25519 math.
+        if directory is None:
+            return _err(503, error="no_directory")
+        att = directory.resolve(pubkey)
+        if att is None or directory.is_revoked(pubkey):
+            return _err(403, error="forbidden", reason="not_a_member")
+        # 5. Size cap on the canonical bytes (what will actually be stored).
+        canonical = crypto.canonicalize(body)
+        size = len(canonical)
+        if size > config.max_vault_body_bytes:
+            return _err(413, error="too_large", reason="too_large",
+                        limit=config.max_vault_body_bytes, size=size)
+        # 6. Signature verification. Sig covers everything except the sig
+        #    field itself. Verifies against the VAULT-OWNER pubkey (not
+        #    the org root — key difference from /admin/limits).
+        sig = body.get("sig")
+        if not isinstance(sig, str):
+            return _err(400, error="bad_vault", reason="malformed",
+                        detail="sig must be a hex string")
+        unsigned = {k: body[k] for k in body if k != "sig"}
+        if not crypto.verify(pubkey, sig, crypto.canonicalize(unsigned)):
+            return _err(401, error="invalid_signature",
+                        reason="invalid_signature")
+        # 7. Quota preflight — CHECK ONLY. Commit happens AFTER the CAS
+        #    succeeds so a 409 doesn't leak a reservation.
+        prior_head = vaults.head(pubkey)
+        prior_size = prior_head.size_bytes if prior_head else 0
+        delta = size - prior_size
+        try:
+            throttler.check_storage_delta(caller, att.role, delta)
+        except ThrottleError as e:
+            return _throttle_response(e)
+        # 8. CAS write.
+        new_hash = hash_vault(body)
+        try:
+            head = vaults.put_atomic(
+                pubkey=pubkey,
+                prev_hash=body["prev_vault_hash"],
+                new_hash=new_hash,
+                body=canonical,
+                size_bytes=size,
+                updated_at=body["updated_at"],
+            )
+        except StaleVaultError as e:
+            return _err(409, error="stale_prev_hash",
+                        reason="stale_prev_hash",
+                        head_hash=e.head_hash)
+        # 9. Only after CAS succeeds do we mutate the throttler.
+        throttler.commit_storage_delta(caller, delta)
+        return {
+            "pubkey": head.pubkey,
+            "version": head.version,
+            "hash": head.hash,
+            "updated_at": head.updated_at,
+        }
 
     return api
 
