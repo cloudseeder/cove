@@ -500,6 +500,67 @@
     await app.clearRootKeys();
   }
 
+  // v0.4.76: identity-vault management. Mirrors the pattern for invites:
+  // simple flag + inputs, handlers call into AppState which does the
+  // vault-blob crypto and multi-hub push.
+  let vaultBusy = $state(false);
+  let vaultError = $state<string | null>(null);
+  let addPassphraseOpen = $state(false);
+  let newSlotLabel = $state('');
+  let newPassphrase = $state('');
+
+  function showAddPassphrase() {
+    vaultError = null;
+    newSlotLabel = '';
+    newPassphrase = '';
+    addPassphraseOpen = true;
+  }
+
+  async function confirmAddPassphrase() {
+    if (newPassphrase.length < 12 || !newSlotLabel.trim()) return;
+    vaultBusy = true;
+    vaultError = null;
+    try {
+      await app.addPassphraseUnlock({
+        passphrase: newPassphrase,
+        label: newSlotLabel.trim(),
+      });
+      addPassphraseOpen = false;
+      newPassphrase = '';
+      newSlotLabel = '';
+    } catch (err) {
+      vaultError = (err as Error).message;
+    } finally {
+      vaultBusy = false;
+    }
+  }
+
+  async function addPasskey() {
+    vaultBusy = true;
+    vaultError = null;
+    try {
+      const label = prompt("Label for this Passkey unlock:", 'Passkey') ?? '';
+      if (!label.trim()) { vaultBusy = false; return; }
+      await app.addPasskeyUnlock(label.trim());
+    } catch (err) {
+      vaultError = (err as Error).message;
+    } finally {
+      vaultBusy = false;
+    }
+  }
+
+  async function removeSlot(slotId: string) {
+    vaultBusy = true;
+    vaultError = null;
+    try {
+      await app.removeUnlock(slotId);
+    } catch (err) {
+      vaultError = (err as Error).message;
+    } finally {
+      vaultBusy = false;
+    }
+  }
+
 </script>
 
 <section class="admin" aria-label="Keymaster admin panel">
@@ -689,6 +750,85 @@
           <p class="small error">{app.adminStatus.message}</p>
         {/if}
       </div>
+    </section>
+  {/if}
+
+  {#if app.liveVault}
+    <!-- v0.4.76: identity-vault management. The vault stores the current
+         session's canonical priv wrapped for N unlock methods (passphrase,
+         Passkey PRF, ...). Adding/removing a method rewrites only that
+         method's slot; the priv itself never re-encrypts. Vault storage
+         is hub-side + opaque — the hub never sees plaintext key material. -->
+    <section class="identity-vault">
+      <h2>Identity vault</h2>
+      <p class="muted">
+        Ways you can sign in on any device that reaches this hub. Adding
+        a Passkey lets you sign in with FaceID / TouchID / Windows Hello;
+        adding a passphrase gives you a cross-ecosystem fallback that
+        works on any device including Android.
+      </p>
+
+      {#if app.vaultPushFailures.length > 0}
+        <p class="failure" role="alert">
+          Vault didn't sync to {app.vaultPushFailures.length} hub(s):
+          {app.vaultPushFailures.join(', ')}. Next successful save will
+          retry.
+        </p>
+      {/if}
+
+      <ul class="slots">
+        {#each app.liveVault.method_slots as slot (slot.id)}
+          <li>
+            <div class="slot-icon" aria-hidden="true">
+              {slot.type === 'passkey' ? '🔑' : '🔒'}
+            </div>
+            <div class="slot-meta">
+              <div class="slot-label">{slot.label}</div>
+              <div class="slot-sub muted">
+                {slot.type === 'passkey' ? 'Passkey' : 'Passphrase'}
+                • added {new Date(slot.created_at).toLocaleDateString()}
+              </div>
+            </div>
+            <button type="button" class="ghost small"
+              disabled={vaultBusy || (app.liveVault?.method_slots.length ?? 0) <= 1}
+              title={(app.liveVault?.method_slots.length ?? 0) <= 1
+                ? 'Removing the last method would lock you out' : ''}
+              onclick={() => removeSlot(slot.id)}>Remove</button>
+          </li>
+        {/each}
+      </ul>
+
+      <div class="add-actions">
+        <button type="button" onclick={showAddPassphrase}
+          disabled={vaultBusy}>Add passphrase</button>
+        <button type="button" onclick={addPasskey}
+          disabled={vaultBusy || !app.passkeySupported}>Add Passkey</button>
+      </div>
+
+      {#if addPassphraseOpen}
+        <div class="add-form">
+          <label>
+            <span>Label</span>
+            <input type="text" bind:value={newSlotLabel}
+              placeholder="e.g. Emergency backup" />
+          </label>
+          <label>
+            <span>Passphrase (≥ 12 chars)</span>
+            <input type="password" bind:value={newPassphrase} />
+          </label>
+          <div class="row-actions">
+            <button type="button" class="ghost"
+              onclick={() => { addPassphraseOpen = false; }}>Cancel</button>
+            <button type="button" onclick={confirmAddPassphrase}
+              disabled={vaultBusy || newPassphrase.length < 12
+                        || !newSlotLabel.trim()}>Add</button>
+          </div>
+        </div>
+      {/if}
+
+      {#if vaultError}
+        <p class="failure" role="alert">{vaultError}</p>
+      {/if}
     </section>
   {/if}
 
@@ -1415,6 +1555,48 @@
   }
   .manual-attest .small.error {
     color: #fca5a5; margin: 0.6rem 0 0;
+  }
+
+  /* v0.4.76: identity-vault section. Same visual weight as .members and
+     .invites — a slot list + inline forms. */
+  .identity-vault {
+    margin-top: 2rem; border-top: 1px solid var(--border);
+    padding-top: 1.4rem;
+  }
+  .identity-vault > .muted {
+    color: var(--muted); margin: 0 0 0.8rem; font-size: 0.85rem;
+  }
+  .identity-vault ul.slots {
+    list-style: none; margin: 0 0 1rem; padding: 0;
+  }
+  .identity-vault ul.slots > li {
+    display: flex; align-items: center; gap: 0.85rem;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); padding: 0.7rem 1rem;
+    margin: 0 0 0.5rem;
+  }
+  .identity-vault .slot-icon { font-size: 1.4rem; }
+  .identity-vault .slot-meta { flex: 1; min-width: 0; }
+  .identity-vault .slot-label { font-weight: 600; font-size: 0.95rem; }
+  .identity-vault .slot-sub { font-size: 0.82rem; }
+  .identity-vault .add-actions {
+    display: flex; gap: 0.6rem; margin-top: 0.6rem;
+  }
+  .identity-vault .add-form {
+    margin-top: 0.8rem; padding: 0.9rem 1rem;
+    border: 1px dashed var(--border); border-radius: 10px;
+    background: rgba(255,255,255,0.02);
+  }
+  .identity-vault .add-form label { display: block; margin: 0.4rem 0; }
+  .identity-vault .add-form label span {
+    display: block; font-size: 0.82rem; color: var(--muted);
+    margin-bottom: 0.25rem;
+  }
+  .identity-vault .add-form input {
+    width: 100%; box-sizing: border-box;
+    padding: 0.5rem 0.7rem; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--bg); color: var(--fg);
+    font: inherit;
   }
 
   /* v0.4.23: membership editor styles. Sits between the pending queue

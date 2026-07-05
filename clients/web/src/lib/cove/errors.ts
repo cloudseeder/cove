@@ -27,3 +27,21 @@ export class VerificationError extends ClientError {
     this.name = 'VerificationError';
   }
 }
+
+/**
+ * The hub rejected a vault PUT because `prev_vault_hash` didn't match
+ * the current head. The response carries the current head hash so the
+ * client can pull-merge-retry in a single round-trip.
+ *
+ * Thrown by Client.pushVault on a 409 stale_prev_hash response.
+ */
+export class StaleVaultError extends ClientError {
+  readonly headHash: string;
+  readonly serverPubkey: string;
+  constructor(message: string, headHash: string, serverPubkey: string) {
+    super(message);
+    this.name = 'StaleVaultError';
+    this.headHash = headHash;
+    this.serverPubkey = serverPubkey;
+  }
+}
