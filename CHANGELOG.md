@@ -4,6 +4,27 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.75] — 2026-07-04
+
+### Fixed
+- **Passkey chooser silently hidden on capable Macs.** v0.4.74's
+  `passkeySupported()` gated on `PublicKeyCredential.getClientCapabilities()`
+  reporting `extension:prf`, but early cuts of that API (Chrome 133 /
+  Safari 18) don't consistently list PRF even on browsers that support
+  it — the check produced false negatives, and the OnboardingPanel's
+  identity-method chooser silently didn't appear on browsers that
+  could actually handle the flow.
+
+  Fixed by making `passkeySupported()` optimistic-by-default:
+  returns `false` only for the definitive negatives (no
+  `PublicKeyCredential` at all, or `isUserVerifyingPlatformAuthenticatorAvailable()`
+  explicitly returns false). Everything else returns `true` and lets
+  the actual `registerPasskey()` ceremony surface a clear error at
+  create time if PRF genuinely isn't returned — better UX than
+  silently hiding the whole affordance behind a strict capability check.
+
+  Test suite: 168 preexisting + 1 new = 169 all green.
+
 ## [0.4.74] — 2026-07-04
 
 ### Added

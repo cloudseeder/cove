@@ -145,15 +145,21 @@ async function readOne(): Promise<PasskeyRecord | null> {
   );
 }
 
-/** Feature detect. Returns true when:
- *    - navigator.credentials.create exists
- *    - a user-verifying platform authenticator is available
- *    - the PRF extension is supported (as inferred from
- *      PublicKeyCredential.getClientCapabilities where available, or
- *      by attempting a probe registration and seeing prf.enabled)
+/** Feature detect. Optimistic-by-default: returns true unless we can
+ *  positively determine that Passkey WON'T work here. We deliberately do
+ *  NOT gate on `getClientCapabilities` reporting `extension:prf` — early
+ *  cut of that API (Chrome 133 / Safari 18) doesn't consistently list
+ *  PRF even on browsers that support it, and my v0.4.74 strict-check
+ *  produced false negatives that silently hid the Passkey chooser on
+ *  otherwise-capable Macs.
  *
- *  Falsey answers cause the AuthPanel + OnboardingPanel to hide the
- *  Passkey affordance silently. No scary errors.
+ *  Definitive negatives (return false):
+ *    - No `PublicKeyCredential` interface at all
+ *    - `isUserVerifyingPlatformAuthenticatorAvailable()` explicitly false
+ *
+ *  Everything else returns true. If PRF genuinely isn't there,
+ *  `registerPasskey()` throws with a clear message at ceremony time —
+ *  better UX than silently hiding the whole affordance.
  */
 export async function passkeySupported(): Promise<boolean> {
   if (typeof window === 'undefined') return false;
@@ -162,26 +168,12 @@ export async function passkeySupported(): Promise<boolean> {
   const PKC = (window as unknown as {
     PublicKeyCredential: {
       isUserVerifyingPlatformAuthenticatorAvailable?: () => Promise<boolean>;
-      getClientCapabilities?: () => Promise<Record<string, boolean>>;
     };
   }).PublicKeyCredential;
   try {
     const uv = await PKC.isUserVerifyingPlatformAuthenticatorAvailable?.();
     if (uv === false) return false;
-  } catch { /* older browsers throw; carry on */ }
-  // Prefer getClientCapabilities when supported (Chrome 133+, Safari 18+).
-  if (PKC.getClientCapabilities) {
-    try {
-      const caps = await PKC.getClientCapabilities();
-      // Different browsers name the cap differently: check both.
-      if (caps.extensionPrf || caps['extension:prf']) return true;
-      // If capabilities exist but PRF isn't listed, we still trust the
-      // capability report and return false.
-      return false;
-    } catch { /* fall through */ }
-  }
-  // Older browsers don't report capabilities; we optimistically say
-  // yes and let registerPasskey() fail cleanly if PRF isn't returned.
+  } catch { /* older browsers throw; carry on optimistically */ }
   return true;
 }
 

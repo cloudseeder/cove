@@ -82,13 +82,24 @@ afterEach(async () => {
 // ---- Tests -------------------------------------------------------------
 
 describe('passkey', () => {
-  test('passkeySupported returns true when PRF is reported by getClientCapabilities', async () => {
+  test('passkeySupported is true when PublicKeyCredential + platform authenticator are available', async () => {
     expect(await passkeySupported()).toBe(true);
   });
 
-  test('passkeySupported returns false when getClientCapabilities reports no PRF', async () => {
+  test('passkeySupported returns true even when getClientCapabilities is silent on PRF (optimistic-by-default per v0.4.75)', async () => {
+    // v0.4.74 shipped a strict check that flipped false in this case
+    // and silently hid the Passkey chooser on some capable Macs. The
+    // v0.4.75 fix: only the DEFINITIVE negatives (no PublicKeyCredential,
+    // UV=false) return false; everything else is optimistic and lets
+    // registerPasskey() surface a clear error if PRF is truly missing.
     (globalThis as any).window.PublicKeyCredential.getClientCapabilities
       = async () => ({ extensionPrf: false });
+    expect(await passkeySupported()).toBe(true);
+  });
+
+  test('passkeySupported is false when isUserVerifyingPlatformAuthenticatorAvailable returns false', async () => {
+    (globalThis as any).window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable
+      = async () => false;
     expect(await passkeySupported()).toBe(false);
   });
 
