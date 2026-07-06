@@ -43,9 +43,17 @@ from cove.identity import (
 )
 
 
+# Cloudflare's default WAF rules 1010/1015 block urllib's default UA
+# ("Python-urllib/3.x") as a bot signature. Sending anything vaguely
+# browser-shaped bypasses the check — the actual auth is on the payload
+# sig (root-signed manifest), not the transport, so this is cosmetic.
+_UA = "cove-admin-cli/0.4.76"
+
+
 def _http_get(url: str) -> dict:
+    req = urllib.request.Request(url, headers={"user-agent": _UA})
     try:
-        with urllib.request.urlopen(url, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=10) as r:
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         body = e.read().decode(errors="replace")
@@ -55,7 +63,7 @@ def _http_get(url: str) -> dict:
 def _http_post(url: str, payload: dict) -> dict:
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
-        headers={"content-type": "application/json"},
+        headers={"content-type": "application/json", "user-agent": _UA},
         method="POST",
     )
     try:
