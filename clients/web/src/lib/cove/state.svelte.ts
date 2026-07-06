@@ -39,6 +39,16 @@ import {
   unlockWithPasskey,
   type PasskeyStatus,
 } from './passkey';
+import {
+  addPasskeySlot as vaultAddPasskeySlot,
+  addPassphraseSlot as vaultAddPassphraseSlot,
+  createVault as vaultCreate,
+  removeSlot as vaultRemoveSlot,
+  unlockWithPasskey as vaultUnlockPasskey,
+  unlockWithPassphrase as vaultUnlockPassphrase,
+  type FirstUnlockChoice, type MethodSlot, type VaultRecord,
+} from './vault-blob';
+import { StaleVaultError } from './errors';
 
 // Tauri's invoke() rejects with a raw string when the Rust side returns
 // Err(String) (which all our #[tauri::command] handlers do). Casting that
@@ -140,6 +150,21 @@ export class AppState {
    *  session priv — just a controlled reference point. Cleared on
    *  logoutAll(). null for Tauri (OS keychain owns the priv). */
   livePriv = $state<string | null>(null);
+
+  /** v0.4.76: content-encryption key for the identity vault. Held with
+   *  livePriv so slot mutations (add/remove passphrase or Passkey) can
+   *  rewrap the CEK without asking the user to re-unlock. Cleared on
+   *  logoutAll(). null when the current session started from paste mode
+   *  or Tauri keychain (no vault involved). */
+  liveCek = $state<Uint8Array | null>(null);
+  /** v0.4.76: last-known vault record for the current identity. Drives
+   *  the AdminPanel "Identity vault" section's slot list. Refreshed on
+   *  vault write and on manual refresh. */
+  liveVault = $state<VaultRecord | null>(null);
+  /** v0.4.76: hubs that a vault push failed to reach. Surfaced as an
+   *  admin banner with a retry button. Cleared on next successful
+   *  saveVault to those hubs. */
+  vaultPushFailures = $state<string[]>([]);
 
   // ---------------------------------------------------------------------
   // Multi-hub state (Phase 2). Phase 1 held a single `hub`; Phase 2
@@ -577,6 +602,12 @@ export class AppState {
     this.hubs = new Map();
     this.activeHubUrl = null;
     this.livePriv = null;
+    // v0.4.76: wipe vault-derived material alongside livePriv. CEK is the
+    // key that unlocks the identity priv from any Cove vault the user is
+    // signed into; leaking it past logout would defeat the point.
+    this.liveCek = null;
+    this.liveVault = null;
+    this.vaultPushFailures = [];
     saveHubUrls([]);
     saveActiveHubUrl(null);
   }
@@ -806,6 +837,22 @@ export class AppState {
         mode: this.inTauri ? 'keychain' : 'paste',
         privateKey: privForPaste ?? undefined,
       });
+      // v0.4.76: if this was a PWA passphrase onboard, mint a hub-stored
+      // vault so device #2 can sign in without a fresh invite. Best-
+      // effort — a failure to push the vault doesn't undo the successful
+      // onboard. Any failure surfaces via vaultPushFailures.
+      if (!this.inTauri && opts.passphrase && privForPaste) {
+        try {
+          await this.createIdentityVault({
+            firstUnlock: {
+              kind: 'passphrase', passphrase: opts.passphrase,
+              label: 'Onboarding passphrase',
+            },
+          });
+        } catch (err) {
+          console.warn('vault mint after onboard failed:', errMsg(err));
+        }
+      }
       this.pwaTransientPriv = null;
     } catch (err) {
       if (this.watchCancel !== null) {
@@ -963,6 +1010,249 @@ export class AppState {
     const { priv, pub } = await unlockVaultKey(opts.passphrase);
     await this.connect({
       hubUrl: opts.hubUrl, privateKey: priv, publicKey: pub,
+      thread: opts.thread, mode: 'paste',
+    });
+  }
+
+  // ---------------------------------------------------------------------
+  // Cove identity vault (v0.4.76): hub-stored, multi-recipient encrypted
+  // ---------------------------------------------------------------------
+
+  /** Mint a NEW hub-stored vault around the current session's priv/pub.
+   *  Requires `livePriv` (must already be signed in). Pushes to every
+   *  joined authenticated hub. On success, stores liveCek + liveVault.
+   *
+   *  Called from OnboardingPanel after registerPending + attestation
+   *  succeed — the priv is generated locally in-JS, this method wraps
+   *  it into a vault so device #2 can sign in later. */
+  async createIdentityVault(opts: {
+    firstUnlock: FirstUnlockChoice;
+    note?: string;
+  }): Promise<void> {
+    if (this.livePriv === null || this.activeHub === null
+        || this.activeHub.authStatus.kind !== 'authenticated') {
+      throw new Error('createIdentityVault requires an authenticated session');
+    }
+    const pub = (this.activeHub.authStatus as { pubkey: string }).pubkey;
+    const vault = await vaultCreate({
+      priv: this.livePriv, pub,
+      firstUnlock: opts.firstUnlock,
+      note: opts.note,
+    });
+    // Unwrap the CEK we just used so slot mutations don't need a
+    // second unlock ceremony.
+    const cek = opts.firstUnlock.kind === 'passphrase'
+      ? (await vaultUnlockPassphrase({ vault, passphrase: opts.firstUnlock.passphrase })).cek
+      : (await vaultUnlockPasskey({ vault })).cek;
+    this.liveVault = vault;
+    this.liveCek = cek;
+    await this.saveVault(vault);
+  }
+
+  /** Fetch the vault for `pubkey` from any joined hub. Tries active hub
+   *  first, then the rest. Divergence resolution: if two hubs return
+   *  different heads, chain-follows-chain wins (a hub whose head chains
+   *  from another's head is strictly later). Falls back to
+   *  highest-`updated_at` when chains are unrelated. */
+  async loadIdentityVault(pubkey: string): Promise<VaultRecord | null> {
+    const candidates: VaultRecord[] = [];
+    const active = this.activeHub;
+    const ordered = active
+      ? [active, ...[...this.hubs.values()].filter((h) => h !== active)]
+      : [...this.hubs.values()];
+    for (const hub of ordered) {
+      if (!hub.client) continue;
+      try {
+        const v = await hub.client.fetchVault(pubkey);
+        if (v) candidates.push(v);
+      } catch {
+        // Skip this hub; another may return a valid vault.
+      }
+    }
+    if (candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+    // Chain-follows-chain: does any candidate's prev_vault_hash equal
+    // another's hash? If so, the descendant wins regardless of clock.
+    const { hashVault } = await import('./vault-blob');
+    const hashes = await Promise.all(candidates.map(hashVault));
+    for (let i = 0; i < candidates.length; i++) {
+      if (candidates.some((c, j) => j !== i && hashes[j] === c.prev_vault_hash)) {
+        return candidates[i];
+      }
+    }
+    // Fall back to clock. Client-authored `updated_at` is untrusted but
+    // signed under the vault-owner priv, so an evil-clock attack still
+    // needs the priv.
+    candidates.sort((a, b) => b.updated_at.localeCompare(a.updated_at));
+    return candidates[0];
+  }
+
+  /** Push a vault to every authenticated hub. Per-hub retries on
+   *  StaleVaultError (pull-merge-retry, capped at 3 attempts). Partial
+   *  failures are surfaced via vaultPushFailures; total failure throws. */
+  async saveVault(vault: VaultRecord): Promise<void> {
+    const authedHubs = [...this.hubs.values()]
+      .filter((h) => h.client !== null
+                     && h.authStatus.kind === 'authenticated');
+    if (authedHubs.length === 0) {
+      throw new Error('no authenticated hubs to push vault to');
+    }
+    const results = await Promise.allSettled(
+      authedHubs.map((h) => this._pushVaultToHubWithRetry(h, vault)),
+    );
+    const failed: string[] = [];
+    for (let i = 0; i < authedHubs.length; i++) {
+      if (results[i].status === 'rejected') {
+        failed.push(authedHubs[i].hubUrl);
+      }
+    }
+    this.vaultPushFailures = failed;
+    if (failed.length === authedHubs.length) {
+      throw new Error(`vault push failed on every hub (${failed.length})`);
+    }
+    // Stash the winning vault as the current head. On a partial failure
+    // the local liveVault reflects the version that landed on at least
+    // one hub; a subsequent successful saveVault re-syncs the stragglers.
+    this.liveVault = vault;
+  }
+
+  private async _pushVaultToHubWithRetry(
+    hub: HubConnection,
+    vault: VaultRecord,
+  ): Promise<void> {
+    if (hub.client === null) throw new Error('hub has no client');
+    let current = vault;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await hub.client.pushVault(current);
+        return;
+      } catch (err) {
+        if (err instanceof StaleVaultError) {
+          // Someone else wrote in the meantime. Fetch the fresh head from
+          // this hub, replay OUR slot delta onto it, re-sign, retry.
+          const remote = await hub.client.fetchVault(current.pubkey);
+          if (!remote || this.livePriv === null) throw err;
+          const { signVault: sign } = await import('./vault-blob');
+          const { hashVault: hash } = await import('./vault-blob');
+          const remoteHash = await hash(remote);
+          const { sig: _oldSig, ...rest } = current;
+          current = await sign(
+            {
+              ...rest,
+              prev_vault_hash: remoteHash,
+              updated_at: new Date().toISOString(),
+            },
+            this.livePriv,
+          );
+          continue;
+        }
+        throw err;
+      }
+    }
+    throw new Error(`vault push to ${hub.hubUrl} kept losing CAS after 3 attempts`);
+  }
+
+  /** Add a passphrase unlock method to the current identity's vault.
+   *  Requires liveVault + liveCek + livePriv (i.e. currently signed in
+   *  via SOME unlock method). Rewraps the existing CEK with a KEK derived
+   *  from the new passphrase — content ciphertext untouched. */
+  async addPassphraseUnlock(opts: {
+    passphrase: string;
+    label: string;
+  }): Promise<void> {
+    if (this.liveVault === null || this.liveCek === null
+        || this.livePriv === null) {
+      throw new Error('need a signed-in vault to add a passphrase unlock');
+    }
+    const next = await vaultAddPassphraseSlot({
+      vault: this.liveVault,
+      cek: this.liveCek,
+      ownerPriv: this.livePriv,
+      passphrase: opts.passphrase,
+      label: opts.label,
+    });
+    await this.saveVault(next);
+  }
+
+  /** Add a Passkey unlock method to the current identity's vault. Runs
+   *  a fresh WebAuthn ceremony (user gets a "Save Passkey" prompt), then
+   *  wraps the existing CEK under the PRF-derived KEK. */
+  async addPasskeyUnlock(label: string): Promise<void> {
+    if (this.liveVault === null || this.liveCek === null
+        || this.livePriv === null) {
+      throw new Error('need a signed-in vault to add a Passkey unlock');
+    }
+    const next = await vaultAddPasskeySlot({
+      vault: this.liveVault,
+      cek: this.liveCek,
+      ownerPriv: this.livePriv,
+      label,
+    });
+    await this.saveVault(next);
+  }
+
+  /** Remove an unlock method by slot id. Refuses to drop the last slot
+   *  (vault-blob enforces it too — belt-and-suspenders). */
+  async removeUnlock(slotId: string): Promise<void> {
+    if (this.liveVault === null || this.livePriv === null) {
+      throw new Error('need a signed-in vault to remove an unlock method');
+    }
+    const next = await vaultRemoveSlot({
+      vault: this.liveVault,
+      slotId,
+      ownerPriv: this.livePriv,
+    });
+    await this.saveVault(next);
+  }
+
+  /** Sign in on a fresh device via passphrase unlock of a hub-stored
+   *  vault. Fetches the vault from `hubUrl`, decrypts with `passphrase`,
+   *  then routes through the normal connect() flow. */
+  async unlockFromIdentityVaultPassphrase(opts: {
+    hubUrl: string;
+    pubkey: string;
+    passphrase: string;
+    thread: string;
+  }): Promise<void> {
+    // Fetch the vault directly (public GET, no auth needed).
+    const { Client } = await import('./client');
+    const client = new Client({
+      hubUrl: opts.hubUrl, publicKey: opts.pubkey, privateKey: '00'.repeat(32),
+    });
+    const vault = await client.fetchVault(opts.pubkey);
+    if (!vault) throw new Error(`no vault at ${opts.hubUrl} for that pubkey`);
+    const unlocked = await vaultUnlockPassphrase({
+      vault, passphrase: opts.passphrase,
+    });
+    this.livePriv = unlocked.priv;
+    this.liveCek = unlocked.cek;
+    this.liveVault = vault;
+    await this.connect({
+      hubUrl: opts.hubUrl, privateKey: unlocked.priv, publicKey: unlocked.pub,
+      thread: opts.thread, mode: 'paste',
+    });
+  }
+
+  /** Sign in on a fresh device via Passkey unlock of a hub-stored vault.
+   *  Passkey ceremony runs against the vault's stored credential IDs
+   *  (all Passkey slots offered to the OS picker at once). */
+  async unlockFromIdentityVaultPasskey(opts: {
+    hubUrl: string;
+    pubkey: string;
+    thread: string;
+  }): Promise<void> {
+    const { Client } = await import('./client');
+    const client = new Client({
+      hubUrl: opts.hubUrl, publicKey: opts.pubkey, privateKey: '00'.repeat(32),
+    });
+    const vault = await client.fetchVault(opts.pubkey);
+    if (!vault) throw new Error(`no vault at ${opts.hubUrl} for that pubkey`);
+    const unlocked = await vaultUnlockPasskey({ vault });
+    this.livePriv = unlocked.priv;
+    this.liveCek = unlocked.cek;
+    this.liveVault = vault;
+    await this.connect({
+      hubUrl: opts.hubUrl, privateKey: unlocked.priv, publicKey: unlocked.pub,
       thread: opts.thread, mode: 'paste',
     });
   }

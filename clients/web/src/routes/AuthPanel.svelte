@@ -196,6 +196,31 @@
     }
   }
 
+  // v0.4.76: cross-device vault sign-in — the fresh-install path.
+  let crossDevicePubkey = $state('');
+  let crossDevicePassphrase = $state('');
+  let crossDeviceUnlocking = $state(false);
+  let crossDeviceUnlockError = $state<string | null>(null);
+
+  async function unlockCrossDeviceVault() {
+    crossDeviceUnlockError = null;
+    crossDeviceUnlocking = true;
+    try {
+      await app.unlockFromIdentityVaultPassphrase({
+        hubUrl,
+        pubkey: crossDevicePubkey.trim(),
+        passphrase: crossDevicePassphrase,
+        thread: defaultThread(),
+      });
+      crossDevicePubkey = '';
+      crossDevicePassphrase = '';
+    } catch (err) {
+      crossDeviceUnlockError = (err as Error).message;
+    } finally {
+      crossDeviceUnlocking = false;
+    }
+  }
+
   async function forgetVaultAndStartOver() {
     if (!confirm("Wipe this device's stored key and start over with a fresh keypair? Your existing identity stays on the hub — you'd need a new invite from the keymaster to re-attest the fresh key.")) return;
     await app.forgetVault();
@@ -458,6 +483,43 @@
     </div>
   {/if}
 
+  {#if !app.inTauri}
+    <!-- v0.4.76: sign-in on a fresh device via a hub-stored identity
+         vault. The user knows their pubkey (or can copy it from an
+         existing device) + hub URL + one unlock method. The vault ships
+         the priv down to this device without a fresh invite / re-attest
+         cycle. -->
+    <details class="cross-device">
+      <summary>Signing in from a new device? Use your Cove vault</summary>
+      <p class="muted">
+        Enter your hub URL + public key, then your passphrase. Your
+        identity is unwrapped locally from the vault the hub is holding.
+      </p>
+      <label>
+        <span>Public key (hex)</span>
+        <textarea bind:value={crossDevicePubkey} rows="2"
+          autocomplete="off" spellcheck="false"
+          placeholder="64-char hex, from your other device"></textarea>
+      </label>
+      <label>
+        <span>Vault passphrase</span>
+        <input type="password" bind:value={crossDevicePassphrase}
+          autocomplete="off" />
+      </label>
+      <div class="actions">
+        <button type="button" onclick={unlockCrossDeviceVault}
+          disabled={crossDeviceUnlocking
+                    || !crossDevicePubkey.trim()
+                    || !crossDevicePassphrase}>
+          {crossDeviceUnlocking ? 'Unlocking…' : 'Sign in from vault'}
+        </button>
+      </div>
+      {#if crossDeviceUnlockError}
+        <p class="failure" role="alert">{crossDeviceUnlockError}</p>
+      {/if}
+    </details>
+  {/if}
+
   {#if connectFailure}
     <p class="failure" role="alert">{connectFailure}</p>
   {/if}
@@ -623,4 +685,32 @@
     border-color: rgba(212, 175, 55, 0.5);
     color: var(--fg);
   }
+  /* v0.4.76: cross-device sign-in via hub-stored vault. Kept as a
+     collapsed <details> so it's an escape hatch rather than a competing
+     primary action. */
+  .cross-device {
+    margin-top: 1.5rem;
+    padding: 0.9rem 1rem;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: rgba(255,255,255,0.02);
+  }
+  .cross-device summary {
+    cursor: pointer;
+    font-weight: 500;
+    color: var(--fg);
+    padding: 0.2rem 0;
+  }
+  .cross-device p.muted { margin: 0.6rem 0 0.8rem; font-size: 0.85rem; }
+  .cross-device label { display: block; margin: 0.7rem 0; }
+  .cross-device label span { display: block; font-size: 0.82rem;
+    color: var(--muted); margin-bottom: 0.3rem; }
+  .cross-device textarea, .cross-device input {
+    width: 100%; box-sizing: border-box;
+    padding: 0.55rem 0.75rem;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg); color: var(--fg);
+    font-family: inherit; font-size: 0.9rem;
+  }
+  .cross-device textarea { font-family: ui-monospace, monospace; }
 </style>

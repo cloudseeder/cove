@@ -4,6 +4,90 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.76] — 2026-07-05
+
+### Added
+- **Cove-native identity vault.** Cross-platform key custody for people
+  whose devices don't share an ecosystem (iCloud Keychain doesn't sync
+  with Google Password Manager; Windows sits outside both). The
+  canonical Ed25519 priv is encrypted once under a random content-
+  encryption key (CEK); each unlock method (passphrase, Passkey PRF,
+  future YubiKey / recovery-code) has its own AES-GCM-wrapped copy of
+  the CEK sitting in a `method_slots[]` entry. Any device with any one
+  unlock method fetches the opaque blob from any joined hub, unwraps
+  the CEK, decrypts the priv. Adding, rotating, or removing a method
+  rewrites only that slot — the content ciphertext is minted once at
+  vault creation and lives for the vault's lifetime.
+
+- **Hub endpoints.** `GET /vault/{pubkey}` is public — the blob is
+  opaque so discoverability of "this pubkey has a vault" leaks nothing
+  beyond what `/directory` already publishes. `PUT /vault/{pubkey}` is
+  authenticated against the vault-owner's own session token; the hub
+  verifies the record's Ed25519 sig against the vault-owner pubkey
+  (NOT the org root), enforces membership + not-revoked, checks the
+  size cap (`HubConfig.max_vault_body_bytes` = 64 KiB), then CASes on
+  `prev_vault_hash`. On a stale 409 the response carries `head_hash`
+  so the client retries in one round-trip. Non-negotiable #1 preserved:
+  the hub sees only ciphertext, never plaintext key material.
+
+- **Two-phase storage quota.** `Throttler.check_storage_delta` and
+  `Throttler.commit_storage_delta` split the existing `reserve_storage`
+  into a read-only preflight + a commit that accepts signed deltas.
+  Prevents quota leaks when a CAS 409 aborts the write between check
+  and commit, and lets vault-shrink release quota correctly.
+
+- **Multi-hub replication (client-side).** `AppState.saveVault()`
+  pushes to every joined authenticated hub via `Promise.allSettled`;
+  per-hub `StaleVaultError` triggers a per-hub retry loop (fetch head,
+  replay slot delta, re-sign, re-push; capped at 3 attempts). Partial
+  failures surface via `vaultPushFailures` — the AdminPanel shows a
+  banner naming the stale hub(s). Divergence resolution on
+  `loadIdentityVault`: chain-follows-chain wins (a candidate whose
+  hash matches another's `prev_vault_hash` is strictly later), with
+  `updated_at` as fallback.
+
+- **Auto-vault-mint on PWA onboard.** Passphrase-path onboarding now
+  mints an identity vault after successful attestation using the same
+  passphrase, so device #2 can sign in without a fresh invite / re-
+  attest cycle. Best-effort — a failed push doesn't undo the successful
+  onboard.
+
+- **AuthPanel: cross-device sign-in.** New collapsed "Signing in from
+  a new device? Use your Cove vault" surface at the bottom of the auth
+  view. Enter hub URL + pubkey + passphrase → client fetches the vault
+  from the hub, unwraps the CEK locally, decrypts the priv, routes
+  through the standard `connect()` flow.
+
+- **AdminPanel: Identity vault section.** Lists the current vault's
+  unlock methods (label, type icon, created date). "Add passphrase"
+  and "Add Passkey" open inline forms; "Remove" refuses to drop the
+  last method. Push-failure banner shows which hubs didn't receive
+  the latest write.
+
+### Tests
+- Hub: 12 new `test_vaults.py` tests cover round-trip, sig verify,
+  membership gate, CAS races (mirror `test_pipeline_atomicity.py`'s
+  monkeypatch-and-thread pattern), stale prev_hash 409 with head_hash
+  echo, size cap, storage-quota delta accounting, shape validation,
+  and Passkey slot acceptance.
+- Client: 11 new `vault-blob.test.ts` tests cover passphrase + Passkey
+  round-trips, wrong-passphrase rejection, slot-add preserves CEK,
+  slot-remove is sig-valid, JCS canonicalization matches Python
+  `rfc8785` on a golden vector, hash stability under key reordering,
+  and the vault-KEK PRF salt separation invariant.
+- Totals: hub 382 preexisting + 12 new = 394 all green; client 169
+  preexisting + 11 new = 180 all green.
+
+### Fresh-start note
+- New installs go through the vault path from day one. Existing users
+  re-onboard through the new flow — the old `vault.ts` (single-device
+  IndexedDB) and OS-keychain-only paths still exist in the code but
+  aren't part of the primary onboarding UX anymore. `git revert` on
+  the v0.4.76 commits cleanly restores the v0.4.75 code path; any user
+  who onboarded during v0.4.76 would need to re-onboard again on the
+  reverted client. Given the pilot has ~1 attested user this is
+  acceptable.
+
 ## [0.4.75] — 2026-07-04
 
 ### Fixed

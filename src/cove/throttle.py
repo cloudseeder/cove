@@ -186,6 +186,44 @@ class Throttler:
                                     f"quota {tier.storage_quota_bytes}")
             st.storage_used += new_blob_bytes
 
+    # ---- v0.4.76: two-phase check/commit for CAS-gated writes ------------
+    # reserve_storage above charges on success — that's fine for entries
+    # and blobs where the write cannot fail after the throttle check. The
+    # vault endpoint has a CAS layer AFTER the throttle check (409 on
+    # stale prev_hash), so a single-phase reserve would leak on 409.
+    # The split below mirrors store.append_atomic's discipline of NOT
+    # burning state on a failed write.
+
+    def check_storage_delta(self, author: str, role: str,
+                            delta_bytes: int) -> None:
+        """Read-only quota check. Raises ThrottleError(storage) if applying
+        `delta_bytes` (may be negative on shrink) would exceed the tier
+        quota. Does NOT mutate state.
+
+        Pair with commit_storage_delta AFTER the write actually lands.
+        """
+        if delta_bytes <= 0:
+            return  # shrink can never exceed quota
+        tier = self._overrides.get(author) or self._cfg.tier_for_role(role)
+        with self._lock:
+            st = self._state.setdefault(author, _IdentityState())
+            projected = st.storage_used + delta_bytes
+            if projected > tier.storage_quota_bytes:
+                raise ThrottleError(
+                    "storage", tier.storage_quota_bytes, None,
+                    f"storage {projected} > quota {tier.storage_quota_bytes}"
+                )
+
+    def commit_storage_delta(self, author: str, delta_bytes: int) -> None:
+        """Apply a signed storage delta. Negative deltas release storage
+        (used on vault-shrink). Idempotent within a single writer thread —
+        each vault PUT commits exactly one delta after CAS succeeds."""
+        if delta_bytes == 0:
+            return
+        with self._lock:
+            st = self._state.setdefault(author, _IdentityState())
+            st.storage_used = max(0, st.storage_used + delta_bytes)
+
     def set_tier_override(self, author: str, tier_name: str) -> None:
         """Apply a per-identity tier override (§7.2.2 'overridable per identity
         via POST /admin/limits'). The override replaces the role-derived tier

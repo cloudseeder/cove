@@ -15,6 +15,7 @@ from cove.store import EventStore
 from cove.throttle import Throttler
 from cove.translog import TamperEvidentLog
 from cove.translog_ephemeral import EphemeralTransLog
+from cove.vaults import VaultStore
 
 
 @pytest.fixture
@@ -82,11 +83,13 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
 
     from cove.invites import InviteRegistry
     invites = InviteRegistry()
+    vaults = VaultStore(str(tmp_path / "hub.db"))
     app = create_app(pipeline=pipeline, store=store, translog=translog,
                      overview=overview, ledger=ledger,
                      directory=directory, directory_manifest=manifest,
                      auth=auth, blobs=blobs, invites=invites,
-                     ephemeral_translog=ephemeral_translog)
+                     ephemeral_translog=ephemeral_translog,
+                     vaults=vaults)
 
     client = TestClient(app)
     ch = client.post("/auth/challenge").json()
@@ -112,4 +115,5 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
         "att_member": att_member,
         "session_token": sess["token"],
         "invites": invites,
+        "vaults": vaults,
     }

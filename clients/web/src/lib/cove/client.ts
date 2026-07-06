@@ -16,7 +16,8 @@
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import { sha256 } from '@noble/hashes/sha256';
 
-import { AuthenticationError, ClientError, VerificationError } from './errors';
+import { AuthenticationError, ClientError, StaleVaultError, VerificationError } from './errors';
+import type { VaultRecord } from './vault-blob';
 import { canonicalize, sign } from './crypto';
 import { keychain } from './tauri';
 import {
@@ -476,6 +477,64 @@ export class Client {
       const body = await safeJson(resp);
       throw new ClientError(
         `revoke invite failed: ${resp.status} ${JSON.stringify(body)}`,
+      );
+    }
+    return await resp.json();
+  }
+
+  /** v0.4.76: GET /vault/{pubkey}. PUBLIC — no auth. Returns null on
+   *  404 (a missing vault is a normal cold-start state, not an error).
+   *  The response body is opaque ciphertext; decryption is up to the
+   *  caller via vault-blob.ts::unlockWithPassphrase / unlockWithPasskey. */
+  async fetchVault(pubkey: string): Promise<VaultRecord | null> {
+    const resp = await this.fetchImpl(
+      `${this.hubUrl}/vault/${encodeURIComponent(pubkey)}`,
+      { method: 'GET' },
+    );
+    if (resp.status === 404) return null;
+    if (resp.status !== 200) {
+      const body = await safeJson(resp);
+      throw new ClientError(
+        `fetch vault failed: ${resp.status} ${JSON.stringify(body)}`,
+      );
+    }
+    const wrapped = await resp.json();
+    // The hub wraps the JCS body in a b64url envelope for JSON transport.
+    // Decode + parse to recover the VaultRecord shape.
+    const bodyBytes = b64urlDecode(wrapped.body as string);
+    return JSON.parse(new TextDecoder().decode(bodyBytes)) as VaultRecord;
+  }
+
+  /** v0.4.76: PUT /vault/{pubkey}. Auth'd. Body is the full VaultRecord
+   *  (including sig). Hub verifies caller-owns-key, sig, membership, CAS.
+   *
+   *  On 409 stale_prev_hash, throws a typed StaleVaultError carrying the
+   *  hub's current head hash — the caller (AppState.saveVault) uses that
+   *  to pull-merge-retry without a second GET round-trip. */
+  async pushVault(vault: VaultRecord): Promise<{
+    pubkey: string; version: number; hash: string; updated_at: string;
+  }> {
+    this.requireAuth();
+    const resp = await this.authedFetch(
+      `${this.hubUrl}/vault/${encodeURIComponent(vault.pubkey)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(vault),
+      },
+    );
+    if (resp.status === 409) {
+      const body = await safeJson(resp);
+      throw new StaleVaultError(
+        `vault push rejected: ${body.reason ?? 'stale_prev_hash'}`,
+        body.head_hash ?? '',
+        vault.pubkey,
+      );
+    }
+    if (resp.status !== 200) {
+      const body = await safeJson(resp);
+      throw new ClientError(
+        `push vault failed: ${resp.status} ${JSON.stringify(body)}`,
       );
     }
     return await resp.json();
@@ -1070,4 +1129,16 @@ async function safeJson(resp: Response): Promise<any> {
   } catch {
     return {};
   }
+}
+
+/** v0.4.76: b64url decode (no padding) for vault body envelope.
+ *  Kept module-local so vault-blob.ts and client.ts don't share a
+ *  cross-file b64 helper — same 4 lines each and cheaper to inline. */
+function b64urlDecode(s: string): Uint8Array {
+  const padded = s.replace(/-/g, '+').replace(/_/g, '/')
+    + '='.repeat((4 - (s.length % 4)) % 4);
+  const bin = atob(padded);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
 }
