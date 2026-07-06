@@ -779,15 +779,18 @@
     </section>
   {/if}
 
-  {#if !app.inTauri || app.liveVault}
-    <!-- v0.4.76: identity-vault management. The vault stores the current
-         session's canonical priv wrapped for N unlock methods (passphrase,
-         Passkey PRF, ...). Adding/removing a method rewrites only that
-         method's slot; the priv itself never re-encrypts. Vault storage
-         is hub-side + opaque — the hub never sees plaintext key material.
-         When no vault exists yet (fresh sign-in via paste mode), the
-         section shows a "Create identity vault" CTA instead of the slot
-         list — that's how a re-onboarded user seeds their first vault. -->
+  <!-- v0.4.76: identity-vault management. The vault stores the current
+       session's canonical priv wrapped for N unlock methods (passphrase,
+       Passkey PRF, ...). Adding/removing a method rewrites only that
+       method's slot; the priv itself never re-encrypts. Vault storage
+       is hub-side + opaque — the hub never sees plaintext key material.
+       When no vault exists yet (fresh sign-in via paste mode / keychain),
+       the section shows a "Create identity vault" CTA instead of the slot
+       list — that's how a re-onboarded user seeds their first vault.
+       Shown for every signed-in admin — Tauri desktop users benefit from
+       having a vault too (their phone PWA can sign in without a fresh
+       invite). -->
+  {#if app.authStatus.kind === 'authenticated'}
     <section class="identity-vault">
       <h2>Identity vault</h2>
       <p class="muted">
