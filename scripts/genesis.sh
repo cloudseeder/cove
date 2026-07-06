@@ -104,11 +104,22 @@ docker compose build --no-cache
 # same Python + deps the hub itself uses — no touching the host's
 # system Python (which would trip the "running pip as root" warning
 # and pollute site-packages).
+#
+# Uses a roster CSV (not --members) so the initial attestation carries
+# role=board — otherwise --members hard-codes role=member and AdminPanel
+# stays hidden until you rerun scripts/rerole_member.py.
 say "Step 4/6: docker compose run bootstrap — fresh root + hub keypair"
+ROSTER_PATH="$COVE_STATE_DIR/.genesis-roster.csv"
+mkdir -p "$COVE_STATE_DIR"
+cat > "$ROSTER_PATH" <<EOF
+display_name,affiliation,role,title,key_name
+${MEMBER_NAME},board,board,Keymaster,${MEMBER_SLUG}
+EOF
 docker compose --profile setup run --rm bootstrap \
   --org-name "$ORG_NAME" \
-  --members "$MEMBER_NAME" \
+  --roster "/state/.genesis-roster.csv" \
   --force
+rm -f "$ROSTER_PATH"
 
 # The bootstrap container runs as uid 1000 (the `cove` user), so the
 # files it writes into the host-mounted state dir may not be owned by
