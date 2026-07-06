@@ -99,12 +99,25 @@ say "Step 3/6: docker compose build --no-cache"
 docker compose build --no-cache
 
 # ─── Step 4: bootstrap fresh root ─────────────────────────────────────
-say "Step 4/6: bootstrap_pilot.py — fresh root + hub keypair, one member"
-python scripts/bootstrap_pilot.py \
-  --state-dir "$COVE_STATE_DIR" \
+# Runs INSIDE the freshly-built container via the `bootstrap` compose
+# service (docker-compose.yml, profile=setup). That way we reuse the
+# same Python + deps the hub itself uses — no touching the host's
+# system Python (which would trip the "running pip as root" warning
+# and pollute site-packages).
+say "Step 4/6: docker compose run bootstrap — fresh root + hub keypair"
+docker compose --profile setup run --rm bootstrap \
   --org-name "$ORG_NAME" \
   --members "$MEMBER_NAME" \
   --force
+
+# The bootstrap container runs as uid 1000 (the `cove` user), so the
+# files it writes into the host-mounted state dir may not be owned by
+# the invoking shell user. Chown so `shred -u` below can delete them
+# without another sudo prompt mid-flow.
+if [ "$(stat -c '%u' "$COVE_STATE_DIR/keys/root.priv" 2>/dev/null || echo 0)" != "$(id -u)" ]; then
+  say "Chowning $COVE_STATE_DIR back to $(id -un)"
+  sudo chown -R "$(id -u):$(id -g)" "$COVE_STATE_DIR"
+fi
 
 ROOT_PRIV_PATH="$COVE_STATE_DIR/keys/root.priv"
 ROOT_PUB_PATH="$COVE_STATE_DIR/keys/root.pub"
