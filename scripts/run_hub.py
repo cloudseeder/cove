@@ -32,6 +32,7 @@ from cove.store import EventStore                                     # noqa: E4
 from cove.throttle import Throttler                                   # noqa: E402
 from cove.translog import TamperEvidentLog                            # noqa: E402
 from cove.translog_ephemeral import EphemeralTransLog                 # noqa: E402
+from cove.vaults import VaultStore                                    # noqa: E402
 
 
 def _read(path: Path) -> str:
@@ -64,6 +65,11 @@ def _build_app():
     # rebuilt from the store by create_app's lifespan; nothing to do here.
     store = EventStore(str(data / "cove.db"))
     blobs = BlobStore(str(data / "blobs"))
+    # v0.4.76: vaults live in the same SQLite file as EventStore (distinct
+    # table). Pass an explicit VaultStore so create_app doesn't fall back
+    # to the "data/hub.db" default (which lands at /app/data in the
+    # container — unwritable by uid 1000).
+    vaults = VaultStore(str(data / "cove.db"))
     translog = TamperEvidentLog(hub_priv, hub_pub)
     ephemeral_translog = EphemeralTransLog(hub_priv, hub_pub)
     overview = Overview()
@@ -91,7 +97,7 @@ def _build_app():
         pipeline=pipeline, store=store, translog=translog,
         overview=overview, ledger=ledger, directory=directory,
         directory_manifest=directory.manifest, auth=auth, blobs=blobs,
-        ephemeral_translog=ephemeral_translog,
+        ephemeral_translog=ephemeral_translog, vaults=vaults,
     )
 
 
