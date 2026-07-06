@@ -14,7 +14,8 @@
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
   import {
-    loadActiveHubUrl, loadHubUrls, loadThreadFor, saveActiveHubUrl,
+    loadActiveHubUrl, loadHubUrls, loadThreadFor, loadVaultPubkeyFor,
+    saveActiveHubUrl,
   } from '$lib/cove/hubs';
 
   interface Props {
@@ -196,11 +197,30 @@
     }
   }
 
-  // v0.4.76: cross-device vault sign-in — the fresh-install path.
+  // v0.4.76: vault-based sign-in. Pubkey pre-fills from localStorage
+  // for a returning-user "Welcome back" experience. Fresh-device users
+  // paste their pubkey manually. Passkey unlock offered whenever the
+  // browser supports it — attempt runs on whatever Passkey slots the
+  // vault happens to have; failure paths surface via the same error slot.
   let crossDevicePubkey = $state('');
   let crossDevicePassphrase = $state('');
   let crossDeviceUnlocking = $state(false);
   let crossDeviceUnlockError = $state<string | null>(null);
+  // Auto-opens when we know the pubkey for the currently-typed hub —
+  // that's the "same device, second launch" case.
+  let crossDeviceOpen = $state(false);
+
+  // Re-read the persisted pubkey whenever the hub URL changes. This is
+  // also the initial-load population — deferring to $effect (vs. a state
+  // initializer) keeps the Svelte 'reference only captures initial
+  // value' warning quiet.
+  $effect(() => {
+    const saved = loadVaultPubkeyFor(hubUrl);
+    if (saved !== null && crossDevicePubkey === '') {
+      crossDevicePubkey = saved;
+      crossDeviceOpen = true;
+    }
+  });
 
   async function unlockCrossDeviceVault() {
     crossDeviceUnlockError = null;
@@ -212,8 +232,23 @@
         passphrase: crossDevicePassphrase,
         thread: defaultThread(),
       });
-      crossDevicePubkey = '';
       crossDevicePassphrase = '';
+    } catch (err) {
+      crossDeviceUnlockError = (err as Error).message;
+    } finally {
+      crossDeviceUnlocking = false;
+    }
+  }
+
+  async function unlockCrossDevicePasskey() {
+    crossDeviceUnlockError = null;
+    crossDeviceUnlocking = true;
+    try {
+      await app.unlockFromIdentityVaultPasskey({
+        hubUrl,
+        pubkey: crossDevicePubkey.trim(),
+        thread: defaultThread(),
+      });
     } catch (err) {
       crossDeviceUnlockError = (err as Error).message;
     } finally {
@@ -484,16 +519,22 @@
   {/if}
 
   {#if !app.inTauri}
-    <!-- v0.4.76: sign-in on a fresh device via a hub-stored identity
-         vault. The user knows their pubkey (or can copy it from an
-         existing device) + hub URL + one unlock method. The vault ships
-         the priv down to this device without a fresh invite / re-attest
-         cycle. -->
-    <details class="cross-device">
-      <summary>Signing in from a new device? Use your Cove vault</summary>
+    <!-- v0.4.76: sign-in via hub-stored identity vault. Two shapes fold
+         into one surface:
+           - Returning user on the SAME device: pubkey is pre-filled from
+             localStorage; the <details> is open by default; user unlocks
+             with Passkey (one-tap) or passphrase.
+           - Fresh device: pubkey field is empty; user pastes their
+             pubkey from another device or their notes, then unlocks. -->
+    <details class="cross-device" bind:open={crossDeviceOpen}>
+      <summary>
+        {crossDevicePubkey ? 'Welcome back — sign in with your vault'
+                          : 'Signing in from a new device? Use your Cove vault'}
+      </summary>
       <p class="muted">
-        Enter your hub URL + public key, then your passphrase. Your
-        identity is unwrapped locally from the vault the hub is holding.
+        Your identity lives in the hub's opaque vault. Unlock it locally
+        with a Passkey (one-tap biometric) or a passphrase — whichever
+        slot you set up.
       </p>
       <label>
         <span>Public key (hex)</span>
@@ -501,6 +542,14 @@
           autocomplete="off" spellcheck="false"
           placeholder="64-char hex, from your other device"></textarea>
       </label>
+      <div class="actions">
+        <button type="button" onclick={unlockCrossDevicePasskey}
+          disabled={crossDeviceUnlocking || !crossDevicePubkey.trim()
+                    || !app.passkeySupported}>
+          {crossDeviceUnlocking ? 'Unlocking…' : '🔑 Sign in with Passkey'}
+        </button>
+      </div>
+      <p class="muted small" style="margin-top:1rem">or unlock with a passphrase</p>
       <label>
         <span>Vault passphrase</span>
         <input type="password" bind:value={crossDevicePassphrase}
@@ -511,7 +560,7 @@
           disabled={crossDeviceUnlocking
                     || !crossDevicePubkey.trim()
                     || !crossDevicePassphrase}>
-          {crossDeviceUnlocking ? 'Unlocking…' : 'Sign in from vault'}
+          {crossDeviceUnlocking ? 'Unlocking…' : '🔒 Sign in with passphrase'}
         </button>
       </div>
       {#if crossDeviceUnlockError}

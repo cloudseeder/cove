@@ -18,6 +18,7 @@
 const KEY_HUBS = 'cove.hubs';
 const KEY_ACTIVE_HUB = 'cove.activeHubUrl';
 const KEY_THREAD_PREFIX = 'cove.thread.';
+const KEY_VAULT_PUBKEY_PREFIX = 'cove.vault.pubkey.';
 const LEGACY_KEY_HUB_URL = 'cove.hubUrl';
 const LEGACY_KEY_THREAD = 'cove.thread';
 
@@ -90,6 +91,24 @@ export function removeHubUrl(hubUrl: string): void {
   const remaining = loadHubUrls().filter((u) => u !== hubUrl);
   saveHubUrls(remaining);
   localStorage.removeItem(KEY_THREAD_PREFIX + hubUrl);
+  localStorage.removeItem(KEY_VAULT_PUBKEY_PREFIX + hubUrl);
+}
+
+/** v0.4.76: remember the pubkey we last vault-unlocked with for a given
+ *  hub, so a returning user on the same device gets a "Welcome back"
+ *  path instead of typing their pubkey every time. Cleared on removeHub
+ *  or explicit logout. */
+export function loadVaultPubkeyFor(hubUrl: string): string | null {
+  if (!hasLS() || !hubUrl) return null;
+  const raw = localStorage.getItem(KEY_VAULT_PUBKEY_PREFIX + hubUrl);
+  return raw && raw.length > 0 ? raw : null;
+}
+
+export function saveVaultPubkeyFor(hubUrl: string, pubkey: string | null): void {
+  if (!hasLS() || !hubUrl) return;
+  const key = KEY_VAULT_PUBKEY_PREFIX + hubUrl;
+  if (pubkey === null || pubkey.length === 0) localStorage.removeItem(key);
+  else localStorage.setItem(key, pubkey);
 }
 
 /**

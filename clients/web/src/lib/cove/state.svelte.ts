@@ -15,7 +15,7 @@ import {
 } from './hub.svelte';
 import {
   loadActiveHubUrl, loadHubUrls, loadThreadFor, migrateLegacyKeys,
-  removeHubUrl, saveActiveHubUrl, saveHubUrls,
+  removeHubUrl, saveActiveHubUrl, saveHubUrls, saveVaultPubkeyFor,
 } from './hubs';
 import { encodePairingLink, fingerprint as fingerprintOf } from './pairing';
 import {
@@ -1047,6 +1047,13 @@ export class AppState {
     this.liveVault = vault;
     this.liveCek = cek;
     await this.saveVault(vault);
+    // v0.4.76: remember this pubkey per hub for the "Welcome back"
+    // vault-unlock path on returning-user relaunch.
+    for (const hub of this.hubs.values()) {
+      if (hub.authStatus.kind === 'authenticated') {
+        saveVaultPubkeyFor(hub.hubUrl, pub);
+      }
+    }
   }
 
   /** Fetch the vault for `pubkey` from any joined hub. Tries active hub
@@ -1227,6 +1234,10 @@ export class AppState {
     this.livePriv = unlocked.priv;
     this.liveCek = unlocked.cek;
     this.liveVault = vault;
+    // v0.4.76: remember the pubkey per hub so the "Welcome back" path on
+    // next launch fetches the vault + presents unlock options directly,
+    // rather than making the user retype pubkey in the cross-device form.
+    saveVaultPubkeyFor(opts.hubUrl, unlocked.pub);
     await this.connect({
       hubUrl: opts.hubUrl, privateKey: unlocked.priv, publicKey: unlocked.pub,
       thread: opts.thread, mode: 'paste',
@@ -1251,6 +1262,7 @@ export class AppState {
     this.livePriv = unlocked.priv;
     this.liveCek = unlocked.cek;
     this.liveVault = vault;
+    saveVaultPubkeyFor(opts.hubUrl, unlocked.pub);
     await this.connect({
       hubUrl: opts.hubUrl, privateKey: unlocked.priv, publicKey: unlocked.pub,
       thread: opts.thread, mode: 'paste',
