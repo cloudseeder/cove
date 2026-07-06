@@ -535,6 +535,32 @@
     }
   }
 
+  // First-time vault creation for a session that came in via paste
+  // mode (no vault yet). Same UX as adding a slot to an existing vault,
+  // but the AppState method differs: createIdentityVault mints the
+  // vault around the current session's priv/pub and pushes it to every
+  // joined authenticated hub.
+  async function createVaultInitial() {
+    if (newPassphrase.length < 12 || !newSlotLabel.trim()) return;
+    vaultBusy = true;
+    vaultError = null;
+    try {
+      await app.createIdentityVault({
+        firstUnlock: {
+          kind: 'passphrase', passphrase: newPassphrase,
+          label: newSlotLabel.trim(),
+        },
+      });
+      addPassphraseOpen = false;
+      newPassphrase = '';
+      newSlotLabel = '';
+    } catch (err) {
+      vaultError = (err as Error).message;
+    } finally {
+      vaultBusy = false;
+    }
+  }
+
   async function addPasskey() {
     vaultBusy = true;
     vaultError = null;
@@ -753,12 +779,15 @@
     </section>
   {/if}
 
-  {#if app.liveVault}
+  {#if !app.inTauri || app.liveVault}
     <!-- v0.4.76: identity-vault management. The vault stores the current
          session's canonical priv wrapped for N unlock methods (passphrase,
          Passkey PRF, ...). Adding/removing a method rewrites only that
          method's slot; the priv itself never re-encrypts. Vault storage
-         is hub-side + opaque — the hub never sees plaintext key material. -->
+         is hub-side + opaque — the hub never sees plaintext key material.
+         When no vault exists yet (fresh sign-in via paste mode), the
+         section shows a "Create identity vault" CTA instead of the slot
+         list — that's how a re-onboarded user seeds their first vault. -->
     <section class="identity-vault">
       <h2>Identity vault</h2>
       <p class="muted">
@@ -767,6 +796,42 @@
         adding a passphrase gives you a cross-ecosystem fallback that
         works on any device including Android.
       </p>
+
+      {#if !app.liveVault}
+        <div class="vault-empty">
+          <p class="muted small">
+            You don't have a Cove-native identity vault yet — set one up
+            so device #2 can sign in without a fresh invite.
+          </p>
+          <div class="add-actions">
+            <button type="button" onclick={showAddPassphrase}
+              disabled={vaultBusy}>Create vault with passphrase</button>
+          </div>
+          {#if addPassphraseOpen}
+            <div class="add-form">
+              <label>
+                <span>Passphrase (≥ 12 chars)</span>
+                <input type="password" bind:value={newPassphrase} />
+              </label>
+              <label>
+                <span>Label (what this unlock method is called)</span>
+                <input type="text" bind:value={newSlotLabel}
+                  placeholder="e.g. Backup passphrase" />
+              </label>
+              <div class="row-actions">
+                <button type="button" class="ghost"
+                  onclick={() => { addPassphraseOpen = false; }}>Cancel</button>
+                <button type="button" onclick={createVaultInitial}
+                  disabled={vaultBusy || newPassphrase.length < 12
+                            || !newSlotLabel.trim()}>Create vault</button>
+              </div>
+            </div>
+          {/if}
+          {#if vaultError}
+            <p class="failure" role="alert">{vaultError}</p>
+          {/if}
+        </div>
+      {:else}
 
       {#if app.vaultPushFailures.length > 0}
         <p class="failure" role="alert">
@@ -828,6 +893,7 @@
 
       {#if vaultError}
         <p class="failure" role="alert">{vaultError}</p>
+      {/if}
       {/if}
     </section>
   {/if}
