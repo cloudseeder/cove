@@ -526,15 +526,31 @@ export class AppState {
    * failure is surfaced as an error — the rest of the chain (no
    * network, no update available) is silent so the UI doesn't shout
    * about the everyday case.
+   *
+   * `silent: true` (default) keeps the everyday no-update case
+   * completely invisible — used by the app-load auto-check so the
+   * PWA doesn't flash a 'Checking… / You're on the latest version'
+   * banner on every launch. The sidebar footer's manual
+   * "Check for updates" button passes silent: false so the user gets
+   * feedback that their click did something.
    */
-  async checkForUpdate(): Promise<void> {
+  async checkForUpdate({ silent = true } = {}): Promise<void> {
     if (this.inTauri) {
-      this.updateStatus = { kind: 'checking' };
+      if (!silent) this.updateStatus = { kind: 'checking' };
       try {
         const available = await updater.check();
-        this.updateStatus = available === null
-          ? { kind: 'idle' }
-          : { kind: 'available', update: available };
+        if (available !== null) {
+          this.updateStatus = { kind: 'available', update: available };
+        } else if (!silent) {
+          this.updateStatus = { kind: 'up-to-date' };
+          setTimeout(() => {
+            if (this.updateStatus.kind === 'up-to-date') {
+              this.updateStatus = { kind: 'idle' };
+            }
+          }, 2500);
+        } else {
+          this.updateStatus = { kind: 'idle' };
+        }
       } catch (err) {
         this.updateStatus = { kind: 'error', message: errMsg(err) };
       }
@@ -542,18 +558,21 @@ export class AppState {
     }
     // PWA path — ask the browser to re-check /sw.js against origin.
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
-    this.updateStatus = { kind: 'checking' };
+    if (!silent) this.updateStatus = { kind: 'checking' };
     try {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg === undefined) {
-        this.updateStatus = { kind: 'up-to-date' };
+        if (!silent) {
+          this.updateStatus = { kind: 'up-to-date' };
+        }
       } else {
         await reg.update();
         // If update() surfaces a fresh SW, the installedListener wired
         // in initPwaUpdates() flips us to 'available-pwa'. Give it a
-        // beat, then fall back to 'up-to-date' if nothing changed.
+        // beat, then, for the manual-check case, show the reassuring
+        // up-to-date toast. Silent auto-checks stay quiet either way.
         setTimeout(() => {
-          if (this.updateStatus.kind === 'checking') {
+          if (this.updateStatus.kind === 'checking' && !silent) {
             this.updateStatus = { kind: 'up-to-date' };
             setTimeout(() => {
               if (this.updateStatus.kind === 'up-to-date') {

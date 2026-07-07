@@ -25,10 +25,12 @@
   function leaveOnboarding() { onboarding = false; }
 
   onMount(() => {
-    // Fire-and-forget; checkForUpdate no-ops outside Tauri and never
-    // throws on routine outcomes (no network, no update). Real
-    // failures land in app.updateStatus and surface via UpdateBar.
-    // (AuthPanel handles refreshKeychain on its own mount.)
+    // Fire-and-forget silent check. v0.4.79: default is silent so
+    // routine no-update outcomes don't flash a 'You're on the latest
+    // version' banner on every launch — only an actual available
+    // update surfaces in UpdateBar. Sidebar footer's "Check for
+    // updates" button passes silent: false when the user wants
+    // confirmation their click did something.
     void app.checkForUpdate();
   });
 </script>

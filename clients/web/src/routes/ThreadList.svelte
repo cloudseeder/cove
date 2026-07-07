@@ -332,7 +332,7 @@
       v{app.appVersion}
       <span class="version-sep">·</span>
       <button type="button" class="check-updates"
-        onclick={() => app.checkForUpdate()}
+        onclick={() => app.checkForUpdate({ silent: false })}
         disabled={app.updateStatus.kind === 'checking'}>
         {app.updateStatus.kind === 'checking' ? 'Checking…' : 'Check for updates'}
       </button>
