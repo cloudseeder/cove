@@ -330,6 +330,12 @@
   {#if app.appVersion}
     <footer class="version" title="Cove app version">
       v{app.appVersion}
+      <span class="version-sep">·</span>
+      <button type="button" class="check-updates"
+        onclick={() => app.checkForUpdate()}
+        disabled={app.updateStatus.kind === 'checking'}>
+        {app.updateStatus.kind === 'checking' ? 'Checking…' : 'Check for updates'}
+      </button>
     </footer>
   {/if}
 </aside>
@@ -608,7 +614,26 @@
     text-align: center;
     user-select: none;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
   }
+  .version-sep { opacity: 0.5; }
+  .check-updates {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    text-decoration: underline;
+    text-decoration-style: dotted;
+    text-underline-offset: 2px;
+    font: inherit;
+    padding: 0;
+    cursor: pointer;
+  }
+  .check-updates:hover:not(:disabled) { color: var(--fg); }
+  .check-updates:disabled { opacity: 0.6; cursor: default; }
   form button:disabled {
     background: var(--border);
     color: var(--muted);

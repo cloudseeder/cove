@@ -78,8 +78,13 @@ type OnboardStatus =
 type UpdateStatus =
   | { kind: 'idle' }
   | { kind: 'checking' }
+  // Tauri path: an `AvailableUpdate` bundle awaits sig verification.
+  // PWA path: a fresh service worker is installed and ready — no bundle
+  // object, just a reload does it. The `pwa` variant carries no data.
   | { kind: 'available'; update: AvailableUpdate }
+  | { kind: 'available-pwa' }
   | { kind: 'installing'; downloaded: number; total: number | null }
+  | { kind: 'up-to-date' }   // transient success state after a manual check
   | { kind: 'error'; message: string };
 
 // Re-export the per-hub union types so existing consumers that import
@@ -209,6 +214,11 @@ export class AppState {
     // Resolve the bundle version asynchronously.
     appVersion().then((v) => { this.appVersion = v; });
     if (!this.inTauri) {
+      // v0.4.77: watch the service worker for a fresh version landing
+      // during the session, so UpdateBar can surface it without a hard
+      // quit + relaunch. checkForUpdate() drives the manual "Check for
+      // updates" affordance in the sidebar footer.
+      this.initPwaUpdates();
       void this.refreshVaultStatus();
       void requestPersistentStorage();
       // v0.4.74: PWA-only Passkey path. Feature-detect + read the
@@ -511,16 +521,84 @@ export class AppState {
    * about the everyday case.
    */
   async checkForUpdate(): Promise<void> {
-    if (!this.inTauri) return;
+    if (this.inTauri) {
+      this.updateStatus = { kind: 'checking' };
+      try {
+        const available = await updater.check();
+        this.updateStatus = available === null
+          ? { kind: 'idle' }
+          : { kind: 'available', update: available };
+      } catch (err) {
+        this.updateStatus = { kind: 'error', message: errMsg(err) };
+      }
+      return;
+    }
+    // PWA path — ask the browser to re-check /sw.js against origin.
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
     this.updateStatus = { kind: 'checking' };
     try {
-      const available = await updater.check();
-      this.updateStatus = available === null
-        ? { kind: 'idle' }
-        : { kind: 'available', update: available };
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg === undefined) {
+        this.updateStatus = { kind: 'up-to-date' };
+      } else {
+        await reg.update();
+        // If update() surfaces a fresh SW, the installedListener wired
+        // in initPwaUpdates() flips us to 'available-pwa'. Give it a
+        // beat, then fall back to 'up-to-date' if nothing changed.
+        setTimeout(() => {
+          if (this.updateStatus.kind === 'checking') {
+            this.updateStatus = { kind: 'up-to-date' };
+            setTimeout(() => {
+              if (this.updateStatus.kind === 'up-to-date') {
+                this.updateStatus = { kind: 'idle' };
+              }
+            }, 2500);
+          }
+        }, 1500);
+      }
     } catch (err) {
       this.updateStatus = { kind: 'error', message: errMsg(err) };
     }
+  }
+
+  /** v0.4.77: install a pending PWA update by reloading the page. The
+   *  new service worker activated on install (see sw.js's skipWaiting),
+   *  so the reload just needs to re-fetch the HTML shell — the fresh
+   *  chunks are already sitting in the SW's cache. */
+  applyPwaUpdate(): void {
+    if (this.inTauri) return;
+    this.updateStatus = { kind: 'installing', downloaded: 0, total: 1 };
+    // A short microtask delay so the "installing" state paints before
+    // the reload wipes the DOM.
+    setTimeout(() => location.reload(), 100);
+  }
+
+  /** Wire up service-worker update detection on PWA boot. Called from
+   *  the constructor when !inTauri. Watches the current registration for
+   *  a fresh SW landing in 'installed' state while there's already a
+   *  controller — that's the update case. Initial install (no prior
+   *  controller) is NOT surfaced as an update. */
+  private initPwaUpdates(): void {
+    if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+    void navigator.serviceWorker.getRegistration().then((reg) => {
+      if (!reg) return;
+      const armStateWatcher = (worker: ServiceWorker) => {
+        worker.addEventListener('statechange', () => {
+          if (worker.state === 'installed'
+              && navigator.serviceWorker.controller !== null) {
+            // Update case (not initial install).
+            this.updateStatus = { kind: 'available-pwa' };
+          }
+        });
+      };
+      if (reg.installing) armStateWatcher(reg.installing);
+      if (reg.waiting && navigator.serviceWorker.controller !== null) {
+        this.updateStatus = { kind: 'available-pwa' };
+      }
+      reg.addEventListener('updatefound', () => {
+        if (reg.installing) armStateWatcher(reg.installing);
+      });
+    });
   }
 
   /**

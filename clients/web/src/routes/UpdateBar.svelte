@@ -35,12 +35,31 @@
     </button>
     <button class="dismiss" onclick={dismiss} aria-label="Dismiss">×</button>
   </div>
+{:else if app.updateStatus.kind === 'available-pwa'}
+  <div class="bar bar-available" role="status">
+    <span class="msg">
+      A new version of Cove is ready. Reload to update.
+    </span>
+    <button class="install" onclick={() => app.applyPwaUpdate()}>
+      Reload
+    </button>
+    <button class="dismiss" onclick={dismiss} aria-label="Dismiss">×</button>
+  </div>
 {:else if app.updateStatus.kind === 'installing'}
   <div class="bar bar-installing" role="status">
     <span class="msg">
-      Verifying & installing
-      <span class="pct">{pct(app.updateStatus.downloaded, app.updateStatus.total)}</span>
+      {#if app.updateStatus.total === 1}
+        Reloading…
+      {:else}
+        Verifying & installing
+        <span class="pct">{pct(app.updateStatus.downloaded, app.updateStatus.total)}</span>
+      {/if}
     </span>
+  </div>
+{:else if app.updateStatus.kind === 'up-to-date'}
+  <div class="bar bar-installing" role="status">
+    <span class="msg">You're on the latest version.</span>
+    <button class="dismiss" onclick={dismiss} aria-label="Dismiss">×</button>
   </div>
 {:else if app.updateStatus.kind === 'error'}
   <div class="bar bar-error" role="alert">

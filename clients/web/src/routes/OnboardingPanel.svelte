@@ -268,7 +268,7 @@
     <div class="actions">
       <button type="button" class="ghost" onclick={onBack}
         disabled={isGenerating}>
-        I already have a key
+        ← Back
       </button>
       <button type="button" onclick={start}
         disabled={isGenerating || !nameHint.trim() || !hubUrl.trim()
