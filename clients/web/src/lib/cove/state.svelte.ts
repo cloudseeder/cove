@@ -1373,5 +1373,24 @@ export class AppState {
     const hub = this.addHub(opts.hubUrl);
     this.switchToHub(opts.hubUrl);
     await hub.authenticate(opts);
+    // v0.4.77: if the hub already holds a vault for the pubkey we just
+    // authenticated as, fetch it so AdminPanel's Identity vault section
+    // renders the actual slot list (not the Create-vault CTA), AND save
+    // the pubkey to localStorage so next launch lands on the
+    // Welcome-back panel. Skips silently if no vault exists — that's
+    // the fresh-onboard case where the user creates the vault
+    // themselves from AdminPanel.
+    if (hub.authStatus.kind === 'authenticated' && hub.client !== null) {
+      const pubkey = (hub.authStatus as { pubkey: string }).pubkey;
+      try {
+        const vault = await hub.client.fetchVault(pubkey);
+        if (vault) {
+          this.liveVault = vault;
+          saveVaultPubkeyFor(opts.hubUrl, pubkey);
+        }
+      } catch {
+        // Non-fatal — a vault fetch failure doesn't undo the sign-in.
+      }
+    }
   }
 }
