@@ -4,6 +4,158 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.77] — 2026-07-07
+
+Polish arc across the v0.4.76 identity-vault landing — sign-in ergonomics,
+deployment tooling, docs, and rough edges surfaced by the LWCCOA pilot's
+first real board-ready pass. No protocol changes; the wire is unchanged
+from v0.4.76.
+
+### Added
+- **"Welcome back to Cove" landing.** On the PWA, when we know your
+  pubkey for the current hub URL (persisted after any successful vault
+  sign-in), AuthPanel now renders a top-of-page welcome card with your
+  pubkey surfaced as "Signed in as ...", editable Hub URL, and Passkey
+  + Passphrase unlock buttons side by side. The old "Signing in from a
+  new device?" bottom collapse suppresses in this mode (redundant with
+  the top surface). "Use a different key" link falls back to paste
+  + Get started for shared devices.
+
+- **`scripts/genesis.sh`** — one-command clean-slate bootstrap per hub.
+  Wraps the docker compose down → wipe state → rebuild → containerized
+  bootstrap → SHA-verified custody handoff → docker compose up sequence
+  we'd been running by hand. Refuses to start the container while
+  `root.priv` is on disk. Two hubs on one host (production + testbed)
+  parameterized via a single argument: `./scripts/genesis.sh lwccoa`
+  or `./scripts/genesis.sh brooks`.
+
+- **`--reuse-pubkey` flag on `genesis.sh`** — federation bring-up. Skip
+  member keypair generation for the initial attestation and attest an
+  existing pubkey against the fresh hub root. Enables "same identity,
+  N hubs" bootstrap without a fresh invite / re-attest cycle on the
+  second hub.
+
+- **`scripts/rerole_member.py`** — change the role of an existing
+  attestation. Companion to `attest_member.py` (which refuses already-
+  attested pubkeys). Signs a fresh manifest with an offline root.priv
+  and posts to `/admin/attest`. Preserves display_name / affiliation
+  unless overridden.
+
+- **PWA "Check for updates" surface.** Extended the existing Tauri
+  UpdateBar to cover service-worker updates: when a new SW installs
+  while there's already a controller (i.e. an update, not initial
+  install), UpdateBar shows "A new version of Cove is ready. Reload
+  to update." with a Reload button. Sidebar footer next to the
+  version gains a "Check for updates" link that force-checks and
+  shows a transient "You're on the latest version" toast if nothing
+  new.
+
+- **`docs/identity-vault-spec.md`** — protocol specification for the
+  v0.4.76 vault. Companion to `server-hub-spec.md` and `client-spec.md`.
+  Covers trust model + non-negotiables preserved, design premise, wire
+  schema (record + slot types), hub responsibilities (endpoint 10-step
+  validation order, storage schema, throttler split), client
+  responsibilities (JCS canonicalization, multi-hub replication,
+  divergence resolution, session persistence, sign-in flows), extension
+  seam for new unlock methods, and an explicit list of boundaries the
+  vault does not touch.
+
+- **`/specs` on love.cove.oap.dev.** Hub, Client, and Identity Vault
+  specs are now published on the landing site with a hand-rolled
+  markdown renderer (no external deps, matches the plain-HTML-no-build
+  ethos). Every spec offers three read paths: rendered here, GitHub-
+  rendered, raw markdown. `scripts/sync_landing_specs.sh` copies
+  `docs/*.md` → `landing/specs/*.md` so the two stay in lockstep.
+
+- **`/start` guide rewrite.** Step 1 hub bootstrap points at
+  `genesis.sh` with the SHA-verified handoff walkthrough. Step 2
+  keymaster walks the paste → vault-create sequence. New Step 4
+  "Sign in on any device" covers Passkey vs. passphrase unlock, the
+  cross-ecosystem story (Apple + Google + Windows), the no-biometric-
+  hardware fallback, and the last-slot backup warning. New MacOS
+  callout on the Cove.app / PWA dock unification gotcha.
+
+### Fixed
+- **Passphrase-mode sign-in now populates the vault.** Pre-v0.4.77,
+  a paste sign-in on a device with an existing hub vault left
+  `liveVault` null — AdminPanel showed the "Create vault" CTA even
+  when the hub already had one (clicking Create would 409). Fix:
+  `connect()` now fetches `/vault/{pubkey}` after any successful
+  auth and populates `liveVault` + saves the pubkey to localStorage
+  if the hub confirms a vault exists. Silently skips on 404 (fresh
+  onboard case).
+
+- **AdminPanel Identity vault section renders for all signed-in
+  users.** The old gate hid the section on Tauri desktop until you
+  had a `liveVault`, which meant no way to seed the first vault
+  from a Tauri session. Removed the platform gate — the section is
+  shown to any authenticated user; the Create-vault CTA branch
+  handles the empty state.
+
+- **Fresh-hub bootstrap now attests role=board.** `bootstrap_pilot.py
+  --members` hardcodes `role=member`, which meant the initial member
+  couldn't see AdminPanel after their first sign-in. `genesis.sh`
+  writes an inline roster CSV with `role=board` + `title=Keymaster`
+  instead of using `--members`. Existing v0.4.76 deployments can
+  promote via `scripts/rerole_member.py`.
+
+- **`run_hub.py` passes an explicit `VaultStore` path.** Default
+  `data/hub.db` landed at `/app/data` in the container (unwritable
+  by uid 1000), so the hub crash-looped at import time. Explicit
+  `VaultStore(state / "data" / "cove.db")` puts the vaults table in
+  the same SQLite file as `EventStore`, distinct table, per the
+  vault-spec §4.2.
+
+- **`genesis.sh` bootstraps inside the container, not on host.**
+  Original version shelled out to `python scripts/bootstrap_pilot.py`
+  on the host, tripping the "running pip as root" warning if the
+  host lacked deps. Switched to `docker compose --profile setup run
+  --rm bootstrap` which uses the freshly-built image's Python.
+
+- **Admin CLIs send a browser-shaped User-Agent.** urllib's default
+  `Python-urllib/3.x` gets 1010'd by Cloudflare's default WAF rules.
+  Both `attest_member.py` and `rerole_member.py` now set
+  `user-agent: cove-admin-cli/0.4.77` on every request. Auth is on
+  the signed payload, so the UA value is cosmetic beyond dodging
+  the WAF.
+
+- **Onboarding back button now reads "← Back".** Was labeled "I
+  already have a key" — accurate but read like a different function
+  rather than a return path. Renamed for clarity.
+
+- **Spec renderer no longer double-escapes special chars.** The
+  landing-site markdown renderer escaped HTML on the whole string,
+  then extracted inline code from the already-escaped text, then
+  escaped again on restore. Any inline code containing `"`, `<`, `>`,
+  or `&` came out as literal `&quot;`, `&lt;`, etc. Fix: extract
+  code from raw text before escaping. Also restores `&` in link
+  URLs so hrefs with query strings don't come out with `&amp;`.
+
+- **WebAuthn user fields carry the slot label.** Vault Passkeys
+  were registering with hardcoded `user.name = 'cove-vault'` and
+  `user.displayName = 'Cove Vault'`, so the OS Passkey picker
+  showed multiple slots as identical entries — impossible to tell
+  them apart at unlock time. New registrations use the slot label
+  as `user.name` and `Cove vault: <label>` as `user.displayName`.
+  Applies to NEW Passkeys only; existing "cove-vault"-named
+  credentials need to be deleted from OS Passwords settings and
+  re-added to pick up the new naming.
+
+### Federation validated end-to-end
+- LWCCOA hub + Brooks-testbed hub, same Kevin Brooks pubkey attested
+  by each hub's own fresh root, `--reuse-pubkey` genesis path. Client
+  sidebar switcher lets him talk to both hubs from a single PWA
+  session, same identity chip on both. First real proof of the
+  "one keypair, N hubs" federation invariant end-to-end with the
+  v0.4.76 vault flow.
+
+### Known limitations (banked for future)
+- Passkey orphan detection: WebAuthn has no delete API, so a
+  partial-failure Add-Passkey (ceremony succeeds, vault push
+  fails) leaves an orphan credential in iCloud/Google Password
+  Manager. Cleanup is manual via OS Settings. Follow-up work
+  banked in the deferred-slices memory.
+
 ## [0.4.76] — 2026-07-05
 
 ### Added

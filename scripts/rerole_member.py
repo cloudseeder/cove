@@ -47,7 +47,7 @@ from cove.identity import (
 # ("Python-urllib/3.x") as a bot signature. Sending anything vaguely
 # browser-shaped bypasses the check — the actual auth is on the payload
 # sig (root-signed manifest), not the transport, so this is cosmetic.
-_UA = "cove-admin-cli/0.4.76"
+_UA = "cove-admin-cli/0.4.77"
 
 
 def _http_get(url: str) -> dict:

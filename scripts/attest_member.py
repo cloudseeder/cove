@@ -53,7 +53,7 @@ from cove.identity import (
 # signature — send anything vaguely non-Python-urllib and CF passes it
 # through. Auth is on the signed manifest, not the transport, so the UA
 # value doesn't matter beyond dodging the WAF.
-_UA = "cove-admin-cli/0.4.76"
+_UA = "cove-admin-cli/0.4.77"
 
 
 def _http_get(url: str) -> dict:
