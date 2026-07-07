@@ -181,7 +181,7 @@
         aria-label="Hide threads panel"
         onclick={() => app.closeSidebar()}
       >
-        ‹
+        ❮
       </button>
     </div>
   </header>
@@ -369,7 +369,10 @@
   }
   /* v0.4.79: sizes bumped from 1.1em / 0.1em 0.4em → 1.4em /
      0.3em 0.55em so board users on desktop and touch targets on
-     phones both have a comfortable click area. */
+     phones both have a comfortable click area. Every button also
+     carries min-width/min-height of 44px (Apple's touch guideline)
+     so slim glyphs like the collapse chevron get a full-size hit
+     region even when their visual weight is thin. */
   .refresh, .new-thread, .collapse {
     background: transparent;
     border: none;
@@ -379,12 +382,17 @@
     padding: 0.3em 0.55em;
     border-radius: 6px;
     line-height: 1;
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
   }
   .refresh:hover, .new-thread:hover, .collapse:hover {
     background: rgba(255, 255, 255, 0.04);
     color: var(--fg);
   }
-  .collapse { font-size: 1.6em; }
+  .collapse { font-size: 1.35em; }
   .new-thread {
     /* The + button is the primary action; tint it gold so it doesn't
        disappear next to the refresh control. */
