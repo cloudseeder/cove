@@ -299,18 +299,33 @@ function rpIdForVault(): string {
 }
 
 /** Register a NEW Passkey ceremony for the vault KEK. Returns the
- *  credential ID + a 32-byte AES-GCM key derived from the PRF output. */
-async function registerPasskeyKek(): Promise<{
+ *  credential ID + a 32-byte AES-GCM key derived from the PRF output.
+ *
+ *  `label` becomes the WebAuthn user.name and user.displayName — that's
+ *  what the OS Passkey picker shows at unlock time. Without this, every
+ *  Cove vault Passkey registered as "cove-vault" and the picker
+ *  couldn't distinguish between them (v0.4.76 bug: two Passkeys, same
+ *  displayed name, guesswork at unlock). */
+async function registerPasskeyKek(label: string): Promise<{
   credentialId: string;
   kek: CryptoKey;
 }> {
   const challenge = randomBytes(32);
   const userId = randomBytes(16);
   const salt = vaultPrfSalt();
+  // WebAuthn user fields shown by the OS Passkey picker:
+  //   displayName = human name (large in the picker)
+  //   name        = username-ish (smaller, below the displayName)
+  // Convention on Apple: both fields are shown; using the label for
+  // both is the clearest UX. Prefix the picker label with "Cove vault"
+  // so if the OS ever collapses names across sites, it's obvious this
+  // Passkey belongs to Cove.
+  const displayName = `Cove vault: ${label}`;
+  const userName = label;
   const cred = await navigator.credentials.create({
     publicKey: {
       rp: { id: rpIdForVault(), name: 'Cove' },
-      user: { id: userId as BufferSource, name: 'cove-vault', displayName: 'Cove Vault' },
+      user: { id: userId as BufferSource, name: userName, displayName },
       challenge: challenge as BufferSource,
       pubKeyCredParams: [
         { type: 'public-key', alg: -8 },
@@ -483,7 +498,7 @@ async function buildPasskeySlot(
   cek: Uint8Array,
   label: string,
 ): Promise<PasskeySlot> {
-  const { credentialId, kek } = await registerPasskeyKek();
+  const { credentialId, kek } = await registerPasskeyKek(label);
   const { wrap_iv, wrap_ciphertext } = await wrapCekWithKek(cek, kek);
   return {
     id: randomId(),
