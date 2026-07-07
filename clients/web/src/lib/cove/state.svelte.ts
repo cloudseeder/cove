@@ -8,6 +8,7 @@
  * preserved via delegating getters/methods so consumer .svelte files
  * are unchanged. See /home/brooks/.claude/plans/glimmering-fluttering-boole.md.
  */
+import { SvelteMap } from 'svelte/reactivity';
 import { Client, TauriKeychainSigner, type VerifiedEntry } from './client';
 import {
   HubConnection,
@@ -178,7 +179,13 @@ export class AppState {
   // `activeHub` so the 67 consumer .svelte sites don't need changes.
   // ---------------------------------------------------------------------
 
-  hubs = $state<Map<string, HubConnection>>(new Map());
+  // SvelteMap (from svelte/reactivity), not a plain Map. Plain Map
+  // mutations (set/delete) don't trigger $derived re-runs in Svelte 5 —
+  // only reassignment does. SvelteMap wraps each mutation with a signal
+  // update so HubSwitcher's `$derived([...app.hubs.entries()])` fires on
+  // every add/remove. Without this, adding a second hub via addHub()
+  // silently updates the Map but the sidebar never re-renders.
+  hubs = $state<Map<string, HubConnection>>(new SvelteMap());
   activeHubUrl = $state<string | null>(null);
   /** v0.4.69: when true, +page.svelte renders AddHubPanel as a modal
    *  overlay over ThreadView. Toggled by the sidebar switcher's
@@ -677,7 +684,7 @@ export class AppState {
    *  a "log out of everything". */
   logoutAll() {
     for (const hub of this.hubs.values()) hub.dispose();
-    this.hubs = new Map();
+    this.hubs = new SvelteMap();
     this.activeHubUrl = null;
     this.livePriv = null;
     // v0.4.76: wipe vault-derived material alongside livePriv. CEK is the
