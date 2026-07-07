@@ -138,22 +138,38 @@
     app.authStatus.kind === 'failed' ? app.authStatus.reason : null,
   );
 
+  // v0.4.76: whether we know the user's pubkey for the currently-typed
+  // hub URL (persisted after any successful vault sign-in). Drives the
+  // "Welcome back to Cove" landing hero. `useDifferentKey` is a per-
+  // session opt-out — clicking "Use a different key" flips it and
+  // pushes the mode chain into paste + Get started.
+  let useDifferentKey = $state(false);
+  let savedVaultPubkey = $derived(
+    useDifferentKey ? null : loadVaultPubkeyFor(hubUrl),
+  );
+
   // ---- which view? ----
+  //   - v0.4.76: PWA with a saved vault pubkey → pwa-vault-return.
+  //     Highest priority in the PWA branch — this is the primary
+  //     returning-user experience.
   //   - In Tauri w/ keys already in keychain → tauri-unlock.
   //   - In Tauri, no stored keys, NOT opted into paste → tauri-import.
   //   - In Tauri, opted into paste → paste (uses InJSSigner this session).
-  //   - v0.4.74: In browser/PWA w/ Passkey → pwa-passkey. Takes
-  //     precedence over vault when both exist — better UX.
-  //   - In browser/PWA w/ vault → pwa-unlock (v0.4.34).
+  //   - v0.4.74: In browser/PWA w/ Passkey → pwa-passkey (legacy;
+  //     device-local Passkey from before v0.4.76).
+  //   - In browser/PWA w/ vault → pwa-unlock (v0.4.34 device-local).
   //   - In browser/PWA, no vault → paste (or Get started via onOnboard).
   let mode = $derived<
-    'tauri-unlock' | 'tauri-import' | 'pwa-passkey' | 'pwa-unlock' | 'paste'
+    'tauri-unlock' | 'tauri-import' | 'pwa-vault-return'
+    | 'pwa-passkey' | 'pwa-unlock' | 'paste'
   >(
     app.inTauri && !useTauriPaste
       ? (app.storedPublicKey ? 'tauri-unlock' : 'tauri-import')
-      : (app.passkeySupported && app.passkeyStatus.exists
-        ? 'pwa-passkey'
-        : (app.vaultStatus.exists ? 'pwa-unlock' : 'paste')),
+      : (savedVaultPubkey !== null
+        ? 'pwa-vault-return'
+        : (app.passkeySupported && app.passkeyStatus.exists
+          ? 'pwa-passkey'
+          : (app.vaultStatus.exists ? 'pwa-unlock' : 'paste'))),
   );
 
   let passkeyUnlocking = $state(false);
@@ -267,7 +283,66 @@
 <section class="auth" ondrop={dropKeyfile} ondragover={preventDefault}
   aria-label="Connect to your hub">
 
-  {#if mode === 'tauri-unlock'}
+  {#if mode === 'pwa-vault-return'}
+    <!-- v0.4.76: primary returning-user experience on PWA. We have a
+         saved pubkey from a prior vault sign-in on this device — offer
+         Passkey unlock (one-tap biometric) and passphrase in parallel;
+         the user picks whichever slot they set up. Pubkey is known, so
+         no need to make them re-type it — surface it as a small
+         confirmation instead. -->
+    <h1>Welcome back to Cove</h1>
+    <p class="muted">
+      Sign in with your vault — one tap if you set up a Passkey, or
+      type your passphrase.
+    </p>
+
+    <div class="field">
+      <span class="field-label">Signed in as</span>
+      <code class="readonly">{savedVaultPubkey}</code>
+    </div>
+
+    <label>
+      <span>Hub URL</span>
+      <input type="url" bind:value={hubUrl}
+        placeholder="https://your-hub.example" />
+    </label>
+
+    <div class="actions">
+      <button type="button" onclick={unlockCrossDevicePasskey}
+        disabled={crossDeviceUnlocking || !savedVaultPubkey
+                  || !app.passkeySupported}>
+        {crossDeviceUnlocking ? 'Unlocking…' : '🔑 Sign in with Passkey'}
+      </button>
+    </div>
+
+    <p class="divider"><span>or</span></p>
+
+    <label>
+      <span>Vault passphrase</span>
+      <input type="password" bind:value={crossDevicePassphrase}
+        autocomplete="off" />
+    </label>
+    <div class="actions">
+      <button type="button" onclick={unlockCrossDeviceVault}
+        disabled={crossDeviceUnlocking || !savedVaultPubkey
+                  || !crossDevicePassphrase}>
+        {crossDeviceUnlocking ? 'Unlocking…' : '🔒 Sign in with passphrase'}
+      </button>
+    </div>
+
+    {#if crossDeviceUnlockError}
+      <p class="failure" role="alert">{crossDeviceUnlockError}</p>
+    {/if}
+
+    <p class="muted small" style="margin-top:1.5rem">
+      Signing in with a different identity? <button type="button"
+        onclick={() => useDifferentKey = true}
+        style="background:transparent;border:none;padding:0;color:var(--muted);text-decoration:underline;cursor:pointer">
+        Use a different key
+      </button>
+    </p>
+
+  {:else if mode === 'tauri-unlock'}
     <!-- Returning user. Keys already in the OS keychain. -->
     <h1>Welcome back</h1>
     <p class="muted">
@@ -518,14 +593,12 @@
     </div>
   {/if}
 
-  {#if !app.inTauri}
-    <!-- v0.4.76: sign-in via hub-stored identity vault. Two shapes fold
-         into one surface:
-           - Returning user on the SAME device: pubkey is pre-filled from
-             localStorage; the <details> is open by default; user unlocks
-             with Passkey (one-tap) or passphrase.
-           - Fresh device: pubkey field is empty; user pastes their
-             pubkey from another device or their notes, then unlocks. -->
+  {#if !app.inTauri && mode !== 'pwa-vault-return'}
+    <!-- v0.4.76: fresh-device vault sign-in. Only shown when the top
+         hero ISN'T already the vault-return welcome-back — otherwise
+         we'd surface the same unlock affordance twice. Cross-device
+         means: "I have an identity elsewhere, this device has no
+         localStorage of it yet." -->
     <details class="cross-device" bind:open={crossDeviceOpen}>
       <summary>
         {crossDevicePubkey ? 'Welcome back — sign in with your vault'
