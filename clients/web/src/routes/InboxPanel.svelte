@@ -69,7 +69,7 @@
   // available regardless of route.
 </script>
 
-<section class="inbox" aria-label="Inbox">
+<section class="inbox" class:sidebar-closed={!app.sidebarOpen} aria-label="Inbox">
   <header>
     <div>
       <h1>Inbox</h1>
@@ -188,6 +188,15 @@
     justify-content: space-between;
     padding: 1.4rem 2rem 1rem;
     border-bottom: 1px solid var(--border);
+  }
+  /* v0.4.77: when the sidebar is closed the hamburger toggle floats
+     absolute at top-left of the layout — reserve room for it on the
+     header so "Inbox" doesn't sit under the button. Only fires in the
+     collapsed-sidebar state; when the sidebar is open the toggle
+     doesn't render (see ThreadView.svelte) and the header keeps its
+     normal padding. */
+  .sidebar-closed > header {
+    padding-left: 4rem;
   }
   /* v0.4.45: leave room for the sidebar-toggle button on mobile.
      v0.4.46: honor the iPhone status-bar / notch safe area on the top,
