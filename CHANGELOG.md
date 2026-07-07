@@ -4,6 +4,37 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.79] — 2026-07-07
+
+Board-rollout polish + admin-CLI reach.
+
+### Added
+- **`scripts/mint_invite.py`** — CLI companion for the AdminPanel's
+  mint-invite flow. Same offline-root.priv + signed-payload shape as
+  `attest_member.py` and `rerole_member.py`, POSTs to `/admin/invites`,
+  prints the code + expiry. Fills the gap when the keymaster device is
+  a PWA-only Mac (no root-key custody there — that's Tauri-only via the
+  OS keychain). Ships with the same Cloudflare-WAF-dodging UA header as
+  the other admin CLIs.
+
+### Fixed
+- **PWA no longer flashes "You're on the latest version" on login.**
+  The auto-check on page mount ran `updateStatus` through
+  `checking → up-to-date → idle`, producing a distracting flash across
+  every launch. Fix: `checkForUpdate({silent = true})` — the routine
+  no-update outcome is now completely invisible; only an actual
+  `available` / `error` state surfaces. The sidebar footer's manual
+  "Check for updates" button passes `silent: false` so a user click
+  still gets the toast confirmation.
+
+- **Sidebar header buttons are properly-sized tap targets.** The `+`
+  (new thread), `↻` (refresh), and collapse chevron were around 16×16
+  px — well below Apple's 44×44 pt and Google's 48×48 dp guidelines.
+  Bumped fonts to 1.4em+ and added `min-width: 44px; min-height: 44px`
+  so slim glyphs still get a full-size hit region. Also swapped the
+  slim `‹` collapse chevron for the heavier `❮` (glyph visual weight
+  matters when fingers are close-but-not-precise).
+
 ## [0.4.78] — 2026-07-07
 
 Two focused fixes surfaced during the federation demo.
