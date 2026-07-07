@@ -4,6 +4,29 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.78] — 2026-07-07
+
+Two focused fixes surfaced during the federation demo.
+
+### Fixed
+- **Federation sidebar didn't update after Add-Hub.** `AppState.hubs`
+  was a plain `Map`; in Svelte 5, `Map.set()` mutations don't trigger
+  `$derived` re-runs — only whole-Map reassignment does. HubSwitcher's
+  `$derived([...app.hubs.entries()])` therefore only saw hubs added
+  during the constructor's `restoreHubsFromStorage()` pass; every
+  subsequent `addHub()` (via AddHubPanel, `connect()`, silent re-auth)
+  landed in the Map but the sidebar never re-rendered — attempting to
+  add the same URL again fired the "already connected" guard, so the
+  hub was actually present, just invisible. Fix: `SvelteMap` from
+  `svelte/reactivity`, which wraps every mutation with a signal update.
+
+- **"Inbox" title sat under the hamburger toggle on desktop.** When the
+  sidebar was collapsed, the toggle floated absolute at top-left of the
+  layout, overlapping the InboxPanel header text. Mobile already had a
+  `padding-left: 3.8rem` compensation via the `max-width: 640px` rule;
+  add a `.sidebar-closed > header` selector that fires on desktop too,
+  reserving 4rem of left padding whenever the toggle is visible.
+
 ## [0.4.77] — 2026-07-07
 
 Polish arc across the v0.4.76 identity-vault landing — sign-in ergonomics,
