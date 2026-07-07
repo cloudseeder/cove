@@ -29,6 +29,28 @@
 set -euo pipefail
 
 HUB="${1:-}"
+shift 2>/dev/null || true
+
+# Optional flags after the hub name.
+REUSE_PUBKEY=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reuse-pubkey)
+      REUSE_PUBKEY="$2"
+      shift 2
+      ;;
+    --reuse-pubkey=*)
+      REUSE_PUBKEY="${1#*=}"
+      shift
+      ;;
+    *)
+      echo "unknown flag: $1" >&2
+      echo "usage: $0 {lwccoa|brooks} [--reuse-pubkey <64-hex>]" >&2
+      exit 2
+      ;;
+  esac
+done
+
 case "$HUB" in
   lwccoa)
     export COMPOSE_PROJECT_NAME=lwccoa
@@ -47,10 +69,17 @@ case "$HUB" in
     ORG_NAME="Brooks testbed"
     ;;
   *)
-    echo "usage: $0 {lwccoa|brooks}" >&2
+    echo "usage: $0 {lwccoa|brooks} [--reuse-pubkey <64-hex>]" >&2
     exit 2
     ;;
 esac
+
+if [ -n "$REUSE_PUBKEY" ]; then
+  if ! echo "$REUSE_PUBKEY" | grep -qE '^[0-9a-f]{64}$'; then
+    echo "error: --reuse-pubkey must be 64 lowercase hex chars" >&2
+    exit 2
+  fi
+fi
 
 MEMBER_NAME="Kevin Brooks"
 MEMBER_SLUG="kevin-brooks"
@@ -108,13 +137,29 @@ docker compose build --no-cache
 # Uses a roster CSV (not --members) so the initial attestation carries
 # role=board — otherwise --members hard-codes role=member and AdminPanel
 # stays hidden until you rerun scripts/rerole_member.py.
-say "Step 4/6: docker compose run bootstrap — fresh root + hub keypair"
+#
+# When --reuse-pubkey is set, the roster carries an existing pubkey and
+# bootstrap_pilot.py skips member-keypair generation (v0.4.65 pubkey
+# column) — that pubkey gets attested against this hub's fresh root,
+# federating the same identity across both hubs.
+if [ -n "$REUSE_PUBKEY" ]; then
+  say "Step 4/6: docker compose run bootstrap — fresh root, reusing pubkey ${REUSE_PUBKEY:0:12}…"
+else
+  say "Step 4/6: docker compose run bootstrap — fresh root + hub keypair"
+fi
 ROSTER_PATH="$COVE_STATE_DIR/.genesis-roster.csv"
 mkdir -p "$COVE_STATE_DIR"
-cat > "$ROSTER_PATH" <<EOF
+if [ -n "$REUSE_PUBKEY" ]; then
+  cat > "$ROSTER_PATH" <<EOF
+display_name,affiliation,role,title,key_name,pubkey
+${MEMBER_NAME},board,board,Keymaster,${MEMBER_SLUG},${REUSE_PUBKEY}
+EOF
+else
+  cat > "$ROSTER_PATH" <<EOF
 display_name,affiliation,role,title,key_name
 ${MEMBER_NAME},board,board,Keymaster,${MEMBER_SLUG}
 EOF
+fi
 docker compose --profile setup run --rm bootstrap \
   --org-name "$ORG_NAME" \
   --roster "/state/.genesis-roster.csv" \
@@ -201,11 +246,24 @@ curl -sS --max-time 5 -o /dev/null -w "HTTP %{http_code}  (expect 404)\n" \
 echo
 say "Genesis for ${HUB} complete."
 echo
-echo "Next steps:"
-echo "  1. On your PWA (https://app.cove.oap.dev), sign in via AuthPanel"
-echo "     paste mode: import the ${MEMBER_SLUG}.priv + .pub you saved."
-echo "     Hub URL: https://${HUB_HOST}"
-echo "  2. Once signed in, AdminPanel → Identity vault → Add passphrase"
-echo "     seeds your hub-stored vault. Then Add Passkey for one-tap sign-in."
-echo "  3. From a second device, use the 'Signing in from a new device?'"
-echo "     surface in AuthPanel to unlock via the vault."
+if [ -n "$REUSE_PUBKEY" ]; then
+  echo "Next steps (federation mode — reused pubkey ${REUSE_PUBKEY:0:12}…):"
+  echo "  1. On your PWA, you're ALREADY signed in via the vault. Open the"
+  echo "     sidebar hub switcher → '+ Add another hub' → enter"
+  echo "     https://${HUB_HOST}. The client reuses your live priv, and"
+  echo "     this hub already has your pubkey attested — no fresh invite."
+  echo "  2. Post a message from ${HUB} and verify it renders as the same"
+  echo "     identity your other hub knows."
+  echo "  3. Optional: create a hub-side vault on ${HUB} too (Admin →"
+  echo "     Identity vault) — the client fans out vault writes to every"
+  echo "     joined hub, so a slot rotation propagates automatically."
+else
+  echo "Next steps:"
+  echo "  1. On your PWA (https://app.cove.oap.dev), sign in via AuthPanel"
+  echo "     paste mode: import the ${MEMBER_SLUG}.priv + .pub you saved."
+  echo "     Hub URL: https://${HUB_HOST}"
+  echo "  2. Once signed in, AdminPanel → Identity vault → Add passphrase"
+  echo "     seeds your hub-stored vault. Then Add Passkey for one-tap sign-in."
+  echo "  3. From a second device, use the 'Signing in from a new device?'"
+  echo "     surface in AuthPanel to unlock via the vault."
+fi
