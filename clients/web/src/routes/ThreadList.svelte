@@ -365,29 +365,32 @@
     font-weight: 600;
   }
   .header-actions {
-    display: flex; align-items: center; gap: 0.25rem;
+    display: flex; align-items: center; gap: 0.4rem;
   }
+  /* v0.4.79: sizes bumped from 1.1em / 0.1em 0.4em → 1.4em /
+     0.3em 0.55em so board users on desktop and touch targets on
+     phones both have a comfortable click area. */
   .refresh, .new-thread, .collapse {
     background: transparent;
     border: none;
     color: var(--muted);
-    font-size: 1.1em;
+    font-size: 1.4em;
     cursor: pointer;
-    padding: 0.1em 0.4em;
-    border-radius: 4px;
+    padding: 0.3em 0.55em;
+    border-radius: 6px;
     line-height: 1;
   }
   .refresh:hover, .new-thread:hover, .collapse:hover {
     background: rgba(255, 255, 255, 0.04);
     color: var(--fg);
   }
-  .collapse { font-size: 1.25em; }
+  .collapse { font-size: 1.6em; }
   .new-thread {
     /* The + button is the primary action; tint it gold so it doesn't
        disappear next to the refresh control. */
     color: #d4af37;
     font-weight: 600;
-    font-size: 1.2em;
+    font-size: 1.55em;
   }
   .new-thread:hover { color: #e8c96b; }
   ul {
