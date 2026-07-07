@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Specs — Cove</title>
+  <meta name="description" content="Protocol specifications for the Cove hub, client, and identity vault." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E🪶%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #fbf7ee;
+      --panel: #ffffff;
+      --fg: #2b2620;
+      --muted: #6f6a60;
+      --border: #e6ddc9;
+      --gold: #b8892f;
+      --gold-soft: #f0e2b8;
+      --serif: "Iowan Old Style", "Palatino", "Georgia", ui-serif, serif;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17140f;
+        --panel: #1e1a13;
+        --fg: #f2ead8;
+        --muted: #9c948a;
+        --border: #33291b;
+        --gold: #d4af37;
+        --gold-soft: rgba(212, 175, 55, 0.15);
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--fg);
+      font-family: var(--sans);
+      font-size: 17px; line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 720px; margin: 0 auto;
+      padding: 2.5rem 1.5rem 4rem;
+    }
+    .back {
+      display: inline-block;
+      color: var(--muted); font-size: 0.9rem;
+      text-decoration: none; margin-bottom: 1.5rem;
+      border-bottom: 1px dotted var(--border);
+    }
+    .back:hover { color: var(--gold); border-color: var(--gold); }
+    h1 {
+      font-family: var(--serif); font-weight: 400;
+      font-size: clamp(1.9rem, 4.5vw, 2.6rem);
+      line-height: 1.15; letter-spacing: -0.01em;
+      margin: 0 0 0.6rem;
+    }
+    .subhead {
+      color: var(--muted); font-size: 1.1rem;
+      margin: 0 0 2.5rem; line-height: 1.4;
+    }
+    .spec-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.4rem 1.6rem;
+      margin: 1.2rem 0;
+      transition: border-color 120ms;
+    }
+    .spec-card:hover { border-color: var(--gold); }
+    .spec-card h2 {
+      font-family: var(--serif); font-weight: 400;
+      font-size: 1.35rem; margin: 0 0 0.4rem;
+      letter-spacing: -0.005em;
+    }
+    .spec-card p { margin: 0 0 0.7rem; color: var(--muted); font-size: 0.95rem; }
+    .spec-card p.lead { color: var(--fg); }
+    .spec-links {
+      display: flex; gap: 0.9rem; flex-wrap: wrap;
+      margin-top: 0.8rem; font-size: 0.9rem;
+    }
+    .spec-links a {
+      color: var(--gold); text-decoration: none;
+      border-bottom: 1px solid var(--gold-soft);
+    }
+    .spec-links a:hover { border-bottom-color: var(--gold); color: var(--fg); }
+    .disclaimer {
+      background: var(--gold-soft); border-radius: 8px;
+      padding: 0.9rem 1.1rem; margin: 2rem 0;
+      font-size: 0.94rem; color: var(--fg);
+      border-left: 3px solid var(--gold);
+    }
+    footer {
+      margin-top: 4rem; padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted); font-size: 0.88rem;
+      display: flex; justify-content: space-between;
+      flex-wrap: wrap; gap: 0.8rem;
+    }
+    footer a { color: var(--muted); border-bottom: 1px dotted var(--border); text-decoration: none; }
+    footer a:hover { color: var(--gold); border-color: var(--gold); }
+    @media (max-width: 480px) {
+      .wrap { padding: 1.5rem 1.1rem 3rem; }
+      h1 { font-size: 1.7rem; }
+      .spec-card { padding: 1.1rem 1.2rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/" class="back">&larr; back to overview</a>
+
+  <h1>Specifications.</h1>
+  <p class="subhead">
+    Cove is a protocol before it&rsquo;s an app. Three specs define what runs on the wire; the reference implementation follows them.
+  </p>
+
+  <div class="disclaimer">
+    These are technical documents. If you&rsquo;re evaluating Cove for your group&rsquo;s day-to-day communication, the <a href="/">overview</a> and <a href="/start">getting-started guide</a> are the right entry points. Come back here when you want to verify security claims yourself, integrate a third-party client, or run a hub with confidence about what it does and doesn&rsquo;t promise.
+  </div>
+
+  <div class="spec-card">
+    <h2>Hub Specification</h2>
+    <p class="lead">
+      The protocol authority. Defines the canonical data model &mdash; keys, attestations, entries, threads &mdash; the wire protocol, and every responsibility the hub carries: acceptance pipeline, tamper-evident log, throttle bounds, signed tree heads, inclusion and consistency proofs. Also states honestly what a malicious hub still could do (withhold, potentially equivocate) and what it structurally cannot (forge, silently rewrite history).
+    </p>
+    <div class="spec-links">
+      <a href="/specs/hub.html">Read here</a>
+      <a href="https://github.com/cloudseeder/cove/blob/main/docs/server-hub-spec.md">Read on GitHub</a>
+      <a href="/specs/hub.md">Raw markdown</a>
+    </div>
+  </div>
+
+  <div class="spec-card">
+    <h2>Client Specification</h2>
+    <p class="lead">
+      What every Cove client &mdash; PWA, desktop, future mobile &mdash; must do to be a compliant participant. Key custody, entry construction and signing, the §5 verification chain that runs on every incoming entry, receipt emission, push behavior, offline handling. The client trusts the hub for availability and ordering, the directory for identity, and no one for content integrity.
+    </p>
+    <div class="spec-links">
+      <a href="/specs/client.html">Read here</a>
+      <a href="https://github.com/cloudseeder/cove/blob/main/docs/client-spec.md">Read on GitHub</a>
+      <a href="/specs/client.md">Raw markdown</a>
+    </div>
+  </div>
+
+  <div class="spec-card">
+    <h2>Identity Vault Specification</h2>
+    <p class="lead">
+      How one keypair travels across every device you use &mdash; iCloud, Google, Windows, Linux &mdash; without the ecosystems needing to talk to each other. Two-layer encryption, multi-recipient wrapping, hub-stored ciphertext, per-pubkey chain CAS. Preserves every existing non-negotiable: the hub still holds no private keys, still can&rsquo;t forge, still can&rsquo;t rewrite. Adds one new residual (rollback attack, mitigation stated).
+    </p>
+    <div class="spec-links">
+      <a href="/specs/vault.html">Read here</a>
+      <a href="https://github.com/cloudseeder/cove/blob/main/docs/identity-vault-spec.md">Read on GitHub</a>
+      <a href="/specs/vault.md">Raw markdown</a>
+    </div>
+  </div>
+
+  <p style="margin-top: 3rem; color: var(--muted); font-size: 0.95rem;">
+    These docs are Draft 0.1. They evolve with the pilot. When a spec section number changes, the CHANGELOG entry notes it; the git history is the audit trail.
+  </p>
+
+  <footer>
+    <span>Cove is a project by <a href="https://oap.dev">oap.dev</a>.</span>
+    <span>
+      <a href="https://github.com/cloudseeder/cove">Source</a> &middot;
+      <a href="/start">Get started</a> &middot;
+      <a href="/rules">Rules</a> &middot;
+      <a href="https://app.cove.oap.dev">App</a> &middot;
+      <a href="/">Home</a>
+    </span>
+  </footer>
+</div>
+</body>
+</html>

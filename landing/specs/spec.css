@@ -1,0 +1,141 @@
+:root {
+  --bg: #fbf7ee;
+  --panel: #ffffff;
+  --fg: #2b2620;
+  --muted: #6f6a60;
+  --border: #e6ddc9;
+  --gold: #b8892f;
+  --gold-soft: #f0e2b8;
+  --code-bg: #f2ecdc;
+  --serif: "Iowan Old Style", "Palatino", "Georgia", ui-serif, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #17140f;
+    --panel: #1e1a13;
+    --fg: #f2ead8;
+    --muted: #9c948a;
+    --border: #33291b;
+    --gold: #d4af37;
+    --gold-soft: rgba(212, 175, 55, 0.15);
+    --code-bg: #23200c;
+  }
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  background: var(--bg); color: var(--fg);
+  font-family: var(--sans);
+  font-size: 16px; line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap {
+  max-width: 780px; margin: 0 auto;
+  padding: 2rem 1.5rem 4rem;
+}
+.back {
+  display: inline-block;
+  color: var(--muted); font-size: 0.9rem;
+  text-decoration: none; margin-bottom: 1.5rem;
+  border-bottom: 1px dotted var(--border);
+}
+.back:hover { color: var(--gold); border-color: var(--gold); }
+.spec-content h1 {
+  font-family: var(--serif); font-weight: 400;
+  font-size: clamp(1.9rem, 4vw, 2.4rem);
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  margin: 0 0 1.5rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border);
+}
+.spec-content h2 {
+  font-family: var(--serif); font-weight: 400;
+  font-size: 1.55rem; letter-spacing: -0.005em;
+  margin: 3rem 0 0.9rem;
+}
+.spec-content h3 {
+  font-weight: 600; font-size: 1.15rem;
+  margin: 2rem 0 0.6rem;
+}
+.spec-content h4 {
+  font-weight: 600; font-size: 1rem;
+  margin: 1.4rem 0 0.5rem;
+  color: var(--muted);
+}
+.spec-content p { margin: 0 0 1rem; }
+.spec-content ul, .spec-content ol { margin: 0 0 1rem; padding-left: 1.5rem; }
+.spec-content li { margin: 0.2rem 0; }
+.spec-content a { color: var(--gold); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.spec-content a:hover { color: var(--fg); }
+.spec-content strong { font-weight: 600; color: var(--fg); }
+.spec-content em { font-style: italic; }
+.spec-content code {
+  background: var(--code-bg);
+  padding: 0.1rem 0.35rem;
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 0.9em;
+}
+.spec-content pre {
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0.5rem 0 1.3rem;
+}
+.spec-content pre code {
+  background: transparent; padding: 0; font-size: inherit;
+}
+.spec-content blockquote {
+  margin: 0 0 1rem;
+  padding: 0.6rem 1rem;
+  border-left: 3px solid var(--gold);
+  background: var(--gold-soft);
+  color: var(--fg);
+  border-radius: 0 6px 6px 0;
+}
+.spec-content blockquote p:last-child { margin-bottom: 0; }
+.spec-content hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2.5rem 0;
+}
+.spec-content table {
+  border-collapse: collapse;
+  margin: 0 0 1.2rem;
+  width: 100%;
+}
+.spec-content th, .spec-content td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.7rem;
+  text-align: left;
+  font-size: 0.92rem;
+}
+.spec-content th { background: var(--panel); font-weight: 600; }
+.loading, .error {
+  color: var(--muted);
+  font-style: italic;
+  padding: 2rem 0;
+  text-align: center;
+}
+.error { color: var(--danger, #8a3a2b); font-style: normal; }
+footer {
+  margin-top: 4rem; padding-top: 2rem;
+  border-top: 1px solid var(--border);
+  color: var(--muted); font-size: 0.88rem;
+  display: flex; justify-content: space-between;
+  flex-wrap: wrap; gap: 0.8rem;
+}
+footer a { color: var(--muted); border-bottom: 1px dotted var(--border); text-decoration: none; }
+footer a:hover { color: var(--gold); border-color: var(--gold); }
+@media (max-width: 480px) {
+  .wrap { padding: 1.5rem 1.1rem 3rem; }
+  .spec-content pre { font-size: 0.78rem; }
+}
