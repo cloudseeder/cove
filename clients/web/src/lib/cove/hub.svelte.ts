@@ -216,9 +216,34 @@ export class HubConnection {
    *  op that would previously build a fresh RootSigner uses this
    *  helper so per-hub root-keychain slots (Rust side) are addressed
    *  correctly. Falls back to the legacy un-suffixed slot when the
-   *  manifest hasn't loaded yet — same behavior as pre-v0.4.73. */
+   *  manifest hasn't loaded yet — same behavior as pre-v0.4.73.
+   *
+   *  v0.4.80: PWA path. When !inTauri, use the decrypted root priv
+   *  held in AppState.liveRootPriv. If it's null, the admin op throws
+   *  a clear error the UI can catch and prompt an unlock ceremony. */
   private rootSigner(): RootSigner {
     const org = this.manifest?.org;
+    if (!this.app.inTauri) {
+      return {
+        sign: async (m) => {
+          const priv = this.app.liveRootPriv;
+          if (!priv) {
+            throw new Error(
+              'Root vault is locked. Open Admin → Root key custody '
+              + 'and enter your passphrase to unlock.',
+            );
+          }
+          const { sign: signMessage } = await import('./crypto');
+          return signMessage(priv, m);
+        },
+        pubkey: async () => {
+          const { rootVaultStatus } = await import('./root-vault');
+          const st = await rootVaultStatus(org ?? '');
+          if (!st.public_key) throw new Error('root vault has no pubkey record');
+          return st.public_key;
+        },
+      };
+    }
     return {
       sign: (m) => rootKeychain.signMessage(m, org),
       pubkey: async () => (await rootKeychain.status(org)).public_key!,

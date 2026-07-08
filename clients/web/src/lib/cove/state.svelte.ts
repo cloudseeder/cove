@@ -49,6 +49,12 @@ import {
   unlockWithPassphrase as vaultUnlockPassphrase,
   type FirstUnlockChoice, type MethodSlot, type VaultRecord,
 } from './vault-blob';
+import {
+  clearRootVault as clearRootVaultIdb,
+  importRootToVault,
+  rootVaultStatus,
+  unlockRootVault,
+} from './root-vault';
 import { StaleVaultError } from './errors';
 
 // Tauri's invoke() rejects with a raw string when the Rust side returns
@@ -140,8 +146,16 @@ export class AppState {
   );
   /** v0.4.0: state of the on-device-keygen onboarding flow. */
   onboardStatus = $state<OnboardStatus>({ kind: 'idle' });
-  /** v0.4.0: keymaster mode. True when the ROOT_PRIV_SLOT has a root key. */
+  /** v0.4.0: keymaster mode. True when the ROOT_PRIV_SLOT has a root key.
+   *  Tauri: reads from OS keychain. PWA (v0.4.80): reads from
+   *  cove-root-vault IndexedDB. Either way it reflects "a root exists
+   *  for the currently-active hub." */
   rootKeysPresent = $state<boolean>(false);
+  /** v0.4.80: decrypted root priv held in memory for the current
+   *  session. Set by `unlockRootVaultPwa`; wiped by `lockRootVault`
+   *  and `logoutAll`. Null when Tauri (root ops go through the
+   *  keychain) or when the PWA vault hasn't been unlocked this session. */
+  liveRootPriv = $state<string | null>(null);
 
   /** Cancel handle for the WS /pending/watch — calling it tears the socket
    *  down without rejecting. */
@@ -488,35 +502,89 @@ export class AppState {
     return this.activeHub?.manifest?.org;
   }
 
-  /** Re-read the root keychain slot for the active hub. Sets
-   *  `rootKeysPresent` to reflect whether *the currently-active hub's*
-   *  root key is loaded. */
+  /** Re-read the root store for the active hub. Tauri: OS keychain.
+   *  PWA: cove-root-vault IndexedDB. Sets `rootKeysPresent` to reflect
+   *  whether a root record exists for the currently-active hub's org. */
   async refreshRootKeychain(): Promise<void> {
-    if (!this.inTauri) { this.rootKeysPresent = false; return; }
-    const st = await rootKeychain.status(this.activeOrgKey());
-    this.rootKeysPresent = st.has_keys;
+    const org = this.activeOrgKey();
+    if (this.inTauri) {
+      const st = await rootKeychain.status(org);
+      this.rootKeysPresent = st.has_keys;
+      return;
+    }
+    // PWA path.
+    if (!org) { this.rootKeysPresent = false; return; }
+    const st = await rootVaultStatus(org);
+    this.rootKeysPresent = st.present;
   }
 
   /** Import the org root keypair into the active hub's dedicated slot.
-   *  Multiple hubs each get their own slot keyed by org pubkey. */
-  async importRootKeys(privateKey: string, publicKey: string): Promise<void> {
-    if (!this.inTauri) throw new Error('root key custody requires the Tauri shell');
-    await rootKeychain.import(privateKey, publicKey, this.activeOrgKey());
-    await this.refreshRootKeychain();
-    if (!this.rootKeysPresent) {
-      throw new Error(
-        'Root key import did not persist. The OS keychain returned OK '
-        + 'but a subsequent read returned no entry. Check Console.app '
-        + '(macOS) or the keyring logs for details.',
-      );
+   *
+   *  Tauri: writes to OS keychain via the `keyring` crate. `passphrase`
+   *  is ignored.
+   *
+   *  PWA (v0.4.80+): encrypts under a PBKDF2-derived KEK and writes to
+   *  cove-root-vault IndexedDB. `passphrase` is required — at least
+   *  12 characters. Signing operations then require unlockRootVaultPwa
+   *  first (which decrypts + holds the priv in memory for the session).
+   */
+  async importRootKeys(
+    privateKey: string, publicKey: string, passphrase?: string,
+  ): Promise<void> {
+    const org = this.activeOrgKey();
+    if (this.inTauri) {
+      await rootKeychain.import(privateKey, publicKey, org);
+      await this.refreshRootKeychain();
+      if (!this.rootKeysPresent) {
+        throw new Error(
+          'Root key import did not persist. The OS keychain returned OK '
+          + 'but a subsequent read returned no entry. Check Console.app '
+          + '(macOS) or the keyring logs for details.',
+        );
+      }
+      return;
     }
+    // PWA path.
+    if (!org) {
+      throw new Error('cannot import root key without an active hub org');
+    }
+    if (!passphrase) {
+      throw new Error('PWA root import requires a passphrase');
+    }
+    await importRootToVault({ privateKey, publicKey, passphrase, org });
+    // Immediately live-load the priv so the first admin op after import
+    // doesn't require a separate unlock ceremony.
+    this.liveRootPriv = privateKey;
+    await this.refreshRootKeychain();
+  }
+
+  /** v0.4.80: PWA-only. Decrypt the root priv from IndexedDB with the
+   *  user's passphrase and hold it in memory for the session. Every
+   *  admin op then routes through liveRootPriv. */
+  async unlockRootVaultPwa(passphrase: string): Promise<void> {
+    if (this.inTauri) return;
+    const org = this.activeOrgKey();
+    if (!org) throw new Error('no active hub org to unlock root for');
+    this.liveRootPriv = await unlockRootVault({ passphrase, org });
+  }
+
+  /** v0.4.80: PWA-only. Wipe the decrypted root priv from memory. The
+   *  encrypted record in IndexedDB stays; a subsequent
+   *  unlockRootVaultPwa call re-decrypts it. */
+  lockRootVault(): void {
+    this.liveRootPriv = null;
   }
 
   /** Wipe the root slot for the active hub. Other hubs' root keys are
-   *  untouched. */
+   *  untouched. Also wipes the in-memory decrypted priv on PWA. */
   async clearRootKeys(): Promise<void> {
-    if (!this.inTauri) return;
-    await rootKeychain.clear(this.activeOrgKey());
+    const org = this.activeOrgKey();
+    if (this.inTauri) {
+      await rootKeychain.clear(org);
+    } else if (org) {
+      await clearRootVaultIdb(org);
+      this.liveRootPriv = null;
+    }
     await this.refreshRootKeychain();
   }
 
@@ -712,6 +780,9 @@ export class AppState {
     this.liveCek = null;
     this.liveVault = null;
     this.vaultPushFailures = [];
+    // v0.4.80: wipe the decrypted root priv on logout. The encrypted
+    // record in IndexedDB stays; the user re-unlocks on next login.
+    this.liveRootPriv = null;
     saveHubUrls([]);
     saveActiveHubUrl(null);
   }

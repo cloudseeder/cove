@@ -299,6 +299,12 @@
   let rootPub = $state('');
   let rootImporting = $state(false);
   let rootImportError = $state<string | null>(null);
+  // v0.4.80: PWA root custody. Passphrase for import; separate one for
+  // unlock. Both required only on PWA — Tauri ignores them.
+  let rootImportPassphrase = $state('');
+  let rootUnlockPassphrase = $state('');
+  let rootUnlocking = $state(false);
+  let rootUnlockError = $state<string | null>(null);
 
   // v0.4.13: org default_thread setter.
   // currentDefault is what the hub says the org's hint is right now —
@@ -487,8 +493,13 @@
     rootImportError = null;
     rootImporting = true;
     try {
-      await app.importRootKeys(rootPriv.trim(), rootPub.trim());
+      await app.importRootKeys(
+        rootPriv.trim(),
+        rootPub.trim(),
+        app.inTauri ? undefined : rootImportPassphrase,
+      );
       rootPriv = '';
+      rootImportPassphrase = '';
     } catch (err) {
       rootImportError = (err as Error).message;
     } finally {
@@ -498,6 +509,23 @@
 
   async function clearRoot() {
     await app.clearRootKeys();
+  }
+
+  async function unlockRoot() {
+    rootUnlockError = null;
+    rootUnlocking = true;
+    try {
+      await app.unlockRootVaultPwa(rootUnlockPassphrase);
+      rootUnlockPassphrase = '';
+    } catch (err) {
+      rootUnlockError = (err as Error).message;
+    } finally {
+      rootUnlocking = false;
+    }
+  }
+
+  function lockRoot() {
+    app.lockRootVault();
   }
 
   // v0.4.76: identity-vault management. Mirrors the pattern for invites:
@@ -606,10 +634,18 @@
         This device is the keymaster station for
         <code>{activeHubLabel}</code>. Import that hub's
         root keypair so you can attest members and edit the manifest.
-        The private key goes straight to your OS keychain — a separate
-        slot per hub — never returns to the app, and never reaches
-        the hub. If you admin multiple hubs, import each one here after
-        switching to it in the sidebar.
+        {#if app.inTauri}
+          The private key goes straight to your OS keychain — a separate
+          slot per hub — never returns to the app, and never reaches
+          the hub.
+        {:else}
+          The private key is encrypted with the passphrase below (PBKDF2
+          + AES-GCM) and stored in this browser's IndexedDB. Different
+          storage than the desktop app (which uses the OS keychain), but
+          the same non-negotiable: the hub never sees it.
+        {/if}
+        If you admin multiple hubs, import each one here after switching
+        to it in the sidebar.
       </p>
       <label>
         <span>Root private key (hex)</span>
@@ -621,13 +657,52 @@
         <textarea bind:value={rootPub} rows="2" autocomplete="off"
           spellcheck="false" placeholder="64-char hex"></textarea>
       </label>
+      {#if !app.inTauri}
+        <label>
+          <span>Encryption passphrase (≥ 12 chars)</span>
+          <input type="password" bind:value={rootImportPassphrase}
+            autocomplete="new-password"
+            placeholder="You'll enter this on every admin session" />
+        </label>
+      {/if}
       {#if rootImportError}
         <p class="failure" role="alert">{rootImportError}</p>
       {/if}
       <div class="actions">
         <button type="button" onclick={importRoot}
-          disabled={rootImporting || !rootPriv.trim() || !rootPub.trim()}>
+          disabled={rootImporting || !rootPriv.trim() || !rootPub.trim()
+                    || (!app.inTauri && rootImportPassphrase.length < 12)}>
           {rootImporting ? 'Importing…' : `Import root key for ${activeHubLabel}`}
+        </button>
+      </div>
+    </div>
+
+  {:else if !app.inTauri && app.liveRootPriv === null}
+    <!-- v0.4.80: PWA path. Root is imported but locked. Prompt for
+         passphrase to decrypt for this session. -->
+    <div class="root-setup">
+      <h2>Unlock root key for {activeHubLabel}</h2>
+      <p class="muted">
+        Root is stored encrypted in this browser. Enter your passphrase
+        to unlock it for this session — admin operations (attest, mint
+        invite, revoke) need it to sign. Locks again on logout.
+      </p>
+      <label>
+        <span>Root passphrase</span>
+        <input type="password" bind:value={rootUnlockPassphrase}
+          autocomplete="current-password" />
+      </label>
+      {#if rootUnlockError}
+        <p class="failure" role="alert">{rootUnlockError}</p>
+      {/if}
+      <div class="actions">
+        <button type="button" onclick={unlockRoot}
+          disabled={rootUnlocking || !rootUnlockPassphrase}>
+          {rootUnlocking ? 'Unlocking…' : 'Unlock'}
+        </button>
+        <button type="button" class="ghost" onclick={clearRoot}
+          title="Wipe the encrypted root record from this browser">
+          Forget this device's copy
         </button>
       </div>
     </div>
@@ -1455,6 +1530,12 @@
     </section>
 
     <section class="danger-zone">
+      {#if !app.inTauri && app.liveRootPriv !== null}
+        <button type="button" class="ghost" onclick={lockRoot}
+          title="Wipe the in-memory decrypted root priv (encrypted copy stays in IndexedDB)">
+          Lock root vault for this session
+        </button>
+      {/if}
       <button type="button" class="ghost" onclick={clearRoot}>
         Forget {activeHubLabel}'s root key on this device
       </button>
