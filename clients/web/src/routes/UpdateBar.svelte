@@ -73,7 +73,18 @@
     display: flex;
     align-items: center;
     gap: 0.75rem;
-    padding: 0.5rem 1rem;
+    /* v0.4.82: honor the iOS status-bar / notch safe area on the top,
+       and the left/right insets so the Reload button doesn't hide
+       under a notch corner in landscape orientation. Without this,
+       the bar's top row sat behind the iPad's translucent status bar
+       (viewport-fit=cover + apple-mobile-web-app-status-bar-style=
+       black-translucent, both set in app.html). The env() values are
+       0 on desktop and Android, so this is a no-op there. */
+    padding:
+      calc(env(safe-area-inset-top, 0px) + 0.5rem)
+      calc(env(safe-area-inset-right, 0px) + 1rem)
+      0.5rem
+      calc(env(safe-area-inset-left, 0px) + 1rem);
     font-size: 0.875rem;
     border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   }
