@@ -306,7 +306,7 @@
   let rootUnlocking = $state(false);
   let rootUnlockError = $state<string | null>(null);
 
-  // v0.4.13: org default_thread setter.
+  // Org default_thread setter.
   // currentDefault is what the hub says the org's hint is right now —
   // loaded from /directory on mount and after each successful update.
   // newDefault is the textfield draft. Empty string means "clear it".
@@ -1174,16 +1174,15 @@
   {/if}
 
   {#if app.rootKeysPresent}
-    <!-- v0.4.13: org default-thread setter. Visible whenever the
-         keymaster has root.priv loaded, regardless of queue state.
-         Sits below the queue so the day-to-day approval task stays
-         the top of the panel. -->
+    <!-- Org default-thread setter. Visible whenever the keymaster has
+         root.priv loaded, regardless of queue state. Sits below the
+         queue so the day-to-day approval task stays the top of the
+         panel. -->
     <section class="org-settings">
       <h2>Org settings</h2>
       <p class="muted">
-        Signed into the directory manifest. Applies to new members
-        running v0.4.13 or later — older clients fall back to their
-        local default ("general").
+        Signed into the directory manifest. New members land here on
+        first sign-in instead of the client's local default ("general").
       </p>
       <label>
         <span>Default landing thread for new members</span>
