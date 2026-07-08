@@ -4,6 +4,56 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.82] — 2026-07-08
+
+Board-rollout UX polish before Amy's onboarding test tomorrow. No
+protocol changes; all client-side.
+
+### Added
+- **Sidebar reorganization.** Old layout put the hub switcher at the
+  top and Inbox / Admin as list items above threads — threads (the
+  primary user activity) competed with nav items in the same scroll
+  region. New layout:
+  - Header: **Cove** brand + 🔑 admin key (board-only, with a gold
+    dot when pending approvals wait) + collapse chevron.
+  - **Inbox pinned** below the header — email-style landing shortcut,
+    always visible, with unread badge.
+  - Threads section with `+` (new) / `↻` (refresh) controls and a
+    scrollable thread list — the middle region, dominant by height.
+  - **Hubs pinned** above the identity chip — multi-hub users flip
+    between hubs without scrolling through threads.
+  - Non-admin members see a clean header with no admin key at all.
+
+- **Light-mode theme.** The app now honors `prefers-color-scheme`
+  with a warm cream + brown palette aligned to love.cove.oap.dev's
+  landing. Dark palette unchanged. Also flips form controls,
+  scrollbars, and the mobile browser status-bar tint via
+  `color-scheme: light dark` and paired `theme-color` metas. New
+  `--hover` CSS variable replaces hardcoded `rgba(255,255,255,X)`
+  hover states across 9 route files so they flip cleanly with mode.
+
+- **Root-import passphrase confirmation + eye toggle.** A typo in the
+  create case would silently encrypt the priv under a passphrase the
+  user can't reproduce — there's no recovery from that. Two-field
+  entry with a shared visibility toggle, live status message
+  ("N/12 characters" → "Confirm below" → "Passphrases don't match"
+  → "Passphrase confirmed"), and disabled Import button until both
+  criteria pass. Unlock case keeps its single field because a wrong
+  passphrase there fails loudly at AES-GCM decrypt.
+
+### Fixed
+- **UpdateBar was hidden behind iPad's translucent status bar.** With
+  `viewport-fit=cover` + `apple-mobile-web-app-status-bar-style=black-
+  translucent` (both set in `app.html`), content extends behind the
+  notch/status-bar area. UpdateBar sat right there — the Reload button
+  was hard to tap. Padded with `env(safe-area-inset-top / -left /
+  -right)`. No-op on desktop and Android where env() returns 0.
+
+- **Org settings copy referenced v0.4.13.** Backward-compat notes for
+  versions old enough that no deployed client corresponds to them.
+  Pre-1.0, pre-public-pilot — dead weight. Just removes the version
+  references; behavior unchanged.
+
 ## [0.4.81] — 2026-07-07
 
 ### Added
