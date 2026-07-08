@@ -4,6 +4,19 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.81] — 2026-07-07
+
+### Added
+- **`docs/root-custody-threat-model.md`** — companion to the v0.4.80
+  PWA root-custody feature. Documents the two custody paths (Tauri OS
+  keychain vs. PWA passphrase-encrypted IndexedDB), an attack-surface
+  comparison row-by-row, honest current risk assessment (why pilot-
+  scale exposure is low), future risk considerations, mitigations
+  available today, and a decision matrix for when to prefer Tauri vs.
+  PWA. Published to `love.cove.oap.dev/specs/root-custody` alongside
+  the other three specs; `scripts/sync_landing_specs.sh` extended to
+  keep the docs/ and landing/specs/ copies in lockstep.
+
 ## [0.4.80] — 2026-07-07
 
 ### Added
