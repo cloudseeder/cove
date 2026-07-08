@@ -148,37 +148,42 @@
 </script>
 
 <aside class="thread-list" aria-label="Threads">
+  <!-- v0.4.82: sidebar reorg.
+         header       — brand + admin key (board-only) + collapse
+         inbox-pinned — email-style "what's new" landing, always visible
+         threads      — section header + list, scrollable middle region
+         hubs-pinned  — pinned above identity chip
+         identity     — user's own pubkey chip + version footer
+       Threads dominate visually (largest region) with Inbox as the
+       primary shortcut above them; hubs pin at the bottom so multi-hub
+       users can flip without losing the thread list to a scroll. -->
   <header>
-    <h2>Threads</h2>
+    <h2>Cove</h2>
     <div class="header-actions">
-      <!-- v0.4.30: + New thread button mirrors the InboxPanel one so
-           a user inside any thread can compose a fresh one without
-           navigating back to Inbox. Same dialog, same state. -->
-      <button
-        type="button"
-        class="new-thread"
-        title="Start a new thread (public or private to selected members)"
-        onclick={() => app.openNewThreadDialog()}
-      >
-        +
-      </button>
-      <button
-        type="button"
-        class="refresh"
-        title="Refresh thread list"
-        onclick={() => app.loadThreads()}
-      >
-        ↻
-      </button>
-      <!-- v0.4.58: collapse chevron lives INSIDE the sidebar header so it
-           can never overlap sidebar content. The complementary "expand"
-           button (☰) lives over the main pane in ThreadView, shown only
-           when the sidebar is closed — mutually exclusive with this one. -->
+      {#if app.isBoardMember}
+        <!-- v0.4.82: admin key. Board-role only; hidden entirely for
+             non-admin members. Jumps straight to the Admin route
+             (single click, replaces main pane) — same navigation
+             semantics as clicking a thread. -->
+        <button
+          type="button"
+          class="admin-icon"
+          class:active={app.route === 'thread' && app.view === 'admin'}
+          title="Admin — keymaster tools"
+          aria-label="Admin — keymaster tools"
+          onclick={() => app.setView('admin')}
+        >
+          🔑
+          {#if app.pendingQueue.length > 0}
+            <span class="pending-dot" aria-label="{app.pendingQueue.length} pending"></span>
+          {/if}
+        </button>
+      {/if}
       <button
         type="button"
         class="collapse"
-        title="Hide threads panel"
-        aria-label="Hide threads panel"
+        title="Hide sidebar"
+        aria-label="Hide sidebar"
         onclick={() => app.closeSidebar()}
       >
         ❮
@@ -186,12 +191,36 @@
     </div>
   </header>
 
-  <!-- v0.4.69: hub switcher. Renders only when the user has joined at
-       least one hub (i.e., always after initial onboarding). Clicking
-       a row swaps the active hub; every delegating getter on AppState
-       follows so the thread list, inbox, and everything else in the
-       pane flip to that hub's data. -->
-  <HubSwitcher {app} />
+  <!-- Inbox: pinned primary landing shortcut. "What's new across every
+       thread" — email-style. Users returning to Cove hit this first,
+       then either drill into a specific row or scroll to the thread
+       they want in the Threads list below. -->
+  <button
+    type="button"
+    class="inbox-pinned"
+    class:active={app.route === 'inbox'}
+    onclick={handleInbox}
+  >
+    <span class="inbox-icon" aria-hidden="true">📥</span>
+    <span class="inbox-label">Inbox</span>
+    {#if inboxUnread > 0}
+      <span class="badge">{inboxUnread}</span>
+    {/if}
+  </button>
+
+  <!-- Threads section header with the + and refresh controls that used
+       to live in the top header. Sits above the scrollable thread list. -->
+  <div class="threads-section-header">
+    <span class="section-label">Threads</span>
+    <div class="section-actions">
+      <button type="button" class="new-thread"
+        title="Start a new thread"
+        onclick={() => app.openNewThreadDialog()}>+</button>
+      <button type="button" class="refresh"
+        title="Refresh thread list"
+        onclick={() => app.loadThreads()}>↻</button>
+    </div>
+  </div>
 
   {#snippet activeSubNav()}
     <ul class="sub">
@@ -236,25 +265,10 @@
     </li>
   {/snippet}
 
-  <ul>
-    <li class:active={app.route === 'inbox'} class="inbox-tab">
-      <button type="button" onclick={handleInbox}>
-        <span class="name">Inbox</span>
-        {#if inboxUnread > 0}
-          <span class="count badge">{inboxUnread}</span>
-        {/if}
-      </button>
-    </li>
-    {#if app.isBoardMember}
-      <li class:active={app.route === 'thread' && app.view === 'admin'} class="admin-tab">
-        <button type="button" onclick={() => app.setView('admin')}>
-          <span class="name">Admin</span>
-          {#if app.pendingQueue.length > 0}
-            <span class="count badge">{app.pendingQueue.length}</span>
-          {/if}
-        </button>
-      </li>
-    {/if}
+  <!-- v0.4.82: Inbox + Admin moved out of this list — Inbox is now the
+       pinned button above the section header, Admin is the 🔑 key in
+       the top-right header. This list is thread-only. -->
+  <ul class="threads-scroll">
     {#each tree as node (node.thread)}
       {@render threadNode(node)}
     {/each}
@@ -307,6 +321,12 @@
     <button type="submit" disabled={!newThreadName.trim()}>+</button>
   </form>
 
+  <!-- v0.4.82: hub switcher moved from the top of the sidebar to just
+       above the identity chip. Multi-hub users flip hubs without
+       losing the thread list to a scroll (the thread list stays in
+       its scrollable region above). -->
+  <HubSwitcher {app} />
+
   <!-- v0.4.65: identity chip. Surfaces the user's own pubkey so a
        cross-hub attestation flow — telling a different hub's admin
        "attest me under X" — doesn't require them to fish it out of
@@ -357,16 +377,116 @@
     padding: 1.1rem 1.25rem 0.5rem;
   }
   header h2 {
+    /* v0.4.82: was 'THREADS' small caps; now 'Cove' brand mark at the
+       top of the sidebar since threads have their own section header
+       lower down. */
     margin: 0;
-    font-size: 0.75rem;
+    font-size: 1.05rem;
+    letter-spacing: -0.005em;
+    color: var(--fg);
+    font-weight: 600;
+    font-family: "Iowan Old Style", "Palatino", "Georgia", ui-serif, serif;
+  }
+  .header-actions {
+    display: flex; align-items: center; gap: 0.4rem;
+  }
+  /* v0.4.82: admin key (board-only). Sized to match the collapse
+     chevron's 44px tap target so the top-right cluster is balanced. */
+  .admin-icon {
+    position: relative;
+    background: transparent;
+    border: none;
+    color: var(--fg);
+    font-size: 1.15rem;
+    cursor: pointer;
+    padding: 0.3em 0.55em;
+    border-radius: 6px;
+    line-height: 1;
+    min-width: 44px;
+    min-height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .admin-icon:hover { background: var(--hover); }
+  .admin-icon.active {
+    background: rgba(212, 175, 55, 0.15);
+  }
+  .admin-icon .pending-dot {
+    position: absolute;
+    top: 0.35rem;
+    right: 0.35rem;
+    width: 0.55rem;
+    height: 0.55rem;
+    background: #d4af37;
+    border: 2px solid var(--panel);
+    border-radius: 50%;
+    box-sizing: content-box;
+  }
+  /* v0.4.82: Inbox pinned above the threads section. Full-width tap
+     target, prominent icon + label + unread badge. */
+  .inbox-pinned {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    background: transparent;
+    border: none;
+    color: var(--fg);
+    padding: 0.7rem 1.25rem;
+    margin: 0 0.5rem 0.3rem;
+    border-radius: 8px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 0.95rem;
+    text-align: left;
+    width: calc(100% - 1rem);
+  }
+  .inbox-pinned:hover { background: var(--hover); }
+  .inbox-pinned.active {
+    background: rgba(212, 175, 55, 0.12);
+    color: var(--fg);
+  }
+  .inbox-pinned .inbox-icon { font-size: 1.1rem; }
+  .inbox-pinned .inbox-label { flex: 1; font-weight: 500; }
+  .inbox-pinned .badge {
+    background: #d4af37;
+    color: #0a0a0a;
+    border-radius: 999px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 0.1rem 0.5rem;
+    line-height: 1.4;
+  }
+  /* v0.4.82: threads section header. Small caps section label plus
+     the + / ↻ controls that used to live in the top header. */
+  .threads-section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.5rem 1.25rem 0.2rem;
+    border-top: 1px solid var(--border);
+    margin-top: 0.2rem;
+  }
+  .threads-section-header .section-label {
+    font-size: 0.72rem;
     letter-spacing: 0.08em;
     text-transform: uppercase;
     color: var(--muted);
     font-weight: 600;
   }
-  .header-actions {
-    display: flex; align-items: center; gap: 0.4rem;
+  .threads-section-header .section-actions {
+    display: flex; align-items: center; gap: 0.2rem;
   }
+  .threads-section-header .new-thread,
+  .threads-section-header .refresh {
+    /* Same visual as the header buttons but slightly smaller since
+       this row is a subheader, not the top nav. */
+    min-width: 32px;
+    min-height: 32px;
+    font-size: 1.1em;
+    padding: 0.2em 0.4em;
+  }
+  .threads-section-header .new-thread { font-size: 1.3em; }
   /* v0.4.79: sizes bumped from 1.1em / 0.1em 0.4em → 1.4em /
      0.3em 0.55em so board users on desktop and touch targets on
      phones both have a comfortable click area. Every button also
@@ -466,18 +586,9 @@
     padding-left: 0.4rem;
     border-left: 2px solid rgba(160, 200, 130, 0.35);
   }
-  .inbox-tab > button {
-    color: #e8c96b;
-  }
-  .inbox-tab + .admin-tab,
-  .inbox-tab + li:not(.admin-tab) {
-    /* Visual separator below the navigation block so it doesn't blend
-       into the thread list. */
-    margin-top: 0.35rem;
-  }
-  .admin-tab > button {
-    color: #e8c96b;
-  }
+  /* v0.4.82: .inbox-tab / .admin-tab styles removed — Inbox is now
+     the pinned button above the section header (.inbox-pinned) and
+     Admin is the 🔑 key icon in the sidebar header (.admin-icon). */
   /* v0.4.25: archived threads in the sidebar — collapsed by default,
      muted when expanded so they don't compete with active threads. */
   .archived-toggle-row {
