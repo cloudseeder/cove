@@ -302,9 +302,33 @@
   // v0.4.80: PWA root custody. Passphrase for import; separate one for
   // unlock. Both required only on PWA — Tauri ignores them.
   let rootImportPassphrase = $state('');
+  // v0.4.82: confirmation field + reveal toggle for the root-import
+  // passphrase specifically. A typo here would silently encrypt the
+  // root under a passphrase the user can't reproduce, and there's no
+  // recovery from that (nobody can decrypt without it — the whole
+  // point is that nobody but the user can). Confirmation + eye
+  // toggle is the standard belt-and-suspenders for password creation.
+  let rootImportPassphrase2 = $state('');
+  let rootImportPassphraseVisible = $state(false);
   let rootUnlockPassphrase = $state('');
   let rootUnlocking = $state(false);
   let rootUnlockError = $state<string | null>(null);
+
+  const rootImportPassphraseValid = $derived(
+    rootImportPassphrase.length >= 12
+      && rootImportPassphrase === rootImportPassphrase2,
+  );
+  const rootImportPassphraseMessage = $derived(
+    rootImportPassphrase.length === 0
+      ? ''
+      : rootImportPassphrase.length < 12
+        ? `${rootImportPassphrase.length}/12 characters`
+        : rootImportPassphrase2.length === 0
+          ? 'Confirm below to enable import.'
+          : rootImportPassphrase !== rootImportPassphrase2
+            ? "Passphrases don't match."
+            : 'Passphrase confirmed.',
+  );
 
   // Org default_thread setter.
   // currentDefault is what the hub says the org's hint is right now —
@@ -491,6 +515,12 @@
 
   async function importRoot() {
     rootImportError = null;
+    // Belt: even though the disable-logic in the template blocks the
+    // click, guard here so a rogue caller can't skip confirmation.
+    if (!app.inTauri && !rootImportPassphraseValid) {
+      rootImportError = 'Passphrase must be ≥12 chars and match confirmation.';
+      return;
+    }
     rootImporting = true;
     try {
       await app.importRootKeys(
@@ -500,6 +530,8 @@
       );
       rootPriv = '';
       rootImportPassphrase = '';
+      rootImportPassphrase2 = '';
+      rootImportPassphraseVisible = false;
     } catch (err) {
       rootImportError = (err as Error).message;
     } finally {
@@ -660,10 +692,40 @@
       {#if !app.inTauri}
         <label>
           <span>Encryption passphrase (≥ 12 chars)</span>
-          <input type="password" bind:value={rootImportPassphrase}
-            autocomplete="new-password"
-            placeholder="You'll enter this on every admin session" />
+          <div class="passphrase-row">
+            <input
+              type={rootImportPassphraseVisible ? 'text' : 'password'}
+              bind:value={rootImportPassphrase}
+              autocomplete="new-password"
+              placeholder="You'll enter this on every admin session" />
+            <button type="button" class="reveal"
+              aria-label={rootImportPassphraseVisible
+                ? 'Hide passphrase' : 'Show passphrase'}
+              title={rootImportPassphraseVisible
+                ? 'Hide passphrase' : 'Show passphrase'}
+              onclick={() => rootImportPassphraseVisible = !rootImportPassphraseVisible}>
+              {rootImportPassphraseVisible ? '🙈' : '👁'}
+            </button>
+          </div>
         </label>
+        <label>
+          <span>Confirm passphrase</span>
+          <div class="passphrase-row">
+            <input
+              type={rootImportPassphraseVisible ? 'text' : 'password'}
+              bind:value={rootImportPassphrase2}
+              autocomplete="new-password"
+              placeholder="Retype the passphrase" />
+          </div>
+        </label>
+        {#if rootImportPassphraseMessage}
+          <p class="passphrase-status"
+            class:ok={rootImportPassphraseValid}
+            class:warn={!rootImportPassphraseValid
+                         && rootImportPassphrase.length > 0}>
+            {rootImportPassphraseMessage}
+          </p>
+        {/if}
       {/if}
       {#if rootImportError}
         <p class="failure" role="alert">{rootImportError}</p>
@@ -671,7 +733,7 @@
       <div class="actions">
         <button type="button" onclick={importRoot}
           disabled={rootImporting || !rootPriv.trim() || !rootPub.trim()
-                    || (!app.inTauri && rootImportPassphrase.length < 12)}>
+                    || (!app.inTauri && !rootImportPassphraseValid)}>
           {rootImporting ? 'Importing…' : `Import root key for ${activeHubLabel}`}
         </button>
       </div>
@@ -1585,6 +1647,44 @@
   .root-setup .muted {
     color: var(--muted); margin: 0 0 1rem; font-size: 0.9rem;
   }
+  /* v0.4.82: passphrase entry with reveal toggle. Same visual as
+     AuthPanel's vault-unlock row so the pattern is recognizable
+     across the app. */
+  .passphrase-row {
+    display: flex; gap: 0.4rem; align-items: stretch;
+  }
+  .passphrase-row input {
+    flex: 1;
+    width: 100%; box-sizing: border-box;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.5rem 0.7rem; font: inherit; font-size: 0.92rem;
+    font-family: inherit;
+  }
+  .passphrase-row input:focus {
+    outline: none; border-color: rgba(212, 175, 55, 0.5);
+  }
+  .passphrase-row .reveal {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 0 0.8rem;
+    font-size: 1rem;
+    flex: 0 0 auto;
+  }
+  .passphrase-row .reveal:hover:not(:disabled) {
+    border-color: rgba(212, 175, 55, 0.5);
+    color: var(--fg);
+  }
+  .passphrase-status {
+    margin: 0.3rem 0 0.6rem;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .passphrase-status.ok { color: #5da05d; }
+  .passphrase-status.warn { color: #d99a3d; }
   label {
     display: block; margin: 0.7rem 0;
   }
