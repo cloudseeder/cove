@@ -22,6 +22,7 @@ declare -A map=(
   [docs/server-hub-spec.md]=landing/specs/hub.md
   [docs/client-spec.md]=landing/specs/client.md
   [docs/identity-vault-spec.md]=landing/specs/vault.md
+  [docs/root-custody-threat-model.md]=landing/specs/root-custody.md
 )
 
 for src in "${!map[@]}"; do
