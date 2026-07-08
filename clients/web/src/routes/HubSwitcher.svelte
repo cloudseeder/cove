@@ -91,7 +91,7 @@
     transition: background 120ms ease;
   }
   .hub-row-wrap:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
   }
   .hub-row-wrap.active {
     background: rgba(212, 175, 55, 0.12);

@@ -389,7 +389,7 @@
     justify-content: center;
   }
   .refresh:hover, .new-thread:hover, .collapse:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
     color: var(--fg);
   }
   .collapse { font-size: 1.35em; }
@@ -428,7 +428,7 @@
     font-size: 0.92rem;
   }
   li button:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
   }
   li.active > button {
     background: rgba(212, 175, 55, 0.12);

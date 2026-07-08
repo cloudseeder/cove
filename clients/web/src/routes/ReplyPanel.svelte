@@ -144,7 +144,7 @@
     border-radius: 6px;
   }
   .close:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--hover);
     color: var(--fg);
   }
   .scroll {

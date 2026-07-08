@@ -226,7 +226,7 @@
     border-radius: 6px;
   }
   .refresh:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
     color: var(--fg);
   }
   .refresh:disabled {
@@ -241,7 +241,7 @@
     flex: 1;
   }
   li {
-    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    border-bottom: 1px solid var(--hover);
   }
   li button {
     width: 100%;
@@ -258,7 +258,7 @@
     font: inherit;
   }
   li button:hover {
-    background: rgba(255, 255, 255, 0.03);
+    background: var(--hover);
   }
   .dot {
     width: 0.5rem;
@@ -284,7 +284,7 @@
     flex-shrink: 0;
   }
   .avatar.empty {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--hover);
     color: var(--muted);
   }
   .middle {
@@ -373,7 +373,7 @@
   .empty em {
     color: var(--fg);
     font-style: normal;
-    background: rgba(255, 255, 255, 0.06);
+    background: var(--hover);
     padding: 0.1rem 0.45rem;
     border-radius: 4px;
   }

@@ -1638,7 +1638,7 @@
     border-radius: 4px;
   }
   .refresh:hover {
-    background: rgba(255, 255, 255, 0.04); color: var(--fg);
+    background: var(--hover); color: var(--fg);
   }
   .root-setup {
     border: 1px dashed var(--border); border-radius: 12px;
@@ -1758,7 +1758,7 @@
     background: transparent; border: 1px solid var(--border); color: var(--muted);
   }
   button.ghost:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.04); color: var(--fg);
+    background: var(--hover); color: var(--fg);
   }
   button.danger {
     background: transparent; border: 1px solid rgba(220, 38, 38, 0.4);
@@ -2265,7 +2265,7 @@
     gap: 0.3rem;
     max-height: 12rem;
     overflow-y: auto;
-    border: 1px solid rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--hover);
     border-radius: 8px;
     background: var(--bg);
   }

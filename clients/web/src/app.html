@@ -4,7 +4,10 @@
     <meta charset="utf-8" />
     <link rel="icon" href="%sveltekit.assets%/favicon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0a0a0a" />
+    <!-- v0.4.82: theme-color per scheme so the browser/status-bar
+         chrome follows the system appearance. -->
+    <meta name="theme-color" content="#fbf7ee" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0a0a0a" media="(prefers-color-scheme: dark)" />
 
     <!-- v0.4.29: PWA installability. The manifest makes Chrome on
          Android (and Safari on iOS 16.4+) treat this URL as an

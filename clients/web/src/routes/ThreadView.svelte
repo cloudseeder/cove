@@ -802,7 +802,7 @@
     padding: 0.4rem 0.6rem; cursor: pointer;
     font: inherit; font-size: 0.88rem;
   }
-  .eph-menu-item:hover { background: rgba(255, 255, 255, 0.04); }
+  .eph-menu-item:hover { background: var(--hover); }
   .eph-menu-item.danger { color: #d97a7a; }
   .eph-menu-item.danger:hover { background: rgba(220, 38, 38, 0.08); }
   /* Inline confirm card (renders below the banner). */
@@ -904,7 +904,7 @@
     color: var(--muted);
   }
   .modal-actions button.ghost:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.04); color: var(--fg);
+    background: var(--hover); color: var(--fg);
   }
   .modal .failure {
     margin: 0.7rem 0 0; padding: 0.5rem 0.75rem;

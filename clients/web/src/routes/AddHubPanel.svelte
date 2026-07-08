@@ -227,7 +227,7 @@
     border-radius: 6px;
   }
   .close:hover {
-    background: rgba(255, 255, 255, 0.05);
+    background: var(--hover);
     color: var(--fg);
   }
   .lede {
@@ -239,7 +239,7 @@
   .lede code {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.86em;
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
     padding: 0.05rem 0.35rem;
     border-radius: 4px;
     color: var(--fg);
@@ -310,7 +310,7 @@
     color: var(--muted);
   }
   button.ghost:hover:not(:disabled) {
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
     color: var(--fg);
   }
   @keyframes fade {

@@ -325,7 +325,7 @@
     align-items: center;
     gap: 0.4rem;
     padding: 0.25rem 0.55rem;
-    background: rgba(255, 255, 255, 0.04);
+    background: var(--hover);
     border: 1px solid var(--border);
     border-radius: 999px;
     font-size: 0.82rem;
