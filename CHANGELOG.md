@@ -4,6 +4,54 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.80] — 2026-07-07
+
+### Added
+- **PWA-safe root key custody.** Root custody was Tauri-only because it
+  used the OS keychain via the `keyring` crate. PWA users on Mac /
+  Windows / Linux couldn't be keymasters from the browser — every
+  admin op required either the desktop app or the offline admin CLIs.
+  That's now closed.
+
+  New module `clients/web/src/lib/cove/root-vault.ts` mirrors the
+  v0.4.34 identity-vault discipline applied to root: PBKDF2-SHA256
+  (600k iterations) derives a KEK from the operator's passphrase,
+  AES-GCM-256 encrypts the priv, ciphertext lives in a per-org record
+  in a new `cove-root-vault` IndexedDB database. Storage is local per
+  device — root does NOT sync across devices via the hub (deliberate:
+  root propagation is a governance act, not automatic).
+
+  `AppState.importRootKeys` takes an optional passphrase — required
+  on PWA, ignored on Tauri. New methods `unlockRootVaultPwa` and
+  `lockRootVault` gate the in-memory `liveRootPriv` lifecycle;
+  `logoutAll` wipes it alongside the identity-priv material.
+
+  `HubConnection.rootSigner` branches on `inTauri`: Tauri still routes
+  through the Rust keychain, PWA signs in-JS with the decrypted
+  `liveRootPriv`. Admin ops on PWA before unlock throw a clear
+  "Root vault is locked — enter your passphrase" error the UI catches.
+
+  AdminPanel gains three new UI surfaces:
+    - Passphrase field on the root-import form (PWA only, ≥ 12 chars).
+    - Unlock form when a PWA root vault exists but is locked this session.
+    - Lock button in the danger zone (wipes in-memory priv, encrypted
+      record stays for next session).
+
+  **Threat model tradeoff, acknowledged:** a compromised browser
+  extension can potentially observe the decrypted priv during the
+  signing window on PWA, whereas Tauri keeps the priv in the OS
+  keychain and never crosses the JS↔Rust boundary. Both are strictly
+  better than "you can't be a keymaster on this device," which was
+  the prior state. Board keymasters with elevated risk profiles
+  should still prefer the Tauri desktop app; the PWA path is the
+  ergonomic option for occasional keymaster ops from a shared or
+  browser-only device.
+
+  Test coverage: 7 new tests in `root-vault.test.ts` — status,
+  import + unlock round-trip, wrong passphrase, per-org isolation,
+  re-import overwrite, short passphrase rejection, clear. 187
+  client tests total, all green.
+
 ## [0.4.79] — 2026-07-07
 
 Board-rollout polish + admin-CLI reach.
