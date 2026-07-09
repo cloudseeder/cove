@@ -31,48 +31,109 @@ set -euo pipefail
 HUB="${1:-}"
 shift 2>/dev/null || true
 
-# Optional flags after the hub name.
+# Defaults derived from hub name; overridable with flags below.
 REUSE_PUBKEY=""
+PORT=""
+HOSTNAME=""
+ORG_NAME=""
+KEYMASTER_NAME="Kevin Brooks"
+
+usage() {
+  cat >&2 <<EOF
+usage: $0 <hub-name> [flags]
+
+Positional:
+  hub-name                short slug for the hub (e.g. lwccoa, brooks, flhoa).
+                          Becomes the Compose project name, drives state dir
+                          './<name>-state', container name '<name>-hub', and
+                          default hostname '<name>-hub.oap.dev'.
+
+Flags:
+  --port <n>              host-side port for the tunnel to reach (default 8000
+                          for lwccoa, 8001 for brooks, or the value passed here
+                          for any other name — required if you already have
+                          another hub on 8000).
+  --hostname <fqdn>       public hostname the hub is served under (default
+                          '<hub-name>-hub.oap.dev'; override if the org owns
+                          its own domain).
+  --org-name "<name>"     org display name baked into attestations (default
+                          derived from hub-name).
+  --keymaster "<name>"    display name for the first attested member
+                          (default 'Kevin Brooks').
+  --reuse-pubkey <64hex>  attest an existing pubkey against this hub's fresh
+                          root instead of generating a new keypair. Enables
+                          'same identity, N hubs' federation.
+
+Examples:
+  # LWCCOA production hub (defaults from name):
+  $0 lwccoa
+
+  # Brooks testbed (defaults from name):
+  $0 brooks
+
+  # Federation bring-up:
+  $0 brooks --reuse-pubkey <your-lwccoa-pubkey>
+
+  # New org's hub on a fresh port + hostname:
+  $0 flhoa --port 8002 --hostname flhoa-hub.oap.dev --org-name "FL HOA"
+EOF
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --reuse-pubkey)
-      REUSE_PUBKEY="$2"
-      shift 2
-      ;;
-    --reuse-pubkey=*)
-      REUSE_PUBKEY="${1#*=}"
-      shift
-      ;;
+    --reuse-pubkey)       REUSE_PUBKEY="$2"; shift 2 ;;
+    --reuse-pubkey=*)     REUSE_PUBKEY="${1#*=}"; shift ;;
+    --port)               PORT="$2"; shift 2 ;;
+    --port=*)             PORT="${1#*=}"; shift ;;
+    --hostname)           HOSTNAME="$2"; shift 2 ;;
+    --hostname=*)         HOSTNAME="${1#*=}"; shift ;;
+    --org-name)           ORG_NAME="$2"; shift 2 ;;
+    --org-name=*)         ORG_NAME="${1#*=}"; shift ;;
+    --keymaster)          KEYMASTER_NAME="$2"; shift 2 ;;
+    --keymaster=*)        KEYMASTER_NAME="${1#*=}"; shift ;;
+    -h|--help)            usage; exit 0 ;;
     *)
       echo "unknown flag: $1" >&2
-      echo "usage: $0 {lwccoa|brooks} [--reuse-pubkey <64-hex>]" >&2
+      usage
       exit 2
       ;;
   esac
 done
 
+if [ -z "$HUB" ]; then
+  usage
+  exit 2
+fi
+
+# Hub-name-derived defaults. Explicit flags override.
+# lwccoa + brooks retain their historical port + org-name defaults so the
+# two shipped commands (`./scripts/genesis.sh lwccoa`, `./scripts/genesis.sh
+# brooks`) work exactly as before. Any other name derives from the name.
 case "$HUB" in
   lwccoa)
-    export COMPOSE_PROJECT_NAME=lwccoa
-    export COVE_HUB_PORT=8000
-    export COVE_STATE_DIR=./lwccoa-state
-    export COVE_CONTAINER_NAME=lwccoa-hub
-    HUB_HOST=lwccoa-hub.oap.dev
-    ORG_NAME="LWCCOA"
+    : "${PORT:=8000}"
+    : "${ORG_NAME:=LWCCOA}"
     ;;
   brooks)
-    export COMPOSE_PROJECT_NAME=brooks
-    export COVE_HUB_PORT=8001
-    export COVE_STATE_DIR=./brooks-state
-    export COVE_CONTAINER_NAME=brooks-hub
-    HUB_HOST=brooks-hub.oap.dev
-    ORG_NAME="Brooks testbed"
+    : "${PORT:=8001}"
+    : "${ORG_NAME:=Brooks testbed}"
     ;;
   *)
-    echo "usage: $0 {lwccoa|brooks} [--reuse-pubkey <64-hex>]" >&2
-    exit 2
+    : "${PORT:=8000}"
+    # Title-case the hub name as a plausible org-name default:
+    # 'flhoa' → 'Flhoa', 'oakwood-hoa' → 'Oakwood Hoa'. Almost always
+    # worth overriding via --org-name; this just keeps the ceremony
+    # runnable without a required flag.
+    : "${ORG_NAME:=$(echo "$HUB" | sed 's/-/ /g' | awk '{for(i=1;i<=NF;i++){$i=toupper(substr($i,1,1))substr($i,2)}}1')}"
     ;;
 esac
+: "${HOSTNAME:=${HUB}-hub.oap.dev}"
+
+export COMPOSE_PROJECT_NAME="$HUB"
+export COVE_HUB_PORT="$PORT"
+export COVE_STATE_DIR="./${HUB}-state"
+export COVE_CONTAINER_NAME="${HUB}-hub"
+HUB_HOST="$HOSTNAME"
 
 if [ -n "$REUSE_PUBKEY" ]; then
   if ! echo "$REUSE_PUBKEY" | grep -qE '^[0-9a-f]{64}$'; then
@@ -81,8 +142,12 @@ if [ -n "$REUSE_PUBKEY" ]; then
   fi
 fi
 
-MEMBER_NAME="Kevin Brooks"
-MEMBER_SLUG="kevin-brooks"
+MEMBER_NAME="$KEYMASTER_NAME"
+# Slugify keymaster name for the on-disk .priv filename: lowercase,
+# non-alnum → dashes, collapse repeats, trim edges.
+MEMBER_SLUG="$(echo "$KEYMASTER_NAME" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-\|-$//g')"
 
 # Guard: must run from repo root.
 [ -f docker-compose.yml ] || {

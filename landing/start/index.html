@@ -224,15 +224,31 @@
   <pre><code>git clone https://github.com/cloudseeder/cove.git
 cd cove
 
-# One command per hub. Prompts you at every irreversible step.
-./scripts/genesis.sh lwccoa</code></pre>
+# One command per hub. The name you pass becomes the Compose
+# project name, and drives the defaults for state dir, container
+# name, and public hostname.
+./scripts/genesis.sh myorg</code></pre>
+
+  <p>
+    The name you pass (<code>myorg</code>, <code>lwccoa</code>, whatever) becomes the identifier the script uses everywhere &mdash; state directory <code>./myorg-state</code>, container name <code>myorg-hub</code>, default public hostname <code>myorg-hub.oap.dev</code>. Override any of these with flags if the defaults don&rsquo;t fit your setup:
+  </p>
+
+  <pre><code>./scripts/genesis.sh flhoa \
+    --port 8002 \
+    --hostname flhoa-hub.oap.dev \
+    --org-name "FL HOA" \
+    --keymaster "Jane Smith"</code></pre>
+
+  <p>
+    Run <code>./scripts/genesis.sh --help</code> for the full flag list. Notably, <code>--reuse-pubkey &lt;hex&gt;</code> attests an existing pubkey against the fresh hub root instead of generating a new keypair &mdash; that&rsquo;s the &ldquo;same identity, N hubs&rdquo; federation entry point.
+  </p>
 
   <p>
     The script pauses after generating keys and prints SHA-256 fingerprints for <code>root.priv</code>, <code>root.pub</code>, and the initial member&rsquo;s <code>.priv</code>/<code>.pub</code>. You paste each into offline storage (password manager, encrypted USB, paper), <code>sha256sum</code> each on the receiving machine, and confirm to the script &mdash; only then does it shred the priv files from the host and start the container. The hub refuses to start if <code>root.priv</code> is still on disk.
   </p>
 
   <div class="callout">
-    <strong>Two hubs on one host</strong> is a supported layout (one for your production group, one as a personal testbed for iterating on features). <code>genesis.sh lwccoa</code> and <code>genesis.sh brooks</code> each get their own state directory, port, container name, and Compose project name &mdash; parameterized in the script, no config edits required.
+    <strong>Multiple hubs on one host</strong> is a supported layout. Each hub gets its own state directory, port, container name, and Compose project name &mdash; all derived from the name you pass. Just make sure each hub has a distinct <code>--port</code> so they don&rsquo;t collide.
   </div>
 
   <pre><code># Verify:
