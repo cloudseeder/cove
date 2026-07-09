@@ -4,6 +4,73 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.85] — 2026-07-08
+
+Rollup for the pre-Amy-onboarding push. v0.4.84 skipped on the way to a
+clean landing number.
+
+### Added
+- **Hub list synced across devices via the vault.** The vault content
+  plaintext's `meta` object gained an optional `hubs?: string[]`
+  field (the growth surface `identity-vault-spec.md` §3.1 called out).
+  Every device that unlocks the vault reads `meta.hubs` and merges
+  any URLs not already in local `cove.hubs` into the sidebar list.
+  Adding or removing a hub triggers a vault content rewrite (fresh IV,
+  same CEK, wrap slots untouched) and pushes to every joined hub;
+  concurrent edits from multiple devices are handled by the existing
+  CAS retry loop on the vault PUT. Additive-merge semantics for
+  removals so a hub-drop on one device doesn't silently drop it on
+  another — governance-shaped actions like hub removal stay explicit
+  per-device.
+
+- **Newly-joined hubs get the vault pushed to them automatically.**
+  Old behavior: `saveVault` fanned out only to hubs authenticated at
+  mutation time. If you joined a hub AFTER creating your vault, the
+  new hub never received a copy, and cross-device "Sign in from a new
+  device?" against that hub failed with "no vault at hubUrl for that
+  pubkey." Fix: `connect()` detects a hub returning 404 on
+  `fetchVault` when we already hold a vault matching this pubkey and
+  pushes it there to seed. From that moment on, the hub is a valid
+  source for cross-device sign-in.
+
+- **`love.cove.oap.dev/join`** — new-user landing page. Eight steps,
+  PWA-first and opinionated about it: install (Safari on
+  iPhone/iPad, Chrome on Android, Chrome/Safari on desktop), use the
+  invite code, understand Inbox vs. threads, reading and posting
+  (cards vs. chat), starting a thread (naming conventions, public
+  vs. private), ephemeral vs. permanent with what-gets-kept spelled
+  out, using Cove on multiple devices via the vault, and being in
+  more than one group (federation). Tone is welcoming rather than
+  technical; cross-references `/specs` at the bottom.
+
+- **Pre-composed welcome message in AdminPanel mint flow.** After a
+  successful mint, a textarea appears below the code with a ready-
+  to-send message: personalized greeting using the invitee's
+  name-hint, sender-signed with the keymaster's own attested
+  display_name, hub URL and invite code auto-filled, and a link to
+  `love.cove.oap.dev/join` for everything else. One-click Copy
+  message; delivery is the keymaster's choice (SMS / Signal /
+  email / in person).
+
+### Fixed
+- **Empty "annual-meeting" ghost thread on newly-joined hubs.**
+  `HubConnection.thread` defaulted to the pilot-era LWCCOA string;
+  on a newly-added hub that doesn't have that thread, ThreadView
+  rendered an empty state. `connect()` now tracks whether the URL
+  was new to the local Map and, on successful auth to a new hub,
+  routes to Inbox instead of the thread view. Existing-hub
+  reconnects preserve their current route.
+
+- **iPad Safari "Update failed: newestWorker is null" after PWA
+  reinstall.** iOS Safari right after a fresh install has a brief
+  window where `navigator.serviceWorker.getRegistration()` returns
+  a registration whose `installing` / `waiting` / `active` are all
+  null. `reg.update()` in that state throws. Now guarded: if all
+  three worker slots are null, treat as up-to-date instead of
+  forcing an update() that fails. Also made silent auto-check
+  errors invisible (previously they surfaced via UpdateBar); only
+  manual "Check for updates" clicks show failures.
+
 ## [0.4.83] — 2026-07-08
 
 ### Fixed
