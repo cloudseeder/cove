@@ -4,6 +4,16 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.86] — 2026-07-08
+
+### Docs
+- **`/join` naming conventions section clarifies the space → hyphen
+  behavior.** Copy said "hyphens are conventional but spaces work
+  too" — accurate for "you can type a space," misleading for "the
+  space stays a space." `sanitizeThreadName` converts spaces to
+  hyphens, so `budget 2027` becomes `budget-2027`. Updated to say so
+  explicitly so Amy doesn't wonder what happened.
+
 ## [0.4.85] — 2026-07-08
 
 Rollup for the pre-Amy-onboarding push. v0.4.84 skipped on the way to a
