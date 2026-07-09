@@ -620,7 +620,13 @@ export class AppState {
           this.updateStatus = { kind: 'idle' };
         }
       } catch (err) {
-        this.updateStatus = { kind: 'error', message: errMsg(err) };
+        // v0.4.84: silent auto-check errors stay hidden. Only the
+        // manual-click path surfaces failures.
+        if (!silent) {
+          this.updateStatus = { kind: 'error', message: errMsg(err) };
+        } else {
+          this.updateStatus = { kind: 'idle' };
+        }
       }
       return;
     }
@@ -633,6 +639,12 @@ export class AppState {
         if (!silent) {
           this.updateStatus = { kind: 'up-to-date' };
         }
+      } else if (!reg.installing && !reg.waiting && !reg.active) {
+        // v0.4.84: iOS Safari right after a fresh PWA install has a
+        // brief window where the registration exists but no worker is
+        // active yet — reg.update() throws 'newestWorker is null'.
+        // Skip cleanly and let the ambient install lifecycle finish.
+        if (!silent) this.updateStatus = { kind: 'up-to-date' };
       } else {
         await reg.update();
         // If update() surfaces a fresh SW, the installedListener wired
@@ -651,7 +663,15 @@ export class AppState {
         }, 1500);
       }
     } catch (err) {
-      this.updateStatus = { kind: 'error', message: errMsg(err) };
+      // v0.4.84: silent auto-check errors stay hidden. Only the
+      // manual-click path surfaces failures — routine "iOS Safari
+      // hasn't finished installing the SW yet" moments shouldn't
+      // flash a red banner on every launch.
+      if (!silent) {
+        this.updateStatus = { kind: 'error', message: errMsg(err) };
+      } else {
+        this.updateStatus = { kind: 'idle' };
+      }
     }
   }
 
