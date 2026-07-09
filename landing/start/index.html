@@ -262,6 +262,19 @@ curl http://127.0.0.1:8000/healthz
     Point a domain at the container (Cloudflare Tunnel or Caddy both work &mdash; walked through in the <a href="https://github.com/cloudseeder/cove/blob/main/docker/README.md">docker README</a>) and you have a running hub.
   </p>
 
+  <p>
+    If you&rsquo;re already running a Cloudflare Tunnel, <code>scripts/tunnel_add.sh</code> automates the ingress-rule + DNS-CNAME + reload step for a new hub:
+  </p>
+
+  <pre><code>sudo ./scripts/tunnel_add.sh &lt;hostname&gt; &lt;port&gt;
+
+# e.g.
+sudo ./scripts/tunnel_add.sh flhoa-hub.oap.dev 8002</code></pre>
+
+  <p>
+    Reads your tunnel name from <code>/etc/cloudflared/config.yml</code>, creates the CNAME via <code>cloudflared tunnel route dns</code>, inserts the ingress block above your <code>http_status:404</code> catch-all, reloads cloudflared, and verifies with a <code>/healthz</code> check on the public URL. Idempotent &mdash; running twice is a no-op after the first success.
+  </p>
+
   <!-- ============================================================ -->
   <!-- STEP 2: KEYMASTER                                             -->
   <!-- ============================================================ -->
