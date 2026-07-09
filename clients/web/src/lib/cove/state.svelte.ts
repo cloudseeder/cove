@@ -44,9 +44,11 @@ import {
   addPasskeySlot as vaultAddPasskeySlot,
   addPassphraseSlot as vaultAddPassphraseSlot,
   createVault as vaultCreate,
+  readVaultContent,
   removeSlot as vaultRemoveSlot,
   unlockWithPasskey as vaultUnlockPasskey,
   unlockWithPassphrase as vaultUnlockPassphrase,
+  updateVaultHubs,
   type FirstUnlockChoice, type MethodSlot, type VaultRecord,
 } from './vault-blob';
 import {
@@ -826,7 +828,45 @@ export class AppState {
     hub.thread = loadThreadFor(hubUrl) ?? hub.thread;
     this.hubs.set(hubUrl, hub);
     saveHubUrls([...this.hubs.keys()]);
+    // v0.4.84: propagate the updated hub list to the vault so other
+    // devices pick it up on next unlock. Fire-and-forget — if the
+    // vault isn't unlocked or push fails, the local hub list is still
+    // correct.
+    void this.syncHubsToVault();
     return hub;
+  }
+
+  /** v0.4.84: rewrite the vault's synced hub list with the current
+   *  local list. No-op if the vault isn't unlocked (missing liveCek /
+   *  liveVault / livePriv) or if the vault's meta.hubs already matches.
+   *  Called after addHub / removeHub so hub-membership propagates
+   *  across every device the user has unlocked the vault on. */
+  private async syncHubsToVault(): Promise<void> {
+    if (this.liveVault === null || this.liveCek === null
+        || this.livePriv === null) return;
+    const currentHubs = [...this.hubs.keys()].sort();
+    let vaultHubs: string[] = [];
+    try {
+      const content = await readVaultContent(this.liveCek, this.liveVault);
+      vaultHubs = (content.meta?.hubs ?? []).slice().sort();
+    } catch {
+      return;   // decrypt failed → stale liveCek somehow; skip
+    }
+    if (currentHubs.length === vaultHubs.length
+        && currentHubs.every((h, i) => h === vaultHubs[i])) {
+      return;   // already in sync
+    }
+    try {
+      const next = await updateVaultHubs({
+        vault: this.liveVault,
+        cek: this.liveCek,
+        ownerPriv: this.livePriv,
+        hubs: currentHubs,
+      });
+      await this.saveVault(next);
+    } catch {
+      // Push failure surfaced via vaultPushFailures; local state stays.
+    }
   }
 
   /** v0.4.69: focus the switcher on the given hub. Persists the choice
@@ -908,6 +948,9 @@ export class AppState {
       this.activeHubUrl = fallback;
       saveActiveHubUrl(fallback);
     }
+    // v0.4.84: propagate the removal to the synced hub list. Same
+    // fire-and-forget as addHub.
+    void this.syncHubsToVault();
   }
 
   // ---------------------------------------------------------------------
@@ -1229,10 +1272,15 @@ export class AppState {
       throw new Error('createIdentityVault requires an authenticated session');
     }
     const pub = (this.activeHub.authStatus as { pubkey: string }).pubkey;
+    // v0.4.84: seed the synced hub list with the URLs this device
+    // already knows about. Devices that later unlock the vault get
+    // this list merged into their local cove.hubs on unlock.
+    const seedHubs = [...this.hubs.keys()];
     const vault = await vaultCreate({
       priv: this.livePriv, pub,
       firstUnlock: opts.firstUnlock,
       note: opts.note,
+      hubs: seedHubs,
     });
     // Unwrap the CEK we just used so slot mutations don't need a
     // second unlock ceremony.
@@ -1433,10 +1481,38 @@ export class AppState {
     // next launch fetches the vault + presents unlock options directly,
     // rather than making the user retype pubkey in the cross-device form.
     saveVaultPubkeyFor(opts.hubUrl, unlocked.pub);
+    // v0.4.84: merge synced hub list from the vault into local hubs so
+    // any hub the user added on another device shows up here too.
+    await this.mergeHubsFromVault();
     await this.connect({
       hubUrl: opts.hubUrl, privateKey: unlocked.priv, publicKey: unlocked.pub,
       thread: opts.thread, mode: 'paste',
     });
+  }
+
+  /** v0.4.84: read the vault's synced hub list from meta.hubs and
+   *  add any URLs not already in the local Map as unauthenticated
+   *  placeholders. Called after any successful vault unlock so
+   *  hub-membership propagated on another device shows up here. */
+  private async mergeHubsFromVault(): Promise<void> {
+    if (this.liveVault === null || this.liveCek === null) return;
+    let hubs: string[] = [];
+    try {
+      const content = await readVaultContent(this.liveCek, this.liveVault);
+      hubs = content.meta?.hubs ?? [];
+    } catch {
+      return;
+    }
+    let added = false;
+    for (const url of hubs) {
+      if (!this.hubs.has(url)) {
+        const hub = new HubConnection(this, url);
+        hub.thread = loadThreadFor(url) ?? hub.thread;
+        this.hubs.set(url, hub);
+        added = true;
+      }
+    }
+    if (added) saveHubUrls([...this.hubs.keys()]);
   }
 
   /** Sign in on a fresh device via Passkey unlock of a hub-stored vault.
@@ -1458,6 +1534,8 @@ export class AppState {
     this.liveCek = unlocked.cek;
     this.liveVault = vault;
     saveVaultPubkeyFor(opts.hubUrl, unlocked.pub);
+    // v0.4.84: merge synced hub list from the vault into local hubs.
+    await this.mergeHubsFromVault();
     await this.connect({
       hubUrl: opts.hubUrl, privateKey: unlocked.priv, publicKey: unlocked.pub,
       thread: opts.thread, mode: 'paste',
@@ -1487,6 +1565,10 @@ export class AppState {
       // threat-model as today's paste-mode session.
       this.livePriv = opts.privateKey;
     }
+    // v0.4.84: track whether the URL was newly added so we can route
+    // to Inbox on success (avoiding the empty-'annual-meeting' ghost
+    // that appeared on brand-new hubs that don't have that thread).
+    const wasNewHub = !this.hubs.has(opts.hubUrl);
     const hub = this.addHub(opts.hubUrl);
     this.switchToHub(opts.hubUrl);
     await hub.authenticate(opts);
@@ -1504,10 +1586,28 @@ export class AppState {
         if (vault) {
           this.liveVault = vault;
           saveVaultPubkeyFor(opts.hubUrl, pubkey);
+        } else if (this.liveVault !== null
+                   && this.liveVault.pubkey === pubkey) {
+          // v0.4.84: newly-joined hub has NO vault yet, but we have
+          // one already unlocked from another hub — push it so the
+          // vault replicates and this hub becomes a valid source for
+          // future "sign-in on a new device" attempts.
+          try {
+            await hub.client.pushVault(this.liveVault);
+            saveVaultPubkeyFor(opts.hubUrl, pubkey);
+          } catch {
+            // Non-fatal — vaultPushFailures surfaces persistent errors.
+          }
         }
       } catch {
         // Non-fatal — a vault fetch failure doesn't undo the sign-in.
       }
+    }
+    // v0.4.84: newly-joined hub → land on Inbox instead of the stale
+    // 'annual-meeting' default. Existing-hub reconnects preserve their
+    // current route (user was probably in a thread).
+    if (wasNewHub && hub.authStatus.kind === 'authenticated') {
+      this.route = 'inbox';
     }
   }
 }

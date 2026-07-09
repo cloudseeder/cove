@@ -397,11 +397,17 @@ async function unlockPasskeyKek(slots: PasskeySlot[]): Promise<{
 
 // ---- Content encryption (CEK ↔ priv material) -------------------------
 
-interface VaultContent {
+/** v0.4.84: `meta.hubs` is a synced list of hub URLs the user is a
+ *  member of. Every device that unlocks the vault reads this on unlock
+ *  and merges into local `cove.hubs` — so adding a hub on one device
+ *  propagates to every other device automatically. Additive-merge
+ *  semantics: local additions win over vault absence, and CAS on
+ *  the vault push handles concurrent edits. */
+export interface VaultContent {
   priv: string;
   pub: string;
   created_at: string;
-  meta: { note?: string };
+  meta: { note?: string; hubs?: string[] };
 }
 
 async function encryptContent(
@@ -435,6 +441,53 @@ async function decryptContent(
   );
   const text = new TextDecoder().decode(pt);
   return JSON.parse(text) as VaultContent;
+}
+
+/** v0.4.84: expose decrypt for AppState so it can read the synced hub
+ *  list after unlock. Kept out of the main unlock functions because
+ *  those return only the priv (backward compat); this reads the
+ *  content object explicitly. */
+export async function readVaultContent(
+  cek: Uint8Array,
+  vault: VaultRecord,
+): Promise<VaultContent> {
+  return decryptContent(cek, vault.content_iv, vault.content_ciphertext);
+}
+
+/** v0.4.84: rebuild the vault with an updated hub list in
+ *  meta.hubs. The CEK is preserved (content is re-encrypted with a
+ *  fresh IV under the same CEK). Bumps prev_vault_hash to the prior
+ *  record's hash and re-signs with owner priv. */
+export async function updateVaultHubs(opts: {
+  vault: VaultRecord;
+  cek: Uint8Array;
+  ownerPriv: string;
+  hubs: string[];
+}): Promise<VaultRecord> {
+  const priorContent = await decryptContent(
+    opts.cek, opts.vault.content_iv, opts.vault.content_ciphertext,
+  );
+  const nextContent: VaultContent = {
+    priv: priorContent.priv,
+    pub: priorContent.pub,
+    created_at: priorContent.created_at,
+    meta: { ...priorContent.meta, hubs: [...opts.hubs] },
+  };
+  const { content_iv, content_ciphertext } = await encryptContent(
+    opts.cek, nextContent,
+  );
+  const priorHash = await hashVault(opts.vault);
+  const unsigned: Omit<VaultRecord, 'sig'> = {
+    pubkey: opts.vault.pubkey,
+    version: 1,
+    prev_vault_hash: priorHash,
+    content_algo: opts.vault.content_algo,
+    content_iv,
+    content_ciphertext,
+    method_slots: opts.vault.method_slots,
+    updated_at: nowIso(),
+  };
+  return signVault(unsigned, opts.ownerPriv);
 }
 
 // ---- CEK wrap/unwrap per slot -----------------------------------------
@@ -529,13 +582,22 @@ export async function createVault(opts: {
   pub: string;
   firstUnlock: FirstUnlockChoice;
   note?: string;
+  /** v0.4.84: hub URLs to seed the synced hub list with. Every device
+   *  that unlocks the vault reads meta.hubs and merges into local
+   *  cove.hubs, so a new device signing in inherits the user's hub
+   *  membership. Undefined = no hubs baked in (single-hub scenarios
+   *  or fresh onboards). */
+  hubs?: string[];
 }): Promise<VaultRecord> {
   const cek = randomBytes(32);
+  const meta: VaultContent['meta'] = {};
+  if (opts.note !== undefined) meta.note = opts.note;
+  if (opts.hubs !== undefined && opts.hubs.length > 0) meta.hubs = [...opts.hubs];
   const content: VaultContent = {
     priv: opts.priv,
     pub: opts.pub,
     created_at: nowIso(),
-    meta: opts.note !== undefined ? { note: opts.note } : {},
+    meta,
   };
   const { content_iv, content_ciphertext } = await encryptContent(cek, content);
   const slot: MethodSlot = opts.firstUnlock.kind === 'passphrase'
