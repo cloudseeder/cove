@@ -216,6 +216,9 @@
   <p>
     The easiest way to run one is Docker on a small Linux VM (a $5/month box is more than enough for a board of 20). If you already run other services on a Cloudflare Tunnel, Cove drops in the same way.
   </p>
+  <div class="callout">
+    <strong>What you need on the host:</strong> just <code>docker</code> and <code>docker compose</code>. You do <em>not</em> need Python, a virtualenv, or <code>pip install</code>. The bootstrap ceremony runs inside the freshly-built container, which brings its own Python and deps.
+  </div>
 
   <p>
     Since <strong>v0.4.76</strong> there&rsquo;s a single script that handles the whole ceremony &mdash; container tear-down, state wipe, image rebuild, bootstrap, key-custody halt, and container start &mdash; with a SHA-verified handoff prompt so the root key can&rsquo;t leave the ceremony half-done. Use it:
