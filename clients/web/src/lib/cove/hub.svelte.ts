@@ -250,6 +250,27 @@ export class HubConnection {
     };
   }
 
+  /** v0.4.83: sign an already-canonicalized admin payload (mint invite,
+   *  revoke invite, tier override — the /admin/* endpoints that take
+   *  {payload, sig} rather than a full signed manifest). Same Tauri /
+   *  PWA branch as rootSigner() so admin-payload flows work from the
+   *  PWA too, not just from Tauri. */
+  private async signRootPayload(message: Uint8Array): Promise<string> {
+    const org = this.manifest?.org;
+    if (!this.app.inTauri) {
+      const priv = this.app.liveRootPriv;
+      if (!priv) {
+        throw new Error(
+          'Root vault is locked. Open Admin → Root key custody and '
+          + 'enter your passphrase to unlock.',
+        );
+      }
+      const { sign: signMessage } = await import('./crypto');
+      return signMessage(priv, message);
+    }
+    return rootKeychain.signMessage(message, org);
+  }
+
   /** Tear down all per-hub resources. Called by AppState.reset() and by
    *  Phase 2's removeHub(). */
   dispose(): void {
@@ -968,7 +989,7 @@ export class HubConnection {
     this.adminStatus = { kind: 'submitting' };
     try {
       const payload = { pubkey: opts.pubkey, tier: opts.tier };
-      const sig = await rootKeychain.signMessage(canonicalize(payload), this.manifest?.org);
+      const sig = await this.signRootPayload(canonicalize(payload));
       await this.client.submitTierOverride({ payload, sig });
       this.adminStatus = { kind: 'idle' };
     } catch (err) {
@@ -1012,7 +1033,7 @@ export class HubConnection {
       if (opts.nameHint && opts.nameHint.trim()) {
         payload.name_hint = opts.nameHint.trim();
       }
-      const sig = await rootKeychain.signMessage(canonicalize(payload), this.manifest?.org);
+      const sig = await this.signRootPayload(canonicalize(payload));
       const inv = await this.client.submitInviteMint({ payload, sig });
       this.adminStatus = { kind: 'idle' };
       this.invites = [...this.invites, inv];
@@ -1028,7 +1049,7 @@ export class HubConnection {
     this.adminStatus = { kind: 'submitting' };
     try {
       const payload = { code };
-      const sig = await rootKeychain.signMessage(canonicalize(payload), this.manifest?.org);
+      const sig = await this.signRootPayload(canonicalize(payload));
       await this.client.submitInviteRevoke({ code, payload, sig });
       this.adminStatus = { kind: 'idle' };
       this.invites = this.invites.filter((i) => i.code !== code);
