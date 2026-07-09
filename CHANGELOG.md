@@ -4,6 +4,63 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.87] — 2026-07-09
+
+Third-hub-in-an-afternoon release. Brooks stood up a hub for a friend's
+FL HOA using the shipped scripts and docs, and the paper cuts he found
+along the way are all fixed here.
+
+### Added
+- **`scripts/tunnel_add.sh`** — cloudflared companion to `genesis.sh`.
+  Encodes the manual DNS + ingress + reload dance:
+    1. Read tunnel name from `/etc/cloudflared/config.yml` (or `$TUNNEL`).
+    2. `cloudflared tunnel route dns <tunnel> <hostname>` creates the CNAME.
+    3. Insert the ingress rule above the `http_status:404` catch-all,
+       preserving the existing file's indentation via awk.
+    4. `systemctl reload cloudflared` (falls back to `restart` when the
+       running cloudflared version doesn't support reload).
+    5. `curl https://<hostname>/healthz` and interpret the response —
+       502 → "run genesis first", 000 → "DNS hasn't propagated",
+       200 → done.
+  Idempotent: running twice with the same args is a no-op after the
+  first success. Backs up config.yml with a timestamped `.bak.` before
+  rewriting. Refuses cleanly (with a hint) when the config has no
+  `http_status:404` catch-all to anchor the insertion, when `cert.pem`
+  is missing, or when the hostname already CNAMEs to a different tunnel.
+
+  Usage:
+  ```
+  sudo ./scripts/tunnel_add.sh <hostname> <port>
+  ```
+
+### Changed
+- **`genesis.sh` accepts arbitrary hub names** instead of only `lwccoa`
+  and `brooks`. The hub-name argument now truly drives the identifier:
+  Compose project name = `<name>`, state dir = `./<name>-state`,
+  container = `<name>-hub`, default public hostname =
+  `<name>-hub.oap.dev`. New optional flags: `--port <n>`,
+  `--hostname <fqdn>`, `--org-name "<name>"`, `--keymaster "<name>"`.
+  `lwccoa` and `brooks` retain their historical port (8000 / 8001)
+  and org-name defaults so the two shipped commands work unchanged.
+  Everything else derives from the name.
+
+  `/start` docs updated with the new usage; new callout walks through
+  a full flag combo for a fresh org (`--port`, `--hostname`,
+  `--org-name`, `--keymaster` together).
+
+### Docs
+- **`/start` explicitly states that no host Python or venv is needed.**
+  Someone spinning up a hub for the first time might reasonably wonder
+  whether they need to `pip install cove` before running `genesis.sh`
+  — they don't (the bootstrap runs inside the container). New callout
+  right after the "Docker on a small Linux VM" paragraph makes this
+  unambiguous.
+
+- **`/start` references `tunnel_add.sh`** right after the "point a
+  domain at the container" paragraph, so anyone standing up a hub
+  behind an existing Cloudflare Tunnel doesn't have to re-derive the
+  manual DNS + ingress + reload steps.
+
 ## [0.4.86] — 2026-07-08
 
 ### Docs
