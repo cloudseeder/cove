@@ -4,6 +4,22 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.83] — 2026-07-08
+
+### Fixed
+- **Mint invite / revoke invite / tier override from PWA.** The v0.4.80
+  PWA-safe root-custody feature wired up `HubConnection.rootSigner()`
+  for manifest-signing paths (attest, revoke, edit roles, capabilities,
+  groups), but three admin-payload paths — `submitTierOverride`,
+  `mintInvite`, `revokeInvite` — still called
+  `rootKeychain.signMessage(...)` directly. On PWA that threw
+  "Tauri command 'root_sign_message' called outside Tauri context"
+  and the click did nothing. Extracted a `signRootPayload(message)`
+  helper on HubConnection that branches on `inTauri` exactly like
+  `rootSigner()`; PWA signs in-JS with `liveRootPriv`, Tauri routes
+  through the Rust keychain. All three admin-payload sites now
+  complete the same round-trip on both platforms.
+
 ## [0.4.82] — 2026-07-08
 
 Board-rollout UX polish before Amy's onboarding test tomorrow. No
