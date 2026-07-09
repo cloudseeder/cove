@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Join Cove — Getting started</title>
+  <meta name="description" content="You've been invited to join a Cove group. Install the app, use your invite code, learn your way around." />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='14' font-size='14'%3E🪶%3C/text%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #fbf7ee;
+      --panel: #ffffff;
+      --fg: #2b2620;
+      --muted: #6f6a60;
+      --border: #e6ddc9;
+      --gold: #b8892f;
+      --gold-soft: #f0e2b8;
+      --code-bg: #f2ecdc;
+      --serif: "Iowan Old Style", "Palatino", "Georgia", ui-serif, serif;
+      --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #17140f;
+        --panel: #1e1a13;
+        --fg: #f2ead8;
+        --muted: #9c948a;
+        --border: #33291b;
+        --gold: #d4af37;
+        --gold-soft: rgba(212, 175, 55, 0.15);
+        --code-bg: #23200c;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      background: var(--bg); color: var(--fg);
+      font-family: var(--sans);
+      font-size: 17px; line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 760px;
+      margin: 0 auto;
+      padding: 2.5rem 1.5rem 4rem;
+    }
+    .back {
+      display: inline-block;
+      color: var(--muted);
+      font-size: 0.9rem;
+      text-decoration: none;
+      margin-bottom: 1.5rem;
+      border-bottom: 1px dotted var(--border);
+    }
+    .back:hover { color: var(--gold); border-color: var(--gold); }
+    h1 {
+      font-family: var(--serif); font-weight: 400;
+      font-size: clamp(1.9rem, 4.5vw, 2.6rem);
+      line-height: 1.15; letter-spacing: -0.01em;
+      margin: 0 0 0.6rem;
+    }
+    .subhead {
+      color: var(--muted); font-size: 1.1rem;
+      margin: 0 0 2.5rem; line-height: 1.4;
+    }
+    h2 {
+      font-family: var(--serif); font-weight: 400;
+      font-size: 1.55rem; margin: 3rem 0 0.5rem;
+      letter-spacing: -0.005em;
+      display: flex; align-items: baseline; gap: 0.7rem;
+    }
+    h2 .num {
+      display: inline-block;
+      min-width: 2.2rem; height: 2.2rem;
+      line-height: 2.2rem; text-align: center;
+      background: var(--gold-soft); color: var(--gold);
+      border-radius: 50%;
+      font-family: var(--sans);
+      font-size: 1rem; font-weight: 600;
+      flex-shrink: 0;
+    }
+    h3 {
+      font-family: var(--sans); font-weight: 600;
+      font-size: 1.05rem; margin: 1.8rem 0 0.5rem;
+    }
+    p { margin: 0 0 1rem; }
+    a { color: var(--gold); text-decoration: underline;
+        text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    a:hover { color: var(--fg); }
+    code {
+      background: var(--code-bg);
+      padding: 0.1rem 0.35rem;
+      border-radius: 4px;
+      font-family: var(--mono);
+      font-size: 0.9em;
+    }
+    ol, ul { padding-left: 1.4rem; margin: 0.5rem 0 1.2rem; }
+    li { margin: 0.3rem 0; }
+    .callout {
+      background: var(--panel);
+      border-left: 3px solid var(--gold);
+      padding: 0.9rem 1.1rem;
+      margin: 1.2rem 0;
+      border-radius: 0 8px 8px 0;
+      font-size: 0.94rem;
+    }
+    .callout strong { color: var(--fg); }
+    .callout.tip { border-left-color: #7ba650; background: rgba(123, 166, 80, 0.06); }
+    @media (prefers-color-scheme: dark) {
+      .callout.tip { background: rgba(123, 166, 80, 0.12); }
+    }
+    .primary-cta {
+      display: inline-block;
+      background: var(--gold);
+      color: var(--bg);
+      padding: 0.8rem 1.4rem;
+      border-radius: 8px;
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 1.02rem;
+      margin: 0.5rem 0.5rem 1.5rem 0;
+      transition: background 120ms;
+    }
+    .primary-cta:hover { background: var(--fg); color: var(--bg); }
+    .install-steps { margin: 0.5rem 0; padding-left: 1.4rem; }
+    .install-steps li { margin: 0.3rem 0; }
+    .device-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+    .device-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem 1.1rem;
+    }
+    .device-card h3 { margin: 0 0 0.4rem; font-size: 1rem; }
+    .device-card p { margin: 0; font-size: 0.9rem; color: var(--muted); }
+    .row-of-two {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 1.4rem;
+      margin: 1rem 0 1.6rem;
+    }
+    .row-of-two h3 { margin-top: 0.4rem; }
+    footer {
+      margin-top: 4rem;
+      padding-top: 2rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.88rem;
+      display: flex;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.8rem;
+    }
+    footer a { color: var(--muted); border-bottom: 1px dotted var(--border); text-decoration: none; }
+    footer a:hover { color: var(--gold); border-color: var(--gold); }
+    @media (max-width: 480px) {
+      .wrap { padding: 1.5rem 1.1rem 3rem; }
+      h1 { font-size: 1.7rem; }
+      h2 { font-size: 1.3rem; }
+      h2 .num { min-width: 1.9rem; height: 1.9rem; line-height: 1.9rem; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <a href="/" class="back">&larr; about Cove</a>
+
+  <h1>Welcome to Cove.</h1>
+  <p class="subhead">
+    Someone in your group invited you. This page walks you through the whole thing &mdash; install the app, use your invite code, and find your way around. Plan on about ten minutes.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 1: INSTALL                                               -->
+  <!-- ============================================================ -->
+  <h2><span class="num">1</span>Install Cove on your phone or laptop.</h2>
+  <p>
+    Cove runs as a <strong>web app</strong> that installs to your home screen or dock &mdash; just like a regular app. Nothing to download from an app store; the code loads once and stays offline-capable. Updates arrive automatically.
+  </p>
+  <a class="primary-cta" href="https://app.cove.oap.dev">Open Cove &rarr;</a>
+
+  <h3>On iPhone or iPad (Safari)</h3>
+  <ol class="install-steps">
+    <li>Open <a href="https://app.cove.oap.dev">app.cove.oap.dev</a> in <strong>Safari</strong>. Chrome and other browsers on iOS forward to Safari when you install anyway.</li>
+    <li>Tap the <strong>Share</strong> icon at the bottom (a square with an up-arrow).</li>
+    <li>Scroll down in the share sheet and tap <strong>Add to Home Screen</strong>.</li>
+    <li>Tap <strong>Add</strong> in the top-right.</li>
+    <li>Open Cove from your home screen. It runs full-screen with its own icon.</li>
+  </ol>
+
+  <h3>On Android (Chrome)</h3>
+  <ol class="install-steps">
+    <li>Open <a href="https://app.cove.oap.dev">app.cove.oap.dev</a> in <strong>Chrome</strong>.</li>
+    <li>Tap the <strong>&vellip;</strong> menu (top-right).</li>
+    <li>Tap <strong>Install app</strong> (or on some Chrome versions, <strong>Add to Home screen</strong>).</li>
+    <li>Confirm on the prompt.</li>
+    <li>Open Cove from your home screen or app drawer.</li>
+  </ol>
+
+  <h3>On a laptop (Chrome or Safari)</h3>
+  <ol class="install-steps">
+    <li>Open <a href="https://app.cove.oap.dev">app.cove.oap.dev</a>.</li>
+    <li><strong>Chrome:</strong> click the install icon in the address bar (a small screen with an arrow), then <strong>Install</strong>. <strong>Safari 17+ on Mac:</strong> File menu &rarr; <strong>Add to Dock&hellip;</strong>.</li>
+    <li>Cove appears in your dock/taskbar. Launch from there.</li>
+  </ol>
+
+  <div class="callout">
+    <strong>Why a web app and not a native one?</strong> Native App Store apps take weeks of review for every change, and updates on your phone only arrive when you remember to open the App Store. Cove's web app updates the moment your keymaster ships a fix, and installs the same to a home-screen icon. You lose nothing except an App Store loading bar.
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 2: ONBOARD                                               -->
+  <!-- ============================================================ -->
+  <h2><span class="num">2</span>Use your invite code.</h2>
+  <p>
+    Your keymaster texted or handed you an invite code &mdash; a string of letters and numbers, single-use, expires within a day or two. When you first open Cove, you'll see a <strong>Get started</strong> button.
+  </p>
+  <ol>
+    <li>Tap <strong>Get started</strong>.</li>
+    <li>Enter your <strong>name</strong> (how the group will see you), the <strong>hub URL</strong> your keymaster gave you (e.g. <code>https://lwccoa-hub.oap.dev</code>), and the <strong>invite code</strong>.</li>
+    <li>Pick how you'll unlock Cove on this device:
+      <ul>
+        <li><strong>Passkey</strong> (recommended) &mdash; your device's Face ID / Touch ID / fingerprint. One tap to sign in later. Syncs across your Apple or Google devices.</li>
+        <li><strong>Passphrase</strong> &mdash; type it yourself. Works everywhere, including non-biometric devices. Pick something you'll remember; there's no reset.</li>
+      </ul>
+    </li>
+    <li>Tap <strong>Get started</strong>. Cove generates a keypair on your device and asks your keymaster to attest you.</li>
+    <li>You'll see a <strong>waiting</strong> screen with a colorful fingerprint. Your keymaster sees your request in their admin panel. When they approve you, this screen flips into the app automatically.</li>
+  </ol>
+
+  <div class="callout tip">
+    <strong>The fingerprint is your identity.</strong> The colorful strip on the waiting screen is a visual summary of your public key. If a keymaster ever asks you to confirm your identity out-of-band, that fingerprint is what to check. Nobody else has the same one.
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 3: THE TWO VIEWS                                         -->
+  <!-- ============================================================ -->
+  <h2><span class="num">3</span>Inbox and threads.</h2>
+  <p>
+    Cove has two main ways to look at your group's messages. Understanding both makes the app feel obvious instead of overwhelming.
+  </p>
+
+  <div class="row-of-two">
+    <div>
+      <h3>Inbox &mdash; "what's new"</h3>
+      <p>
+        The Inbox is Cove's landing screen. It lists <strong>every thread with the most recent activity first</strong>, showing you the latest message, who wrote it, and how many are unread. Think of it like an email inbox: you scan for what needs your attention, tap into the specific thread, catch up.
+      </p>
+      <p>
+        Unread threads bubble to the top with a small dot. Once you read them, they settle back into chronological order.
+      </p>
+    </div>
+    <div>
+      <h3>Threads &mdash; "the whole conversation"</h3>
+      <p>
+        A thread is one conversation about one topic. When you tap a thread from the Inbox (or from the sidebar), you see every message in it in order, from first to most recent. Long threads scroll like any messaging app.
+      </p>
+      <p>
+        Threads have names. The sidebar shows every thread the group has going, so you can jump between them without going back to the Inbox.
+      </p>
+    </div>
+  </div>
+
+  <p>
+    The <strong>sidebar</strong> on the left is your permanent nav: Inbox at the top, then a list of Threads (scrollable if there are many), then hubs at the bottom. On phones and narrow windows, the sidebar collapses; a hamburger button at the top-left reopens it.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 4: POST                                                  -->
+  <!-- ============================================================ -->
+  <h2><span class="num">4</span>Reading and posting.</h2>
+  <p>
+    Inside a thread, type your message in the compose box at the bottom and hit send. Attachments (photos, PDFs, spreadsheets) go through the paperclip icon &mdash; they're stored on your group's hub, not in a third-party cloud.
+  </p>
+
+  <h3>Cards view vs. chat view</h3>
+  <p>
+    Cove offers two ways to render a thread's messages:
+  </p>
+  <ul>
+    <li><strong>Cards view</strong> &mdash; each message is a formal card with sender, timestamp, and a signed "seal" you can click to see the verification chain. Feels like a public record. Good for governance threads where each message is a discrete statement.</li>
+    <li><strong>Chat view</strong> &mdash; messages stack tighter, grouped by author. Feels like WhatsApp or Slack. Good for back-and-forth conversation where the flow matters more than the individual message.</li>
+  </ul>
+  <p>
+    Toggle via the icon at the top of the thread pane. Your choice is per-device and persists between sessions.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 5: NEW THREADS                                           -->
+  <!-- ============================================================ -->
+  <h2><span class="num">5</span>Starting a thread.</h2>
+  <p>
+    You can start a thread anytime by clicking the <strong>+</strong> button next to the Threads section header in the sidebar, or the <strong>+ New thread</strong> button in the Inbox.
+  </p>
+
+  <h3>Naming conventions</h3>
+  <ul>
+    <li><strong>Keep names short and descriptive</strong>: <code>budget-2027</code>, <code>reservoir-project</code>, <code>annual-meeting</code>. Hyphens are conventional but spaces work too.</li>
+    <li><strong>Use existing threads when they fit.</strong> Cove doesn't force topical hygiene, but future you (and your board) will thank present you for keeping related discussion together.</li>
+    <li><strong>Names are permanent-ish.</strong> There's no rename; if a name isn't working, start a fresh thread and archive the old one.</li>
+  </ul>
+
+  <h3>Public vs. private threads</h3>
+  <p>
+    When you create a thread, you'll pick an <strong>audience</strong>:
+  </p>
+  <ul>
+    <li><strong>Public</strong> &mdash; every attested member of the group can see it, subscribe, receive notifications, and post. This is the default and covers most conversations.</li>
+    <li><strong>Private</strong> &mdash; only the members you pick can see or participate. Useful for committee subsets, personnel matters, or a coordinating chat between a couple of officers. The audience is signed into the thread; you can't accidentally forward it out of scope.</li>
+  </ul>
+
+  <!-- ============================================================ -->
+  <!-- STEP 6: EPHEMERAL VS. IMMUTABLE                               -->
+  <!-- ============================================================ -->
+  <h2><span class="num">6</span>Ephemeral vs. permanent threads.</h2>
+  <p>
+    Cove treats "how long does this need to live?" as a first-class decision. Some conversations should be on the record forever; others shouldn't outlive their purpose. Every thread is one of two kinds:
+  </p>
+
+  <div class="row-of-two">
+    <div>
+      <h3>Permanent (default)</h3>
+      <p>
+        Once posted, entries in a permanent thread are there forever &mdash; verifiable line by line, signed by the person who wrote them, part of the group's tamper-evident log. Governance decisions, meeting minutes, financial discussions, anything you might need to reference three years from now.
+      </p>
+      <p>
+        <strong>What gets kept:</strong> everything. Every message, every attachment, every read receipt.
+      </p>
+    </div>
+    <div>
+      <h3>Ephemeral</h3>
+      <p>
+        Ephemeral threads carry a self-declared expiration. When their time's up, the hub seals the thread and its contents disappear. A signed record proves what the thread was about and when it existed &mdash; but the messages themselves are gone.
+      </p>
+      <p>
+        Good for: a beach cleanup coordinating chat, the recital, a spring social, back-and-forth about a one-time event. Anything where "the conversation was useful in the moment but shouldn't clutter the archive."
+      </p>
+      <p>
+        <strong>What gets kept:</strong> the fact the thread existed, its name, when it was created, when it expired, and a signed proof of what was inside so nobody can later dispute whether it happened. The <em>messages themselves</em> are gone.
+      </p>
+    </div>
+  </div>
+
+  <p>
+    You pick permanent or ephemeral when you create the thread. Ephemeral threads show an hourglass icon and a countdown in the sidebar.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- STEP 7: SAME ID EVERYWHERE                                    -->
+  <!-- ============================================================ -->
+  <h2><span class="num">7</span>Using Cove on more than one device.</h2>
+  <p>
+    Once you're signed in on your first device, adding a second one is a two-minute round-trip. You never generate new keys; the same identity travels with you.
+  </p>
+  <ol>
+    <li>Install Cove on the second device (Step 1 above).</li>
+    <li>On the launch screen, scroll to <strong>"Signing in from a new device? Use your Cove vault"</strong>.</li>
+    <li>Enter your hub URL and your <strong>public key</strong> (visible in the sidebar footer on your first device; tap to copy).</li>
+    <li>Unlock with your Passkey (one tap) or passphrase.</li>
+    <li>You're in. Same identity, same threads, same everything.</li>
+  </ol>
+
+  <div class="callout">
+    <strong>Cross-ecosystem is fine.</strong> Passkeys don't sync between Apple's iCloud Keychain and Google's Password Manager &mdash; that's an industry limitation, not Cove's. If your phone is Android and your laptop is Mac, use a Passkey on each (they'll each unlock the same identity) plus a passphrase as a shared fallback that works on any device.
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- STEP 8: FEDERATION                                            -->
+  <!-- ============================================================ -->
+  <h2><span class="num">8</span>Being in more than one group.</h2>
+  <p>
+    Some people are in multiple Cove groups &mdash; an HOA, a church council, a small nonprofit. You can add all of them to one Cove client and switch between them from the sidebar.
+  </p>
+  <p>
+    Each group's keymaster gives you a separate invite code. The keymaster of the second group attests <em>the same identity you already have</em>, so no new keys, no new sign-in ceremony. From the Cove sidebar, tap <strong>+ Add another hub</strong>, enter the new URL, and the app authenticates you against it.
+  </p>
+  <p>
+    Once added, hubs appear as rows near the bottom of the sidebar. Tap one to switch. Threads, Inbox, notifications &mdash; everything flips to that group's view.
+  </p>
+
+  <!-- ============================================================ -->
+  <!-- WRAP                                                          -->
+  <!-- ============================================================ -->
+  <h2 style="margin-top: 3.5rem; font-size: 1.35rem;">That's the whole thing.</h2>
+  <p>
+    Cove is small on purpose. There's no feed algorithm, no ad targeting, no plugin marketplace. Just your group, having its conversations, on your group's server, forever.
+  </p>
+  <p>
+    If you get stuck, the person who invited you can help &mdash; they're either your keymaster or one keystroke away from them. And if you're curious about the technical details, the <a href="/specs">specifications page</a> lays out the whole protocol.
+  </p>
+
+  <footer>
+    <span>Cove is a project by <a href="https://oap.dev">oap.dev</a>.</span>
+    <span>
+      <a href="/">Home</a> &middot;
+      <a href="/start">Run your own hub</a> &middot;
+      <a href="/specs">Specs</a> &middot;
+      <a href="/rules">Rules</a> &middot;
+      <a href="https://app.cove.oap.dev">App</a>
+    </span>
+  </footer>
+</div>
+</body>
+</html>

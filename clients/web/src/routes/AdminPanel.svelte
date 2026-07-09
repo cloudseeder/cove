@@ -412,13 +412,15 @@
   }
   async function submitMint() {
     if (!mintDialog) return;
+    const nameHint = mintDialog.nameHint;
     mintDialog = { ...mintDialog, submitting: true };
     const inv = await app.mintInvite({
       ttlSeconds: mintDialog.ttlSeconds,
-      nameHint: mintDialog.nameHint,
+      nameHint,
     });
     if (inv) {
       lastMinted = { code: inv.code, expires_at: inv.expires_at };
+      lastMintedNameHint = nameHint.trim();
       mintDialog = null;
     } else if (mintDialog) {
       mintDialog = { ...mintDialog, submitting: false };
@@ -430,6 +432,47 @@
       copied = code;
       setTimeout(() => { if (copied === code) copied = null; }, 1500);
     } catch { /* clipboard unavailable; code is visible */ }
+  }
+
+  // v0.4.85: pre-composed welcome message the keymaster can copy and
+  // send out-of-band (SMS, Signal, email). Bundles hub URL + invite
+  // code + a link to love.cove.oap.dev/join so the recipient has one
+  // place to start.
+  const welcomeMessage = $derived.by(() => {
+    if (!lastMinted) return '';
+    const senderName = app.myAttestation?.display_name ?? 'your keymaster';
+    const recipient = lastMintedNameHint || 'there';
+    const hubUrl = app.activeHubUrl ?? '';
+    return [
+      `Hi ${recipient},`,
+      '',
+      `You've been invited to join ${senderName}'s Cove group — a small, verifiable messaging space where every message is signed and every delivery is proven.`,
+      '',
+      'Your invite code (single-use, expires soon):',
+      '',
+      `    ${lastMinted.code}`,
+      '',
+      'Get set up in about ten minutes:',
+      '    https://love.cove.oap.dev/join',
+      '',
+      'Your hub is at:',
+      `    ${hubUrl}`,
+      '',
+      'That link walks you through installing Cove on your phone or laptop, using the invite code, and finding your way around. It’s designed for your first time.',
+      '',
+      `— ${senderName}`,
+    ].join('\n');
+  });
+  // Track the name-hint the LAST mint used so the welcome message can
+  // greet the recipient by name even after the mint dialog closes.
+  let lastMintedNameHint = $state('');
+  let welcomeCopied = $state(false);
+  async function copyWelcomeMessage() {
+    try {
+      await navigator.clipboard.writeText(welcomeMessage);
+      welcomeCopied = true;
+      setTimeout(() => { welcomeCopied = false; }, 1800);
+    } catch { /* clipboard unavailable; textarea content is selectable */ }
   }
   async function handleRevoke(code: string) {
     if (!confirm('Revoke this invite? The recipient will get an "invalid code" error if they try to use it.')) return;
@@ -1300,6 +1343,30 @@
               {copied === lastMinted.code ? 'Copied!' : 'Copy'}
             </button>
           </div>
+
+          <!-- v0.4.85: pre-composed welcome message. Bundles the invite
+               code + hub URL + a link to love.cove.oap.dev/join so the
+               recipient has one place to start. The keymaster copies
+               and sends via SMS / Signal / email — whatever channel
+               they trust for delivery. -->
+          <div class="welcome-message">
+            <div class="welcome-header">
+              <span class="welcome-label">Ready-to-share welcome message</span>
+              <button type="button" class="ghost small"
+                onclick={copyWelcomeMessage}>
+                {welcomeCopied ? '✓ Copied' : 'Copy message'}
+              </button>
+            </div>
+            <textarea class="welcome-text" readonly rows="14"
+              onclick={(e) => (e.target as HTMLTextAreaElement).select()}
+              >{welcomeMessage}</textarea>
+            <p class="muted small">
+              Delivery is up to you — text message, Signal, email, in
+              person. The code is single-use; the recipient's device
+              generates their identity locally and your keymaster
+              attests them from the pending queue above.
+            </p>
+          </div>
         </div>
       {/if}
 
@@ -2022,6 +2089,38 @@
     border-radius: 10px;
     padding: 0.9rem 1.1rem;
     margin: 0 0 1rem;
+  }
+  /* v0.4.85: pre-composed welcome message panel, appears below the
+     minted code. Neutral border/background so it reads as a secondary
+     affordance under the primary "here's your code" moment. */
+  .welcome-message {
+    margin-top: 1rem;
+    padding-top: 0.9rem;
+    border-top: 1px dashed var(--border);
+  }
+  .welcome-header {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 0.7rem; margin-bottom: 0.5rem;
+  }
+  .welcome-label {
+    font-size: 0.85rem; color: var(--muted); font-weight: 500;
+  }
+  .welcome-text {
+    width: 100%; box-sizing: border-box;
+    background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.7rem 0.9rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.86rem;
+    line-height: 1.5;
+    resize: vertical;
+    min-height: 12rem;
+  }
+  .welcome-text:focus {
+    outline: none; border-color: rgba(212, 175, 55, 0.5);
+  }
+  .welcome-message p.muted.small {
+    margin: 0.5rem 0 0;
   }
   .code-row {
     display: flex; align-items: center; gap: 0.7rem;
