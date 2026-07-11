@@ -4,6 +4,24 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.88] — 2026-07-09
+
+### Fixed
+- **New public threads without a first message silently vanished.**
+  Threads are open-namespace on the wire — they materialize when the
+  first entry lands on the hub. The dialog's message field was
+  labeled "optional (you can post later)"; for public threads with
+  no message, `switchThread` ran but nothing was posted, so the thread
+  never materialized. It briefly appeared in the sidebar as the
+  transient pending-active row, then vanished on the next switch or
+  reload — a silent failure from the user's perspective. (Private
+  and ephemeral cases materialize via `setThreadAudience` /
+  `openEphemeralThread` even without a message, but the mixed
+  behavior made the bug harder to reason about.) Fix: require the
+  first message in every case. Placeholder now reads "the thread
+  exists once you send it"; a muted note explains the model.
+  Submit disabled until both name and message are filled.
+
 ## [0.4.87] — 2026-07-09
 
 Third-hub-in-an-afternoon release. Brooks stood up a hub for a friend's
