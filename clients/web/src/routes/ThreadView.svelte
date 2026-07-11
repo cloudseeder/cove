@@ -666,7 +666,20 @@
     <label>
       <span>First message</span>
       <textarea bind:value={d.message} rows="3"
-        placeholder="Type the first message (optional — you can post later)…"></textarea>
+        placeholder="Type the first message — the thread exists once you send it…"></textarea>
+      <!-- v0.4.88: threads materialize when the first entry lands on
+           the hub. Without a first message, a public thread never
+           gets an entry and vanishes on reload — silently, from the
+           user's perspective. Requiring the message is the honest
+           reflection of how the wire works. Private threads still
+           materialize via setThreadAudience even without a message
+           (they need the audience declaration regardless) but for a
+           consistent UX we require the message in every case. -->
+      <p class="muted small">
+        Threads only exist once they have a message. If you want to
+        pick a name and think for a while, come back when you're ready
+        to send the first line.
+      </p>
     </label>
 
     {#if d.error}
@@ -677,7 +690,8 @@
       <button type="button" class="ghost" onclick={() => app.closeNewThreadDialog()}
         disabled={d.submitting}>Cancel</button>
       <button type="button" onclick={() => app.submitNewThread()}
-        disabled={d.submitting || d.name.trim() === ''}>
+        disabled={d.submitting || d.name.trim() === ''
+                  || d.message.trim() === ''}>
         {d.submitting
           ? 'Creating…'
           : (d.scope === 'private' ? 'Create private thread' : 'Create thread')}
