@@ -544,6 +544,12 @@ export class HubConnection {
   async post(body: string, files: File[] = [],
              replyTo: VerifiedEntry | null = null): Promise<void> {
     if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    // v0.5.3: refuse empty posts at the client edge too. The hub rejects
+    // them, but the UI shouldn't ever generate a request the hub will
+    // reject.
+    if (!body.trim() && files.length === 0) {
+      throw new Error('empty_body');
+    }
     const blobs = files.length === 0
       ? []
       : await Promise.all(files.map((f) => this.client!.uploadBlob(f)));
@@ -563,6 +569,35 @@ export class HubConnection {
     };
     await this.client.post(ev);
     void this.loadThreads();
+  }
+
+  /** v0.5.3: post a kind='supersede' entry that replaces the body of an
+   *  earlier entry the caller authored. Same-thread + same-author is
+   *  enforced client-side (UI only surfaces the affordance on the
+   *  caller's own entries) AND hub-side (spec §3.3, pipeline
+   *  supersede_wrong_author rejection). Renderers walk the supersede
+   *  chain to show the newest body over the original; the log still
+   *  carries every version for audit. */
+  async editPost(targetEntryId: string, newBody: string): Promise<void> {
+    if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    if (!newBody.trim()) {
+      throw new Error('empty_body');
+    }
+    const ev = {
+      thread: this.thread,
+      author: this.authStatus.pubkey,
+      kind: 'supersede' as const,
+      created_at: new Date().toISOString(),
+      parents: [],
+      body: newBody,
+      blobs: [],
+      supersedes: targetEntryId,
+      receipt: null,
+      branch_thread: null,
+      id: null,
+      sig: null,
+    };
+    await this.client.post(ev);
   }
 
   async loadThreads(): Promise<void> {

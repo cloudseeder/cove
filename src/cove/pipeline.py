@@ -174,6 +174,33 @@ class Pipeline:
                 f"ephemeral thread {ev.thread!r} has no ephemeral translog wired",
             )
 
+        # v0.5.3: reject empty-content posts. A post/reply/notice/supersede
+        # with no body AND no blobs is unrenderable — it appears in the
+        # feed as a blank row (Brooks hit one in `flood-recovery`).
+        # Attachment-only entries are legitimate (a PDF share with no
+        # commentary), so the rule is "body OR blobs, not neither."
+        if ev.kind in ("post", "reply", "notice", "supersede"):
+            if not ev.body.strip() and not ev.blobs:
+                raise AcceptanceError("empty_body")
+
+        # v0.5.3: supersede (edit) authorization. A supersede entry MUST
+        # (a) name a real prior entry via `supersedes`, (b) live in the
+        # same thread as its target, and (c) share the same author.
+        # Without (c) anyone could rewrite anyone else's posts —
+        # accountability is what makes the log useful. Same-thread (b)
+        # prevents a supersede-across-threads that would confuse the
+        # "walk the thread to find the latest body" client rule.
+        if ev.kind == "supersede":
+            if not ev.supersedes:
+                raise AcceptanceError("supersede_missing_target")
+            target = self.store.get(ev.supersedes)
+            if target is None:
+                raise AcceptanceError("supersede_target_unknown")
+            if target.thread != ev.thread:
+                raise AcceptanceError("supersede_wrong_thread")
+            if target.author != ev.author:
+                raise AcceptanceError("supersede_wrong_author")
+
         # 8. Assign per-thread seq, persist, extend translog, materialize the new STH.
         # Store-before-log because the entry store is source of truth (§9); the log
         # leaf commits to (id, per-thread seq) so the hub cannot later equivocate

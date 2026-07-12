@@ -87,6 +87,9 @@ class StubStore:
     def exists(self, entry_id: str) -> bool:
         return entry_id in self._by_id
 
+    def get(self, entry_id: str):
+        return self._by_id.get(entry_id)
+
     def is_ephemeral(self, thread: str) -> bool:
         return thread in self._ephemeral
 
@@ -724,3 +727,144 @@ def test_audience_noop_accepted(no_structural, hub_keypair, keypair):
     ev = sign_entry(_audience("t1", apub, [apub, other_pub]), apriv)
     pl.accept(ev)   # must not raise
     assert pl.store.appended == [(ev.id, 0)]
+
+
+# ---- v0.5.3: empty-body guard + supersede (edit) authorization ------------
+
+def _sign_kind(thread, author_pub, author_priv, kind, body="", *,
+               supersedes=None, blobs=None):
+    return sign_entry(Entry(
+        thread=thread, author=author_pub, kind=kind,
+        created_at="2026-01-01T00:00:00Z", body=body,
+        supersedes=supersedes,
+        blobs=blobs or [],
+    ), author_priv)
+
+
+def test_empty_body_post_rejected(pipeline):
+    """v0.5.3: a post with no body AND no blobs is unrenderable —
+    reject before it lands. Brooks hit one in `flood-recovery`."""
+    pl, apriv, apub = pipeline
+    ev = _sign_kind("t1", apub, apriv, "post", body="")
+    with pytest.raises(AcceptanceError, match="empty_body"):
+        pl.accept(ev)
+    assert pl.translog.current_sth().tree_size == 0
+
+
+def test_whitespace_only_body_rejected(pipeline):
+    """Just spaces counts as empty. .strip() decides."""
+    pl, apriv, apub = pipeline
+    ev = _sign_kind("t1", apub, apriv, "post", body="   \n\t ")
+    with pytest.raises(AcceptanceError, match="empty_body"):
+        pl.accept(ev)
+
+
+def test_empty_body_with_blob_ref_accepted(no_structural, hub_keypair, keypair):
+    """Attachment-only entries are legitimate — a PDF share with no
+    commentary. Body-OR-blobs is the rule, not body-AND-blobs."""
+    from cove.entry import BlobRef
+    priv, pub = hub_keypair
+    apriv, apub = keypair
+    directory = StubDirectory(attested={apub: _Att(role="member")})
+    # StubStore's `exists` is a member check on _by_id, which won't
+    # know about a blob ref. Use a stub blobs backend that says
+    # everything's there — the point of the test is the empty-body path.
+    class _AllBlobsPresent:
+        def has(self, _h): return True
+        def record_references(self, *_a, **_kw): pass
+    pl = Pipeline(
+        store=StubStore(),
+        directory=directory,
+        translog=TamperEvidentLog(priv, pub),
+        overview=StubOverview(),
+        ledger=StubLedger(),
+        throttler=StubThrottler(),
+        blobs=_AllBlobsPresent(),
+    )
+    ev = _sign_kind("t1", apub, apriv, "post", body="",
+                    blobs=[BlobRef(hash="sha256:" + "aa" * 32,
+                                   media_type="application/pdf",
+                                   size=100, name="rules.pdf")])
+    pl.accept(ev)   # must not raise
+
+
+def test_supersede_by_original_author_accepted(pipeline):
+    """The edit path: same author, same thread, existing target — OK."""
+    pl, apriv, apub = pipeline
+    original = sign_entry(_post("t1", apub, "typo hare"), apriv)
+    pl.accept(original)
+    edit = _sign_kind("t1", apub, apriv, "supersede",
+                      body="fixed: typo here",
+                      supersedes=original.id)
+    seq = pl.accept(edit)
+    assert seq == 1
+
+
+def test_supersede_by_other_author_rejected(no_structural, hub_keypair, keypair):
+    """A supersede must share the target's author — otherwise anyone
+    could rewrite anyone's posts. Accountability is what makes the
+    log useful."""
+    priv, pub = hub_keypair
+    apriv, apub = keypair
+    bpriv, bpub = crypto.generate_keypair()
+    directory = StubDirectory(attested={
+        apub: _Att(role="member"),
+        bpub: _Att(role="member"),
+    })
+    pl = Pipeline(
+        store=StubStore(),
+        directory=directory,
+        translog=TamperEvidentLog(priv, pub),
+        overview=StubOverview(),
+        ledger=StubLedger(),
+        throttler=StubThrottler(),
+    )
+    original = sign_entry(_post("t1", apub, "my post"), apriv)
+    pl.accept(original)
+    # Bob tries to rewrite Alice's post.
+    forged = _sign_kind("t1", bpub, bpriv, "supersede",
+                        body="bob's rewrite",
+                        supersedes=original.id)
+    with pytest.raises(AcceptanceError, match="supersede_wrong_author"):
+        pl.accept(forged)
+
+
+def test_supersede_missing_target_id_rejected(pipeline):
+    pl, apriv, apub = pipeline
+    ev = _sign_kind("t1", apub, apriv, "supersede", body="rewrite")
+    with pytest.raises(AcceptanceError, match="supersede_missing_target"):
+        pl.accept(ev)
+
+
+def test_supersede_unknown_target_rejected(pipeline):
+    pl, apriv, apub = pipeline
+    ev = _sign_kind("t1", apub, apriv, "supersede", body="rewrite",
+                    supersedes="sha256:" + "cd" * 32)
+    with pytest.raises(AcceptanceError, match="supersede_target_unknown"):
+        pl.accept(ev)
+
+
+def test_supersede_wrong_thread_rejected(pipeline):
+    """The supersede must live in the same thread as its target — an
+    edit is a same-thread act."""
+    pl, apriv, apub = pipeline
+    original = sign_entry(_post("t1", apub, "hi"), apriv)
+    pl.accept(original)
+    # Same author but different thread.
+    ev = _sign_kind("t2", apub, apriv, "supersede", body="rewrite",
+                    supersedes=original.id)
+    with pytest.raises(AcceptanceError, match="supersede_wrong_thread"):
+        pl.accept(ev)
+
+
+def test_supersede_empty_body_rejected(pipeline):
+    """The empty-body guard covers supersede too — 'delete the message
+    by editing to blank' isn't the way; the retract path is an
+    explicit '[retracted]' supersede."""
+    pl, apriv, apub = pipeline
+    original = sign_entry(_post("t1", apub, "hi"), apriv)
+    pl.accept(original)
+    ev = _sign_kind("t1", apub, apriv, "supersede", body="   ",
+                    supersedes=original.id)
+    with pytest.raises(AcceptanceError, match="empty_body"):
+        pl.accept(ev)

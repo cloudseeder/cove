@@ -102,6 +102,9 @@ where `content` = the entry with `id` and `sig` removed.
 
 ### 3.3 Edits and revisions
 - An edit/revision is a new entry with `supersedes` pointing at the prior entry (and typically a new blob hash for a revised document). Nothing is mutated in place. The log is append-only; history is preserved; the superseding chain is itself auditable. (ARC drawing v1→v2→v3 = three entries, three blobs.)
+- **Authorization (v0.5.3)**: a `kind="supersede"` entry MUST (a) name a real prior entry via `supersedes`, (b) live in the same `thread` as its target, and (c) share the same `author` as its target. Rejected with structured `reason` on the write side (`supersede_missing_target`, `supersede_target_unknown`, `supersede_wrong_thread`, `supersede_wrong_author`). Without (c) anyone could rewrite anyone else's posts; that would gut the accountability that makes the log useful.
+- **Empty content refusal (v0.5.3)**: a `post`/`reply`/`notice`/`supersede` MUST have a non-whitespace body OR at least one blob reference. A body of `""` with an empty `blobs` list is rejected with `reason="empty_body"`. Attachment-only entries (a PDF share with no commentary) remain legitimate. Retracting a message is a supersede with an explicit body like `"[retracted]"`, not a supersede with an empty body.
+- **Rendering (v0.5.3)**: clients render the newest supersede's body over the original in the chronological feed and surface an "edited" affordance that reveals every prior version with its timestamp. The log carries every version regardless — display collapses, audit doesn't.
 
 ### 3.4 Audience-declaration entries (`kind="audience"`) — v0.4.27 + v0.5.0
 

@@ -40,11 +40,18 @@
      *  order. Null for non-audience kinds or when the parent has no
      *  diff computed yet. */
     audienceDiff?: { added: string[]; removed: string[] } | null;
+    /** v0.5.3: kind='supersede' entries pointing at this entry,
+     *  ordered by seq (oldest edit first). Empty = never edited. */
+    editVersions?: VerifiedEntry[];
+    /** v0.5.3: post a supersede edit for THIS entry. Defined only when
+     *  the caller authored it and it's editable (kind='post'). */
+    onEdit?: (newBody: string) => Promise<void>;
   }
 
   let { ve, showHeader, client = null, replyCount = 0,
         latestReply = null, onReply, onFollowBranch,
-        isNew = false, members = [], audienceDiff = null }: Props = $props();
+        isNew = false, members = [], audienceDiff = null,
+        editVersions = [], onEdit }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
   const isBoard = $derived(ve.attestation.role === 'board');
@@ -91,6 +98,54 @@
    *  verification chain inline. State is per-component instance so
    *  every message toggles independently. */
   let revealed = $state(false);
+
+  /** v0.5.3: which body to render — the latest supersede's body if any,
+   *  else the original's body. The log carries every version; only
+   *  display is deduplicated. */
+  const displayBody = $derived(
+    editVersions.length > 0
+      ? editVersions[editVersions.length - 1].entry.body
+      : ve.entry.body,
+  );
+  const isEdited = $derived(editVersions.length > 0);
+  const latestEditedAt = $derived(
+    editVersions.length > 0
+      ? editVersions[editVersions.length - 1].entry.created_at
+      : ve.entry.created_at,
+  );
+  let historyOpen = $state(false);
+
+  /** v0.5.3: inline edit affordance. Author-only; shown when onEdit is
+   *  wired. Toggles the body area between a static render and a
+   *  textarea. */
+  let editing = $state(false);
+  let editDraft = $state('');
+  let editError = $state<string | null>(null);
+  let editSaving = $state(false);
+  function startEdit() {
+    editDraft = displayBody;
+    editError = null;
+    editing = true;
+  }
+  function cancelEdit() {
+    editing = false;
+    editError = null;
+  }
+  async function saveEdit() {
+    if (!onEdit) return;
+    const body = editDraft.trim();
+    if (!body) { editError = 'Message cannot be empty.'; return; }
+    editSaving = true;
+    editError = null;
+    try {
+      await onEdit(body);
+      editing = false;
+    } catch (e) {
+      editError = e instanceof Error ? e.message : String(e);
+    } finally {
+      editSaving = false;
+    }
+  }
 </script>
 
 <div class="row" class:fresh={isNew} class:grouped={!showHeader}
@@ -128,8 +183,50 @@
           Branched off into <strong>{ve.entry.branch_thread}</strong>{#if ve.entry.body} — {ve.entry.body}{/if}
         </span>
       </button>
-    {:else if ve.entry.body}
-      <ExpandableBody body={ve.entry.body} dense />
+    {:else if editing}
+      <div class="edit-box">
+        <textarea bind:value={editDraft} rows="3"
+          disabled={editSaving}></textarea>
+        {#if editError}
+          <p class="edit-error" role="alert">{editError}</p>
+        {/if}
+        <div class="edit-actions">
+          <button type="button" class="ghost"
+            onclick={cancelEdit} disabled={editSaving}>Cancel</button>
+          <button type="button"
+            onclick={saveEdit}
+            disabled={editSaving || editDraft.trim() === ''}>
+            {editSaving ? 'Saving…' : 'Save edit'}
+          </button>
+        </div>
+      </div>
+    {:else if displayBody}
+      <ExpandableBody body={displayBody} dense />
+      {#if isEdited}
+        <button type="button" class="edited-chip"
+          class:open={historyOpen}
+          onclick={() => (historyOpen = !historyOpen)}
+          title={historyOpen ? 'Hide edit history' : 'Show edit history'}>
+          edited · {smartTimestamp(latestEditedAt)}
+          <span class="chevron" aria-hidden="true">{historyOpen ? '▾' : '▸'}</span>
+        </button>
+        {#if historyOpen}
+          <ul class="edit-history">
+            <li>
+              <span class="edit-when">{smartTimestamp(ve.entry.created_at)}</span>
+              <span class="edit-label">original</span>
+              <span class="edit-body">{ve.entry.body}</span>
+            </li>
+            {#each editVersions as v, i (v.entry.id)}
+              <li>
+                <span class="edit-when">{smartTimestamp(v.entry.created_at)}</span>
+                <span class="edit-label">edit {i + 1}</span>
+                <span class="edit-body">{v.entry.body}</span>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
     {/if}
 
     {#if ve.entry.blobs.length > 0 && client}
@@ -145,10 +242,15 @@
       <ReplyPreview {latestReply} totalReplyCount={replyCount} onOpen={onReply} dense />
     {/if}
 
-    {#if !isAudienceChange && (onReply || (client && members.length > 0 && ve.entry.id))}
+    {#if !isAudienceChange && !editing && (onReply || onEdit || (client && members.length > 0 && ve.entry.id))}
       <div class="footer-row">
         {#if onReply && !latestReply}
           <button type="button" class="reply-link" onclick={onReply}>Reply</button>
+        {/if}
+        {#if onEdit}
+          <button type="button" class="reply-link edit-link"
+            onclick={startEdit}
+            title="Edit — old version stays in the log">Edit</button>
         {/if}
         {#if client && members.length > 0 && ve.entry.id}
           <DeliveryIndicator {client} entryId={ve.entry.id} {members} />
@@ -272,6 +374,91 @@
   .branch-link:hover {
     background: var(--panel);
   }
+  /* v0.5.3: inline edit + edited-chip + history reveal. Kept small +
+     muted so an edited message doesn't shout; the chip is a footer-y
+     hint, not a headline. */
+  .edit-box {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    margin: 0.2rem 0;
+  }
+  .edit-box textarea {
+    width: 100%;
+    font-family: inherit;
+    font-size: 0.92rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg, inherit);
+    color: inherit;
+    resize: vertical;
+    box-sizing: border-box;
+  }
+  .edit-box .edit-actions {
+    display: flex;
+    gap: 0.4rem;
+    justify-content: flex-end;
+  }
+  .edit-box button {
+    padding: 0.35rem 0.75rem;
+    font-size: 0.82rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--accent, #d4af37);
+    color: #111;
+    cursor: pointer;
+  }
+  .edit-box button.ghost {
+    background: transparent;
+    color: inherit;
+  }
+  .edit-box button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .edit-error { color: var(--danger, #c33); font-size: 0.82rem; margin: 0; }
+
+  .edited-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.15rem;
+    padding: 0.05rem 0.35rem;
+    font-size: 0.72rem;
+    color: var(--muted);
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    border-radius: 4px;
+  }
+  .edited-chip:hover { color: inherit; }
+  .edited-chip .chevron { font-size: 0.62rem; }
+  .edit-history {
+    list-style: none;
+    margin: 0.3rem 0 0.15rem;
+    padding: 0.4rem 0.6rem;
+    border-left: 2px solid var(--border);
+    font-size: 0.82rem;
+    color: var(--muted);
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .edit-history li {
+    display: grid;
+    grid-template-columns: auto auto 1fr;
+    gap: 0.5rem;
+    align-items: baseline;
+  }
+  .edit-history .edit-when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .edit-history .edit-label {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-size: 0.66rem;
+    font-weight: 600;
+  }
+  .edit-history .edit-body { color: inherit; white-space: pre-wrap; }
+  .edit-link { color: var(--muted); }
+  .edit-link:hover { color: inherit; }
+
   /* v0.5.0: audience-change chip. Compact + muted so it doesn't
      compete with real posts, but still visible enough to answer
      "why did Bob's messages stop?". */

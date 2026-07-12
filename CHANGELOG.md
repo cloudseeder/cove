@@ -4,6 +4,38 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.5.3] — 2026-07-12
+
+### Added
+- **Edit your own messages.** Every message you authored gets an Edit
+  button in the footer row. Editing opens an inline textarea seeded
+  with the current body; saving posts a `kind='supersede'` entry
+  (spec §3.3). The feed renders the newest version over the original;
+  an "edited · ..." chip on the row reveals every prior version with
+  its timestamp when clicked. The log carries every version — display
+  collapses, audit doesn't. Same author / same thread is enforced
+  both client-side (Edit affordance hidden on other authors' posts)
+  and hub-side (pipeline gate returns `supersede_wrong_author` /
+  `supersede_wrong_thread` / `supersede_target_unknown` /
+  `supersede_missing_target` on violation).
+
+### Fixed
+- **Empty messages are refused end-to-end.** The pipeline rejects
+  `post`/`reply`/`notice`/`supersede` entries with an empty
+  (whitespace-only) body AND no blob references, with structured
+  `reason="empty_body"`. Prior to v0.5.3 an entry with `body=""`
+  could land and render as a blank row in the feed — Brooks hit one
+  in the `flood-recovery` thread. The client's compose box already
+  gated non-empty submits; the missing gate was the wire acceptance
+  layer, which now closes the loop. Attachment-only entries (a PDF
+  share with no commentary) remain legitimate — the rule is "body
+  OR blobs," not both.
+
+  Existing empty entries stay in the log (append-only) but can be
+  hidden from view by editing them — the new Edit feature lands on
+  the empty entry and lets the author replace the empty body with
+  actual content or `"[retracted]"`.
+
 ## [0.5.2] — 2026-07-12
 
 ### Added

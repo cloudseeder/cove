@@ -69,12 +69,30 @@
   // v0.5.0: 'audience' UN-hidden — audience changes now render as
   // first-class in-stream entries (added/removed/left) so ejection
   // can't be silent. Non-negotiable #5.
-  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen']);
+  // v0.5.3: 'supersede' hidden — edits fold into the original's chip
+  // via editVersions below; standalone rendering would double-count.
+  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen', 'supersede']);
   const topLevel = $derived(
     app.entries.filter((ve) =>
       ve.entry.parents.length === 0 && !_HIDDEN_KINDS.has(ve.entry.kind),
     ),
   );
+
+  /** v0.5.3: for each original entry that has been edited, the list of
+   *  supersede entries pointing at it, sorted by seq (oldest edit
+   *  first). The rendered body is the last version's body; the "edited"
+   *  chip expands to show every prior version + timestamp. */
+  const editVersions = $derived.by(() => {
+    const map = new Map<string, typeof app.entries>();
+    for (const ve of app.entries) {
+      if (ve.entry.kind !== 'supersede' || !ve.entry.supersedes) continue;
+      const list = map.get(ve.entry.supersedes) ?? [];
+      list.push(ve);
+      map.set(ve.entry.supersedes, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.seq - b.seq);
+    return map;
+  });
   /** v0.4.19/0.4.25: feed count excludes the kinds hidden above
    *  (receipts + archive metadata). */
   const visibleEntryCount = $derived(
@@ -691,6 +709,10 @@
               onFollowBranch={(sub) => app.switchThread(sub)}
               members={app.members}
               audienceDiff={audienceDiffs.get(ve.entry.id ?? '') ?? null}
+              editVersions={editVersions.get(ve.entry.id ?? '') ?? []}
+              onEdit={ve.entry.author === myPk && ve.entry.kind === 'post'
+                ? (newBody: string) => app.editPost(ve.entry.id!, newBody)
+                : undefined}
             />
           {/each}
         {/if}

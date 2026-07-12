@@ -439,6 +439,9 @@ export class AppState {
              replyTo: VerifiedEntry | null = null): Promise<void> {
     await this.hub?.post(body, files, replyTo);
   }
+  async editPost(targetEntryId: string, newBody: string): Promise<void> {
+    await this.hub?.editPost(targetEntryId, newBody);
+  }
   async loadThreads(): Promise<void> { await this.hub?.loadThreads(); }
   async loadInbox(): Promise<void> { await this.hub?.loadInbox(); }
   async goToInbox(): Promise<void> { await this.hub?.goToInbox(); }
