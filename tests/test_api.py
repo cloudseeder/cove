@@ -2762,3 +2762,75 @@ def test_search_snippet_windows_around_hit(hub):
     assert "TARGET-TERM" in snip
     # Not the whole body, and elided with … marker.
     assert snip.startswith("…") and snip.endswith("…")
+
+
+# ---- v0.6.0: end-to-end ballot + vote through the real hub -------------
+# Pipeline-level tests (tests/test_pipeline.py) use StubStore which returns
+# in-memory Entry objects verbatim from store.get(). The real EventStore
+# round-trips through JCS bytes + _row_to_entry, and prior to v0.6.3 the
+# rehydration path forgot to construct Ballot / Vote dataclasses — so
+# vote.accept() crashed with AttributeError('dict' has no attribute
+# 'options') as soon as it looked up the target ballot. These tests
+# exercise the real store + pipeline.
+
+def test_ballot_and_vote_round_trip_through_real_hub(hub):
+    """Post a ballot, then a vote against it. Both must land — no
+    crashes on the store-hydration path."""
+    from cove.entry import Ballot as _Ballot, Vote as _Vote
+    from datetime import datetime, timedelta, timezone
+
+    priv, pub = hub["member_priv"], hub["member_pub"]
+    closes = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace(
+        "+00:00", "Z",
+    )
+    ballot_ev = sign_entry(Entry(
+        thread="t1", author=pub, kind="ballot",
+        created_at="2026-01-01T00:00:00Z", body="Approve?",
+        ballot=_Ballot(options=["Yes", "No"], closes_at=closes),
+    ), priv)
+    r = hub["client"].post("/entries", json=_entry_payload(ballot_ev))
+    assert r.status_code == 200, r.text
+    ballot_id = ballot_ev.id
+
+    vote_ev = sign_entry(Entry(
+        thread="t1", author=pub, kind="vote",
+        created_at="2026-01-01T00:01:00Z", body="",
+        vote=_Vote(ballot_id=ballot_id, option_index=0),
+    ), priv)
+    r = hub["client"].post("/entries", json=_entry_payload(vote_ev))
+    assert r.status_code == 200, r.text
+
+
+def test_vote_rejects_out_of_range_option_via_real_hub(hub):
+    """The pipeline gate reads ballot_entry.ballot.options via store.get.
+    Prior to v0.6.3 this crashed; now it returns a structured 400."""
+    from cove.entry import Ballot as _Ballot, Vote as _Vote
+    from datetime import datetime, timedelta, timezone
+
+    priv, pub = hub["member_priv"], hub["member_pub"]
+    closes = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat().replace(
+        "+00:00", "Z",
+    )
+    hub["client"].post("/entries", json=_entry_payload(sign_entry(Entry(
+        thread="t1", author=pub, kind="ballot",
+        created_at="2026-01-01T00:00:00Z", body="Q",
+        ballot=_Ballot(options=["A", "B"], closes_at=closes),
+    ), priv)))
+    ballot_id = hub["store"].thread_latest_seq if False else None  # unused
+    # Grab the freshest ballot id from the store.
+    from cove.store import _row_to_entry
+    conn = hub["store"]._conn
+    row = conn.execute(
+        "SELECT id, content, sig FROM entries WHERE thread='t1' AND kind='ballot'"
+        " ORDER BY seq DESC LIMIT 1",
+    ).fetchone()
+    ballot_id = row[0]
+
+    vote_ev = sign_entry(Entry(
+        thread="t1", author=pub, kind="vote",
+        created_at="2026-01-01T00:01:00Z", body="",
+        vote=_Vote(ballot_id=ballot_id, option_index=99),
+    ), priv)
+    r = hub["client"].post("/entries", json=_entry_payload(vote_ev))
+    assert r.status_code == 400
+    assert r.json()["reason"] == "vote_option_out_of_range"

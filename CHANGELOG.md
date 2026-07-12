@@ -4,6 +4,24 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.6.3] — 2026-07-12
+
+### Fixed
+- **Voting crashed the hub with `AttributeError: 'dict' object has
+  no attribute 'options'`.** `store._row_to_entry` rehydrates
+  `receipt` and `audience` sub-dataclasses when reading an entry back
+  from JCS bytes, but v0.6.0 added `ballot` + `vote` fields without
+  extending the same treatment. When `pipeline.accept()` looked up
+  the target ballot via `store.get(ballot_id)` to validate a vote's
+  `option_index`, it got an Entry whose `ballot` was still a raw
+  dict — the crash bubbled up as an unhandled 500 without CORS
+  headers, so the browser reported the failure as "failed to fetch"
+  rather than surfacing the reason. Fix: rehydrate `ballot` +
+  `vote` in `_row_to_entry`, mirroring the existing `audience` /
+  `receipt` handling. Two new end-to-end tests in test_api.py
+  exercise the real EventStore round-trip so this class of gap is
+  caught in the API layer, not just at pipeline-with-stubs.
+
 ## [0.6.2] — 2026-07-12
 
 ### Fixed

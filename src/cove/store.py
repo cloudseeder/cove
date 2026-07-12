@@ -14,7 +14,7 @@ from typing import Iterable, Optional
 
 from . import crypto
 from .audience import authorize_audience_change
-from .entry import Audience, BlobRef, Entry, Receipt
+from .entry import Audience, Ballot, BlobRef, Entry, Receipt, Vote
 
 
 _SCHEMA = """
@@ -677,7 +677,19 @@ def _row_to_entry(row: tuple) -> Entry:
     # an {pubkeys: [...]} dict.
     audience_dict = content.pop("audience", None)
     audience = Audience(**audience_dict) if audience_dict is not None else None
-    ev = Entry(blobs=blobs, receipt=receipt, audience=audience, **content)
+    # v0.6.0: ballot + vote fields carry the same
+    # byte-identical-when-absent rule. Rehydrate to dataclasses so
+    # pipeline.accept()'s ballot/vote validation (which reads
+    # `.options`, `.ballot_id`, etc.) doesn't crash with
+    # AttributeError on 'dict' when validating a vote that references
+    # a ballot fetched via store.get(). Skipped for pre-v0.6.0 entries
+    # (they never have these keys).
+    ballot_dict = content.pop("ballot", None)
+    ballot = Ballot(**ballot_dict) if ballot_dict is not None else None
+    vote_dict = content.pop("vote", None)
+    vote = Vote(**vote_dict) if vote_dict is not None else None
+    ev = Entry(blobs=blobs, receipt=receipt, audience=audience,
+               ballot=ballot, vote=vote, **content)
     ev.id = entry_id
     ev.sig = sig
     return ev
