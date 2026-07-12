@@ -20,22 +20,25 @@ How the loop works:
      pending and atomically marks the code consumed.
   5. Keymaster attests in AdminPanel as usual.
 
-Process-local state, like throttle/pending — invites evaporate on
-hub restart, which is acceptable because:
-  - the keymaster mints fresh codes for outstanding invites that
-    haven't been used yet,
-  - codes don't grant durable trust (they gate ONE pending entry,
-    nothing more),
-  - persistence would require thinking about cleanup (expired-but-
-    never-used rows), which we don't need yet.
+v0.5.1: durable across hub restart. Prior to v0.5.1 invites were
+process-local — codes evaporated on restart, and every deploy silently
+invalidated whatever the keymaster had already texted to prospective
+members. A new pilot member seeing "the code doesn't work" a day after
+receiving it is the exact friction the pilot doesn't need. Invites now
+persist to SQLite (same file as EventStore + VaultStore, distinct
+table); the constructor takes an optional db_path — in-memory only when
+omitted (test convenience).
 
-If pilot scale ever demands durable invites (the keymaster doesn't
-want to re-issue after a hub restart), this module is the right place
-to add disk-backed storage; the surface stays the same.
+Time domain: wall-clock (time.time), not monotonic. Persisted expires_at
+values must be comparable to the new process's clock; monotonic resets
+to zero on restart and would falsely appear as "everything expires
+immediately." Wall-clock NTP jumps are bounded to seconds — invites are
+hours-to-days scoped, so drift is harmless.
 """
 from __future__ import annotations
 
 import secrets
+import sqlite3
 import threading
 import time
 from dataclasses import dataclass
@@ -46,6 +49,17 @@ from typing import Optional
 # more than enough for a single-use admission gate. Out-of-band delivery
 # (text/Signal/paper) is the channel; the code isn't a long-term secret.
 _CODE_BYTES = 16
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS invites (
+  code        TEXT PRIMARY KEY,
+  created_at  REAL NOT NULL,
+  expires_at  REAL NOT NULL,
+  name_hint   TEXT,
+  consumed_at REAL,
+  revoked_at  REAL
+);
+"""
 
 
 @dataclass(frozen=True)
@@ -59,7 +73,7 @@ class Invite:
         pending  → expired   (time passed; checked lazily, not stored)
     """
     code: str
-    created_at: float          # monotonic seconds since hub start
+    created_at: float          # wall-clock seconds since epoch (v0.5.1)
     expires_at: float          # same clock; expired when now > this
     name_hint: Optional[str]
     consumed_at: Optional[float]
@@ -71,17 +85,83 @@ class Invite:
 
 
 class InviteRegistry:
-    """In-memory invite store. Thread-safe; the atomic mint→consume
-    primitive is what prevents two parallel /pending POSTs from
-    double-spending a single code."""
+    """Invite store, in-memory + optionally SQLite-backed. Thread-safe;
+    the atomic mint→consume primitive is what prevents two parallel
+    /pending POSTs from double-spending a single code.
+
+    v0.5.1: pass `db_path` for persistence. When omitted the registry is
+    pure-memory (fine for unit tests that don't need durability, but not
+    fine for production — a hub restart silently invalidates every
+    outstanding code). Row cleanup for long-expired / long-consumed
+    rows happens lazily inside mint() so a busy hub doesn't need a
+    background sweeper."""
+
+    # Rows this old are dropped on next mint. Two weeks is comfortably
+    # longer than any TTL the AdminPanel offers (max 7d) plus a grace
+    # window for auditability.
+    _CLEANUP_AGE_SECONDS = 14 * 24 * 3600
 
     def __init__(self,
-                 time_fn=time.monotonic,
+                 db_path: Optional[str] = None,
+                 time_fn=time.time,
                  code_factory=lambda: secrets.token_hex(_CODE_BYTES)) -> None:
         self._invites: dict[str, Invite] = {}
         self._lock = threading.Lock()
         self._now = time_fn
         self._mk_code = code_factory
+        self._conn: Optional[sqlite3.Connection] = None
+        if db_path is not None:
+            self._conn = sqlite3.connect(
+                db_path, check_same_thread=False, isolation_level=None,
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.executescript(_SCHEMA)
+            self._load_from_disk()
+
+    def _load_from_disk(self) -> None:
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT code, created_at, expires_at, name_hint,"
+            " consumed_at, revoked_at FROM invites"
+        ).fetchall()
+        for code, created, expires, hint, consumed, revoked in rows:
+            self._invites[code] = Invite(
+                code=code,
+                created_at=float(created),
+                expires_at=float(expires),
+                name_hint=hint,
+                consumed_at=(float(consumed) if consumed is not None else None),
+                revoked_at=(float(revoked) if revoked is not None else None),
+            )
+
+    def _persist(self, inv: Invite) -> None:
+        if self._conn is None:
+            return
+        self._conn.execute(
+            "INSERT OR REPLACE INTO invites"
+            " (code, created_at, expires_at, name_hint, consumed_at, revoked_at)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (inv.code, inv.created_at, inv.expires_at, inv.name_hint,
+             inv.consumed_at, inv.revoked_at),
+        )
+
+    def _cleanup_old_rows(self, now: float) -> None:
+        """Drop rows that are long-consumed / long-revoked / long-expired.
+        Called under _lock inside mint()."""
+        cutoff = now - self._CLEANUP_AGE_SECONDS
+        stale = [
+            code for code, inv in self._invites.items()
+            if (inv.consumed_at is not None and inv.consumed_at < cutoff)
+            or (inv.revoked_at is not None and inv.revoked_at < cutoff)
+            or (inv.expires_at < cutoff)
+        ]
+        for code in stale:
+            del self._invites[code]
+        if self._conn is not None and stale:
+            self._conn.executemany(
+                "DELETE FROM invites WHERE code = ?",
+                [(c,) for c in stale],
+            )
 
     def mint(self, ttl_seconds: int,
              name_hint: Optional[str] = None) -> Invite:
@@ -92,6 +172,7 @@ class InviteRegistry:
             raise ValueError("ttl_seconds must be > 0")
         now = self._now()
         with self._lock:
+            self._cleanup_old_rows(now)
             # Re-roll on the (vanishingly unlikely) collision; never
             # return a code that already exists in the registry.
             for _ in range(8):
@@ -109,6 +190,7 @@ class InviteRegistry:
                 revoked_at=None,
             )
             self._invites[code] = inv
+            self._persist(inv)
             return inv
 
     def get(self, code: str) -> Optional[Invite]:
@@ -145,6 +227,7 @@ class InviteRegistry:
                 revoked_at=None,
             )
             self._invites[code] = consumed
+            self._persist(consumed)
             return consumed
 
     def revoke(self, code: str) -> Invite:
@@ -170,6 +253,7 @@ class InviteRegistry:
                 revoked_at=now,
             )
             self._invites[code] = revoked
+            self._persist(revoked)
             return revoked
 
     def list_active(self) -> list[Invite]:

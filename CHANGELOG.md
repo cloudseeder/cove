@@ -4,6 +4,28 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.5.1] — 2026-07-12
+
+### Fixed
+- **Invite codes and pending queue survive hub restart.** Prior to
+  v0.5.1 both were process-local in-memory state — every deploy
+  silently invalidated whatever the keymaster had texted to
+  prospective members, and every restart forced pending members to
+  reopen their app before the admin queue rebuilt. `InviteRegistry`
+  and `PendingRegistry` now write through to the shared SQLite file
+  (`data/cove.db`, distinct tables from EventStore/VaultStore) and
+  reload on startup. Public surface unchanged.
+
+  Invite TTLs now use wall-clock (`time.time`) instead of monotonic —
+  required for `expires_at` to be comparable across processes. NTP
+  drift is bounded to seconds; invites are hours-to-days scoped, so
+  the change is behaviorally invisible.
+
+  Cleanup for long-consumed / long-revoked / long-expired invite rows
+  runs lazily inside `mint()` (14-day retention window) so a busy
+  hub doesn't need a background sweeper. Pending rows are cleared by
+  `clear()` or `mark_attested()` and don't accumulate.
+
 ## [0.5.0] — 2026-07-12
 
 Audience governance minor: Option B. The write-side gate on audience

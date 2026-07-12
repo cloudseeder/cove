@@ -82,12 +82,19 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
     blobs = BlobStore(str(tmp_path / "blobs"))
 
     from cove.invites import InviteRegistry
-    invites = InviteRegistry()
+    from cove.pending import PendingRegistry
+    # v0.5.1: pass the shared hub.db path so persistence code paths get
+    # exercised by every existing invite/pending test. In-memory-only
+    # construction still works (default) but the pilot runs with the
+    # persistent shape.
+    invites = InviteRegistry(db_path=str(tmp_path / "hub.db"))
+    pending = PendingRegistry(db_path=str(tmp_path / "hub.db"))
     vaults = VaultStore(str(tmp_path / "hub.db"))
     app = create_app(pipeline=pipeline, store=store, translog=translog,
                      overview=overview, ledger=ledger,
                      directory=directory, directory_manifest=manifest,
                      auth=auth, blobs=blobs, invites=invites,
+                     pending=pending,
                      ephemeral_translog=ephemeral_translog,
                      vaults=vaults)
 
@@ -115,5 +122,6 @@ def hub(tmp_path, root_keypair, hub_keypair, keypair):
         "att_member": att_member,
         "session_token": sess["token"],
         "invites": invites,
+        "pending": pending,
         "vaults": vaults,
     }

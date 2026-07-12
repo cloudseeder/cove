@@ -150,3 +150,65 @@ async def test_mark_attested_for_unwatched_pubkey_is_noop():
     r = PendingRegistry()
     r.mark_attested("aa" * 32)   # no event registered
     assert True   # didn't raise
+
+
+# ---- v0.5.1: persistence across registry-restart --------------------------
+
+def test_pending_persists_across_registry_restart(tmp_path):
+    """The v0.5.1 durability invariant. Register two members, drop the
+    registry, open a fresh one on the same db file, and confirm both
+    survive with their metadata."""
+    db = str(tmp_path / "hub.db")
+    r = PendingRegistry(db_path=db)
+    r.register(pubkey="aa" * 32, name_hint="Alice",
+               requested_at="2026-06-27T12:00:00+00:00")
+    r.register(pubkey="bb" * 32, name_hint="Bob",
+               requested_at="2026-06-27T12:01:00+00:00")
+    del r
+
+    r2 = PendingRegistry(db_path=db)
+    rows = r2.list()
+    assert [row.pubkey for row in rows] == ["aa" * 32, "bb" * 32]
+    assert rows[0].name_hint == "Alice"
+    assert rows[1].requested_at == "2026-06-27T12:01:00+00:00"
+
+
+def test_clear_survives_registry_restart(tmp_path):
+    """A pending entry cleared before the restart is still gone after."""
+    db = str(tmp_path / "hub.db")
+    r = PendingRegistry(db_path=db)
+    r.register(pubkey="aa" * 32, name_hint="Alice",
+               requested_at="2026-06-27T12:00:00+00:00")
+    r.register(pubkey="bb" * 32, name_hint="Bob",
+               requested_at="2026-06-27T12:01:00+00:00")
+    r.clear("aa" * 32)
+    del r
+
+    r2 = PendingRegistry(db_path=db)
+    rows = r2.list()
+    assert [row.pubkey for row in rows] == ["bb" * 32]
+
+
+def test_mark_attested_survives_registry_restart(tmp_path):
+    """mark_attested clears the pending row; that clear must survive
+    the restart (otherwise the admin queue re-populates with an
+    already-attested member on next boot)."""
+    db = str(tmp_path / "hub.db")
+    r = PendingRegistry(db_path=db)
+    r.register(pubkey="aa" * 32, name_hint="Alice",
+               requested_at="2026-06-27T12:00:00+00:00")
+    r.mark_attested("aa" * 32)
+    del r
+
+    r2 = PendingRegistry(db_path=db)
+    assert r2.list() == []
+    assert r2.is_pending("aa" * 32) is False
+
+
+def test_in_memory_only_still_works():
+    """No db_path → in-memory only. Existing unit-test callers keep
+    working."""
+    r = PendingRegistry()
+    r.register(pubkey="aa" * 32, name_hint="x",
+               requested_at="2026-06-27T12:00:00+00:00")
+    assert r.is_pending("aa" * 32) is True

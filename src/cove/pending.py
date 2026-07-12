@@ -19,11 +19,31 @@ This module is API-layer-agnostic: the API wires watcher events into a
 FastAPI WebSocket; tests poke them directly. Sync API (register/list/
 clear) is callable from threadpool handlers; async signaling is owned
 by asyncio.Event so the WS coroutine can `await event.wait()`.
+
+v0.5.1: durable across hub restart. Pre-v0.5.1 pending was pure
+in-memory; a restart wiped the queue and the admin had to wait for each
+prospective member to reopen their app + re-POST /pending before the row
+came back. Now backed by SQLite (same file as EventStore + VaultStore +
+InviteRegistry, distinct table). Constructor takes an optional db_path;
+in-memory only when omitted (test convenience). The async Event dict
+stays in-memory — those Events wake WebSockets in the CURRENT process
+and are meaningless after a restart anyway (WSes died with the process).
 """
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from dataclasses import dataclass
+from typing import Optional
+
+
+_SCHEMA = """
+CREATE TABLE IF NOT EXISTS pending (
+  pubkey       TEXT PRIMARY KEY,
+  name_hint    TEXT NOT NULL,
+  requested_at TEXT NOT NULL
+);
+"""
 
 
 @dataclass(frozen=True)
@@ -37,22 +57,40 @@ class PendingRegistration:
 
 
 class PendingRegistry:
-    """In-memory pending queue + per-pubkey wake-up events.
+    """Pending queue + per-pubkey wake-up events.
 
-    Persistence is intentionally out of scope for the pilot — pending
-    state evaporates on hub restart, which is fine: the member's app
-    reconnects, re-POSTs /pending, and the admin sees the entry again.
-    A persistent registry would also require thinking about queue
-    eviction (TTL on stale entries); skipping that until the pilot
-    proves it matters.
+    v0.5.1: pass `db_path` for persistence. The pending-registration
+    dict is persisted so a restart doesn't force every prospective
+    member to reopen their app before the admin sees them again. The
+    per-pubkey asyncio.Event dict stays in-memory — those Events are
+    for waking WebSockets in the CURRENT process; after a restart the
+    WS reconnects and re-fetches the event via watcher_event().
     """
 
-    def __init__(self) -> None:
+    def __init__(self, db_path: Optional[str] = None) -> None:
         self._entries: dict[str, PendingRegistration] = {}
         # Per-pubkey asyncio.Event. Created lazily; survives clear() so a
         # late mark_attested fires correctly even after the entry was
         # processed.
         self._events: dict[str, asyncio.Event] = {}
+        self._conn: Optional[sqlite3.Connection] = None
+        if db_path is not None:
+            self._conn = sqlite3.connect(
+                db_path, check_same_thread=False, isolation_level=None,
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.executescript(_SCHEMA)
+            self._load_from_disk()
+
+    def _load_from_disk(self) -> None:
+        assert self._conn is not None
+        rows = self._conn.execute(
+            "SELECT pubkey, name_hint, requested_at FROM pending"
+        ).fetchall()
+        for pubkey, hint, requested in rows:
+            self._entries[pubkey] = PendingRegistration(
+                pubkey=pubkey, name_hint=hint, requested_at=requested,
+            )
 
     # ---- sync API (admin UI + WS handshake call these) ------------------
 
@@ -64,6 +102,12 @@ class PendingRegistry:
         self._entries[pubkey] = PendingRegistration(
             pubkey=pubkey, name_hint=name_hint, requested_at=requested_at,
         )
+        if self._conn is not None:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO pending"
+                " (pubkey, name_hint, requested_at) VALUES (?, ?, ?)",
+                (pubkey, name_hint, requested_at),
+            )
 
     def list(self) -> list[PendingRegistration]:
         """Snapshot, oldest first. Admin processes FIFO unless they
@@ -74,6 +118,8 @@ class PendingRegistry:
         """Drop a pending entry. Idempotent — clearing a non-pending
         pubkey is a no-op so concurrent admin actions don't race."""
         self._entries.pop(pubkey, None)
+        if self._conn is not None:
+            self._conn.execute("DELETE FROM pending WHERE pubkey = ?", (pubkey,))
 
     def is_pending(self, pubkey: str) -> bool:
         return pubkey in self._entries
@@ -101,3 +147,5 @@ class PendingRegistry:
         if event is not None:
             event.set()
         self._entries.pop(pubkey, None)
+        if self._conn is not None:
+            self._conn.execute("DELETE FROM pending WHERE pubkey = ?", (pubkey,))

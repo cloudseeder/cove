@@ -27,6 +27,8 @@ from cove.auth import AuthService                                     # noqa: E4
 from cove.blobs import BlobStore                                      # noqa: E402
 from cove.identity import Directory                                   # noqa: E402
 from cove.index import Ledger, Overview                               # noqa: E402
+from cove.invites import InviteRegistry                               # noqa: E402
+from cove.pending import PendingRegistry                              # noqa: E402
 from cove.pipeline import Pipeline                                    # noqa: E402
 from cove.store import EventStore                                     # noqa: E402
 from cove.throttle import Throttler                                   # noqa: E402
@@ -63,13 +65,21 @@ def _build_app():
 
     # On-disk state — durable across restarts. Translog + Overview are
     # rebuilt from the store by create_app's lifespan; nothing to do here.
-    store = EventStore(str(data / "cove.db"))
+    db_path = str(data / "cove.db")
+    store = EventStore(db_path)
     blobs = BlobStore(str(data / "blobs"))
     # v0.4.76: vaults live in the same SQLite file as EventStore (distinct
     # table). Pass an explicit VaultStore so create_app doesn't fall back
     # to the "data/hub.db" default (which lands at /app/data in the
     # container — unwritable by uid 1000).
-    vaults = VaultStore(str(data / "cove.db"))
+    vaults = VaultStore(db_path)
+    # v0.5.1: invites + pending survive hub restart. Same SQLite file,
+    # distinct tables. Prior to v0.5.1 both were process-local — every
+    # deploy silently invalidated whatever the keymaster had texted to
+    # prospective members, and every restart forced pending members to
+    # reopen their app before the admin queue rebuilt.
+    invites = InviteRegistry(db_path=db_path)
+    pending = PendingRegistry(db_path=db_path)
     translog = TamperEvidentLog(hub_priv, hub_pub)
     ephemeral_translog = EphemeralTransLog(hub_priv, hub_pub)
     overview = Overview()
@@ -98,6 +108,7 @@ def _build_app():
         overview=overview, ledger=ledger, directory=directory,
         directory_manifest=directory.manifest, auth=auth, blobs=blobs,
         ephemeral_translog=ephemeral_translog, vaults=vaults,
+        invites=invites, pending=pending,
     )
 
 
