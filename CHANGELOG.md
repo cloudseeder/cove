@@ -4,6 +4,23 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.6.4] — 2026-07-12
+
+### Fixed
+- **Passkey sign-in on macOS-without-Touch-ID popped an empty picker
+  first.** Chrome + Safari on a MacBook/Mac Mini with no local
+  biometric interpreted the `transports: ['internal', 'hybrid']`
+  hint literally — tried the internal (local hardware) authenticator
+  first, found nothing configured, showed an empty passkey dialog.
+  Cancel dropped it through to the hybrid picker where the actual
+  iCloud-synced Passkeys (iPad Bio, Pixel Bio, MacMini) lived.
+  The initial "empty from passwords" step was confusing UX — Brooks
+  hit it after v0.6.3 landed. Fix: drop the transports hint on both
+  Passkey unlock paths (`vault-blob.ts` for identity-vault slots,
+  `passkey.ts` for the legacy single-device record). The browser
+  picks the right transport reliably without our nudge; on Touch ID
+  devices it still uses internal.
+
 ## [0.6.3] — 2026-07-12
 
 ### Fixed

@@ -366,10 +366,15 @@ async function unlockPasskeyKek(slots: PasskeySlot[]): Promise<{
     publicKey: {
       rpId: rpIdForVault(),
       challenge: challenge as BufferSource,
+      // v0.6.4: dropped the `transports: ['internal', 'hybrid']` hint.
+      // Chrome on macOS-without-Touch-ID tried 'internal' first and
+      // popped an empty picker before Brooks could cancel through to
+      // the hybrid picker with the actual synced Passkeys. The hint
+      // isn't authoritative and the browser reliably picks the right
+      // transport when we don't try to nudge it.
       allowCredentials: slots.map((s) => ({
         type: 'public-key' as const,
         id: b64urlDecode(s.credential_id) as BufferSource,
-        transports: ['internal', 'hybrid'] as AuthenticatorTransport[],
       })),
       userVerification: 'required',
       extensions: {

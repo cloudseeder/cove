@@ -317,10 +317,12 @@ export async function unlockWithPasskey(): Promise<{
     publicKey: {
       rpId: rpId(),
       challenge,
+      // v0.6.4: no transports hint — see vault-blob.ts note. Empty
+      // picker on macOS-without-Touch-ID before falling through to
+      // hybrid was confusing users on desktop Macs.
       allowCredentials: [{
         type: 'public-key',
         id: credIdBytes as BufferSource,
-        transports: ['internal', 'hybrid'],
       }],
       userVerification: 'required',
       extensions: {
