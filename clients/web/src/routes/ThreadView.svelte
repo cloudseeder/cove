@@ -704,6 +704,15 @@
               onReply={() => app.openReplyPanel(ve)}
               onFollowBranch={(sub) => app.switchThread(sub)}
               members={app.members}
+              votesForBallot={votesByBallot.get(ve.entry.id ?? '') ?? []}
+              {myPk}
+              onVote={ve.entry.kind === 'ballot'
+                ? (i: number) => app.castVote(ve.entry.id!, i)
+                : undefined}
+              editVersions={editVersions.get(ve.entry.id ?? '') ?? []}
+              onEdit={ve.entry.author === myPk && ve.entry.kind === 'post'
+                ? (newBody: string) => app.editPost(ve.entry.id!, newBody)
+                : undefined}
             />
           {/each}
         {:else}

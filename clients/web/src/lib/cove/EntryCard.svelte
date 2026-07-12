@@ -10,6 +10,7 @@
   import type { Client, VerifiedEntry } from './client';
   import type { Attestation } from './types';
   import Attachment from './Attachment.svelte';
+  import BallotCard from '../../routes/BallotCard.svelte';
   import DeliveryIndicator from './DeliveryIndicator.svelte';
   import ExpandableBody from './ExpandableBody.svelte';
   import ReplyPreview from './ReplyPreview.svelte';
@@ -44,13 +45,70 @@
      *  the manifest yet — the indicator is suppressed in that case so
      *  it doesn't render half-resolved rows. */
     members?: Attestation[];
+    /** v0.6.0: kind='vote' entries pointing at this ballot, in seq
+     *  order. Empty for non-ballot kinds. */
+    votesForBallot?: VerifiedEntry[];
+    /** v0.6.0: caller's pubkey — passed to BallotCard for the
+     *  "you voted <option>" affordance + tally-per-voter lookup. */
+    myPk?: string;
+    /** v0.6.0: cast (or change) a vote on this ballot. */
+    onVote?: (optionIndex: number) => Promise<void>;
+    /** v0.5.3: kind='supersede' entries pointing at this entry, oldest
+     *  first. Empty = never edited. */
+    editVersions?: VerifiedEntry[];
+    /** v0.5.3: post a supersede edit for THIS entry. Defined only when
+     *  the caller authored it and it's editable (kind='post'). */
+    onEdit?: (newBody: string) => Promise<void>;
   }
 
   let { ve, isNew = false, client = null, replyCount = 0,
         latestReply = null, onReply, onFollowBranch,
-        members = [] }: Props = $props();
+        members = [],
+        votesForBallot = [], myPk = '', onVote,
+        editVersions = [], onEdit }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
+  const isBallot = $derived(ve.entry.kind === 'ballot');
+
+  /** v0.5.3: latest-edit's body wins; original + prior edits stay in
+   *  the log for audit. Rendered under an "edited" chip. */
+  const displayBody = $derived(
+    editVersions.length > 0
+      ? editVersions[editVersions.length - 1].entry.body
+      : ve.entry.body,
+  );
+  const isEdited = $derived(editVersions.length > 0);
+  const latestEditedAt = $derived(
+    editVersions.length > 0
+      ? editVersions[editVersions.length - 1].entry.created_at
+      : ve.entry.created_at,
+  );
+  let historyOpen = $state(false);
+  let editing = $state(false);
+  let editDraft = $state('');
+  let editError = $state<string | null>(null);
+  let editSaving = $state(false);
+  function startEdit() {
+    editDraft = displayBody;
+    editError = null;
+    editing = true;
+  }
+  function cancelEdit() { editing = false; editError = null; }
+  async function saveEdit() {
+    if (!onEdit) return;
+    const body = editDraft.trim();
+    if (!body) { editError = 'Message cannot be empty.'; return; }
+    editSaving = true;
+    editError = null;
+    try {
+      await onEdit(body);
+      editing = false;
+    } catch (e) {
+      editError = e instanceof Error ? e.message : String(e);
+    } finally {
+      editSaving = false;
+    }
+  }
 
   let revealed = $state(false);
 
@@ -96,7 +154,9 @@
     <VerificationChain {ve} />
   {/if}
 
-  {#if isBranch && onFollowBranch}
+  {#if isBallot}
+    <BallotCard {ve} votes={votesForBallot} {myPk} {onVote} />
+  {:else if isBranch && onFollowBranch}
     <button type="button" class="branch-link"
       onclick={() => onFollowBranch(ve.entry.branch_thread!)}>
       <span class="branch-icon" aria-hidden="true">🌿</span>
@@ -108,8 +168,47 @@
         <span class="branch-why">{ve.entry.body}</span>
       {/if}
     </button>
-  {:else if ve.entry.body}
-    <ExpandableBody body={ve.entry.body} />
+  {:else if editing}
+    <div class="edit-box">
+      <textarea bind:value={editDraft} rows="4" disabled={editSaving}></textarea>
+      {#if editError}<p class="edit-error" role="alert">{editError}</p>{/if}
+      <div class="edit-actions">
+        <button type="button" class="ghost"
+          onclick={cancelEdit} disabled={editSaving}>Cancel</button>
+        <button type="button"
+          onclick={saveEdit}
+          disabled={editSaving || editDraft.trim() === ''}>
+          {editSaving ? 'Saving…' : 'Save edit'}
+        </button>
+      </div>
+    </div>
+  {:else if displayBody}
+    <ExpandableBody body={displayBody} />
+    {#if isEdited}
+      <button type="button" class="edited-chip"
+        class:open={historyOpen}
+        onclick={() => (historyOpen = !historyOpen)}
+        title={historyOpen ? 'Hide edit history' : 'Show edit history'}>
+        edited · {smartTimestamp(latestEditedAt)}
+        <span class="chevron" aria-hidden="true">{historyOpen ? '▾' : '▸'}</span>
+      </button>
+      {#if historyOpen}
+        <ul class="edit-history">
+          <li>
+            <span class="edit-when">{smartTimestamp(ve.entry.created_at)}</span>
+            <span class="edit-label">original</span>
+            <span class="edit-body">{ve.entry.body}</span>
+          </li>
+          {#each editVersions as v, i (v.entry.id)}
+            <li>
+              <span class="edit-when">{smartTimestamp(v.entry.created_at)}</span>
+              <span class="edit-label">edit {i + 1}</span>
+              <span class="edit-body">{v.entry.body}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    {/if}
   {/if}
 
   {#if ve.entry.blobs.length > 0 && client}
@@ -127,10 +226,15 @@
     <ReplyPreview {latestReply} totalReplyCount={replyCount} onOpen={onReply} />
   {/if}
 
-  {#if onReply || (client && members.length > 0 && ve.entry.id)}
+  {#if !isBallot && !editing && (onReply || onEdit || (client && members.length > 0 && ve.entry.id))}
     <footer>
       {#if onReply && !latestReply}
         <button type="button" class="reply" onclick={onReply}>Reply</button>
+      {/if}
+      {#if onEdit}
+        <button type="button" class="reply"
+          onclick={startEdit}
+          title="Edit — old version stays in the log">Edit</button>
       {/if}
       {#if client && members.length > 0 && ve.entry.id}
         <DeliveryIndicator {client} entryId={ve.entry.id} {members} />
@@ -275,4 +379,50 @@
       box-shadow: none;
     }
   }
+  /* v0.6.1: inline edit + edited chip + history reveal in Cards mode.
+     Same intent as ChatMessage.svelte's version but tuned to the
+     roomier card layout. */
+  .edit-box { display: flex; flex-direction: column; gap: 0.4rem; margin: 0.2rem 0; }
+  .edit-box textarea {
+    width: 100%;
+    font-family: inherit; font-size: 0.95rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg, inherit); color: inherit;
+    resize: vertical; box-sizing: border-box;
+  }
+  .edit-box .edit-actions { display: flex; gap: 0.4rem; justify-content: flex-end; }
+  .edit-box button {
+    padding: 0.4rem 0.85rem; font-size: 0.85rem;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: var(--accent, #d4af37); color: #111; cursor: pointer;
+  }
+  .edit-box button.ghost { background: transparent; color: inherit; }
+  .edit-box button:disabled { opacity: 0.55; cursor: not-allowed; }
+  .edit-error { color: var(--danger, #c33); font-size: 0.85rem; margin: 0; }
+  .edited-chip {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    margin-top: 0.2rem; padding: 0.1rem 0.4rem;
+    font-size: 0.75rem; color: var(--muted);
+    background: transparent; border: none; cursor: pointer; border-radius: 4px;
+  }
+  .edited-chip:hover { color: inherit; }
+  .edited-chip .chevron { font-size: 0.62rem; }
+  .edit-history {
+    list-style: none; margin: 0.35rem 0 0.2rem;
+    padding: 0.45rem 0.7rem;
+    border-left: 2px solid var(--border);
+    font-size: 0.83rem; color: var(--muted);
+    display: flex; flex-direction: column; gap: 0.35rem;
+  }
+  .edit-history li {
+    display: grid; grid-template-columns: auto auto 1fr;
+    gap: 0.5rem; align-items: baseline;
+  }
+  .edit-history .edit-when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .edit-history .edit-label {
+    text-transform: uppercase; letter-spacing: 0.05em;
+    font-size: 0.66rem; font-weight: 600;
+  }
+  .edit-history .edit-body { color: inherit; white-space: pre-wrap; }
 </style>

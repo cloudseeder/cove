@@ -4,6 +4,22 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.6.1] — 2026-07-12
+
+### Fixed
+- **Ballot + Edit UI now render in Cards view mode.** v0.5.3 (edit)
+  and v0.6.0 (ballot) shipped both features by patching only
+  `ChatMessage.svelte` (chat view mode). The Cards-mode renderer,
+  `EntryCard.svelte` in `src/lib/cove/`, was missed — so users
+  reading threads in the default Cards layout saw ballots render as
+  plain messages and had no Edit affordance on their own posts.
+  Brooks hit both on the same session — testing v0.6.0 ballots on
+  brooks-hub, saw the ballot body as a normal post row, and
+  reported "no change in the UI." Root cause was the same missing
+  integration on both sides. This release wires BallotCard,
+  editVersions, and onEdit into EntryCard with the same shape they
+  have in ChatMessage.
+
 ## [0.6.0] — 2026-07-12
 
 Voting minor: signed single-choice ballots with a live tally and a
