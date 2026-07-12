@@ -4,6 +4,21 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.4.89] — 2026-07-12
+
+### Fixed
+- **Audience-editor dialog leaked across hub + thread switches.**
+  Opening the "Edit audience" dialog on a private/group thread on one
+  hub, then switching to a public thread on another hub, left the
+  dialog rendered over a thread that doesn't have an audience at all.
+  Because the dialog's trigger button is only shown for
+  audience-scoped threads, dismissing the dialog was the only way out
+  — reopening it required going back to the original hub and thread.
+  Root cause: `audienceDialog` was local state in `ThreadView.svelte`
+  with no reset on hub or thread change; ThreadView isn't unmounted
+  across those switches. Fix: track the (hub, thread) the dialog was
+  opened for; an `$effect` closes it whenever either changes.
+
 ## [0.4.88] — 2026-07-09
 
 ### Fixed

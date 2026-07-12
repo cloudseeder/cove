@@ -151,14 +151,36 @@
     app.authStatus.kind === 'authenticated' ? app.authStatus.pubkey : '',
   );
   let audienceDialog = $state<{ selected: Set<string> } | null>(null);
+  // v0.4.89: track the (hub, thread) the dialog was opened for so
+  // that switching hubs or threads out from under an open dialog
+  // closes it. Without this, opening the audience editor on a group
+  // thread on brooks-hub and then switching to a public thread on
+  // lwccoa-hub left the dialog rendering over a thread that shouldn't
+  // have an audience editor at all — and the trigger button was
+  // hidden, so no way to close it except reload.
+  let audienceDialogFor = $state<{ hub: string | null; thread: string } | null>(null);
   function openAudienceDialog() {
     audienceDialog = {
       selected: new Set(audience?.pubkeys ?? []),
     };
+    audienceDialogFor = { hub: app.activeHubUrl, thread: app.thread };
   }
   function closeAudienceDialog() {
     audienceDialog = null;
+    audienceDialogFor = null;
   }
+  $effect(() => {
+    // Auto-close on hub or thread switch. Reading both fields inside
+    // the effect registers them as reactive deps.
+    const currentHub = app.activeHubUrl;
+    const currentThread = app.thread;
+    if (audienceDialogFor
+        && (audienceDialogFor.hub !== currentHub
+            || audienceDialogFor.thread !== currentThread)) {
+      audienceDialog = null;
+      audienceDialogFor = null;
+    }
+  });
   function toggleAudiencePubkey(pk: string) {
     if (!audienceDialog) return;
     const next = new Set(audienceDialog.selected);
@@ -208,6 +230,7 @@
     pubkeys.add(myPk);
     await app.setThreadAudience(app.thread, Array.from(pubkeys));
     audienceDialog = null;
+    audienceDialogFor = null;
   }
   function nameForPubkey(pk: string): string {
     const att = app.members.find((m) => m.member_pubkey === pk);
