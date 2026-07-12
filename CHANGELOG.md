@@ -4,6 +4,23 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.6.2] — 2026-07-12
+
+### Fixed
+- **"Check for updates" silently reported up-to-date when it wasn't.**
+  Cloudflare Pages' default static-file `Cache-Control` is `public,
+  max-age=14400, must-revalidate` — a 4-hour edge/browser cache. Fine
+  for content-hashed JS/CSS chunks (whose URLs change per release),
+  wrong for `sw.js`: `reg.update()` (fired by the in-app manual check
+  and the periodic auto-check) fetches `/sw.js`, byte-compares against
+  the running SW, and installs a new one only on diff. With the old
+  sw.js sitting in HTTP cache, there IS no diff, so the update pipeline
+  silently no-ops. Brooks hit this after v0.6.0 → v0.6.1 — clicking
+  Check for updates left him at v0.6.0 for an hour until he closed
+  the tab and reopened (which fetches / directly, bypassing the SW).
+  Fix: `static/_headers` sets `Cache-Control: no-cache` on `/sw.js`.
+  Content-hashed chunks keep their long cache.
+
 ## [0.6.1] — 2026-07-12
 
 ### Fixed

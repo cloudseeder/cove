@@ -1,0 +1,20 @@
+# Cloudflare Pages custom headers.
+#
+# v0.6.2: force `sw.js` to always revalidate. CF Pages' default
+# cache-control on static files is `public, max-age=14400,
+# must-revalidate` — a 4-hour edge/browser cache. That's fine for
+# content-hashed chunks (their URLs change per release) and for icons,
+# but WRONG for the service worker: `reg.update()` (fired by the
+# in-app "Check for updates" button and periodic auto-check) fetches
+# /sw.js, byte-compares to the running SW, and installs a new one on
+# diff. If the browser returns a 4-hour-cached copy of the OLD sw.js,
+# there IS no diff — update silently skipped. Brooks hit this after
+# the v0.6.0 → v0.6.1 deploy: "checking for updates" reported he was
+# current at v0.6.0 for an hour, because the browser was serving the
+# old sw.js from HTTP cache.
+#
+# no-cache doesn't mean "don't cache" — it means "always revalidate
+# with the origin". Perfect for a small file that gates the whole
+# update pipeline.
+/sw.js
+  Cache-Control: no-cache
