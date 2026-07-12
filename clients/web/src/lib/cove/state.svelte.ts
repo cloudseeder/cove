@@ -442,6 +442,12 @@ export class AppState {
   async editPost(targetEntryId: string, newBody: string): Promise<void> {
     await this.hub?.editPost(targetEntryId, newBody);
   }
+  async createBallot(opts: { question: string; options: string[]; closesAt: string }): Promise<void> {
+    await this.hub?.createBallot(opts);
+  }
+  async castVote(ballotId: string, optionIndex: number): Promise<void> {
+    await this.hub?.castVote(ballotId, optionIndex);
+  }
   async loadThreads(): Promise<void> { await this.hub?.loadThreads(); }
   async loadInbox(): Promise<void> { await this.hub?.loadInbox(); }
   async goToInbox(): Promise<void> { await this.hub?.goToInbox(); }

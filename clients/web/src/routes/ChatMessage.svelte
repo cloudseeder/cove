@@ -22,6 +22,7 @@
   import ExpandableBody from '$lib/cove/ExpandableBody.svelte';
   import ReplyPreview from '$lib/cove/ReplyPreview.svelte';
   import VerificationChain from '$lib/cove/VerificationChain.svelte';
+  import BallotCard from './BallotCard.svelte';
 
   interface Props {
     ve: VerifiedEntry;
@@ -46,12 +47,23 @@
     /** v0.5.3: post a supersede edit for THIS entry. Defined only when
      *  the caller authored it and it's editable (kind='post'). */
     onEdit?: (newBody: string) => Promise<void>;
+    /** v0.6.0: for kind='ballot' entries — the vote entries pointing
+     *  at this ballot. Empty = no votes cast yet. */
+    votesForBallot?: VerifiedEntry[];
+    /** v0.6.0: caller's pubkey (for BallotCard's "you voted X"
+     *  affordance + tally-per-voter lookup). */
+    myPk?: string;
+    /** v0.6.0: cast (or change) a vote on this ballot. Defined for
+     *  kind='ballot' when the caller can vote (in audience, ballot
+     *  open). */
+    onVote?: (optionIndex: number) => Promise<void>;
   }
 
   let { ve, showHeader, client = null, replyCount = 0,
         latestReply = null, onReply, onFollowBranch,
         isNew = false, members = [], audienceDiff = null,
-        editVersions = [], onEdit }: Props = $props();
+        editVersions = [], onEdit,
+        votesForBallot = [], myPk = '', onVote }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
   const isBoard = $derived(ve.attestation.role === 'board');
@@ -64,6 +76,7 @@
    *  (add/remove/left) instead of as chat. Not a headline event, so
    *  no gold treatment — just a compact inline notice. */
   const isAudienceChange = $derived(ve.entry.kind === 'audience');
+  const isBallot = $derived(ve.entry.kind === 'ballot');
 
   function nameForPk(pk: string): string {
     const m = members.find((x) => x.member_pubkey === pk);
@@ -175,6 +188,8 @@
         <span aria-hidden="true">👥</span>
         <span>{audienceDiffText}</span>
       </span>
+    {:else if isBallot}
+      <BallotCard {ve} votes={votesForBallot} {myPk} {onVote} />
     {:else if isBranch && onFollowBranch}
       <button type="button" class="branch-link"
         onclick={() => onFollowBranch(ve.entry.branch_thread!)}>
@@ -242,7 +257,7 @@
       <ReplyPreview {latestReply} totalReplyCount={replyCount} onOpen={onReply} dense />
     {/if}
 
-    {#if !isAudienceChange && !editing && (onReply || onEdit || (client && members.length > 0 && ve.entry.id))}
+    {#if !isAudienceChange && !isBallot && !editing && (onReply || onEdit || (client && members.length > 0 && ve.entry.id))}
       <div class="footer-row">
         {#if onReply && !latestReply}
           <button type="button" class="reply-link" onclick={onReply}>Reply</button>

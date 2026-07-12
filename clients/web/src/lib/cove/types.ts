@@ -40,7 +40,7 @@ export interface Audience {
 export interface Entry {
   thread: string;
   author: string; // ed25519 pubkey hex
-  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch' | 'archive' | 'reopen' | 'audience' | 'tombstone';
+  kind: 'notice' | 'post' | 'reply' | 'supersede' | 'membership' | 'receipt' | 'revoke' | 'branch' | 'archive' | 'reopen' | 'audience' | 'tombstone' | 'ballot' | 'vote';
   created_at: string; // rfc3339
   parents: string[];
   body: string;
@@ -55,8 +55,32 @@ export interface Entry {
   /** v0.4.38: RFC3339 not-before on kind='tombstone' entries. Same
    *  byte-identical-when-null rule as audience. */
   tombstone_valid_after?: string | null;
+  /** v0.6.0: set on kind='ballot' entries. Byte-identical-when-null. */
+  ballot?: Ballot | null;
+  /** v0.6.0: set on kind='vote' entries. Byte-identical-when-null. */
+  vote?: Vote | null;
   id: string | null;
   sig: string | null;
+}
+
+/** v0.6.0: single-choice, deadline-scoped ballot. `options` is the
+ *  closed list of answer choices; `closes_at` is an RFC3339 UTC
+ *  timestamp after which vote entries are rejected. The ballot's
+ *  question lives in Entry.body. */
+export interface Ballot {
+  options: string[];
+  closes_at: string;
+}
+
+/** v0.6.0: a signed vote for a specific ballot. `ballot_id` is the
+ *  content address of the kind='ballot' entry; `option_index` selects
+ *  one of that ballot's options. Vote changes: post a new vote entry
+ *  for the same ballot_id — the tally rule takes the highest-seq per
+ *  voter. No supersede required; the log carries every vote entry so
+ *  "changed my mind at 3:15pm" is legible. */
+export interface Vote {
+  ballot_id: string;
+  option_index: number;
 }
 
 /** Returned by GET /threads — one row per observed thread. Sorted

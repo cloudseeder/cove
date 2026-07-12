@@ -23,6 +23,7 @@ import { sha256 } from '@noble/hashes/sha256';
 const KINDS = new Set([
   'notice', 'post', 'reply', 'supersede', 'membership', 'receipt', 'revoke',
   'branch', 'archive', 'reopen', 'audience', 'tombstone',
+  'ballot', 'vote',
 ]);
 
 const NON_CONTENT = new Set(['id', 'sig']);
@@ -41,6 +42,10 @@ export function entryContent(ev: Entry): Record<string, unknown> {
     if (NON_CONTENT.has(k)) continue;
     if (k === 'audience' && (v === null || v === undefined)) continue;
     if (k === 'tombstone_valid_after' && (v === null || v === undefined)) continue;
+    // v0.6.0: ballot/vote fields carry the same byte-identical-when-absent
+    // rule so pre-v0.6.0 signatures still verify.
+    if (k === 'ballot' && (v === null || v === undefined)) continue;
+    if (k === 'vote' && (v === null || v === undefined)) continue;
     out[k] = v;
   }
   return out;

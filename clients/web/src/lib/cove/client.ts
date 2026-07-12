@@ -950,6 +950,10 @@ export class Client {
       // v0.4.38: same byte-identical-when-null rule for
       // tombstone_valid_after. Only kind='tombstone' entries carry it.
       if (k === 'tombstone_valid_after' && (v === null || v === undefined)) continue;
+      // v0.6.0: ballot / vote fields carry the same rule so pre-v0.6.0
+      // signatures still verify under the new client.
+      if (k === 'ballot' && (v === null || v === undefined)) continue;
+      if (k === 'vote' && (v === null || v === undefined)) continue;
       content[k] = v;
     }
     const canonical = canonicalize(content);

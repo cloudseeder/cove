@@ -7,9 +7,32 @@ from __future__ import annotations
 
 from typing import Optional
 
+from datetime import datetime, timezone
+
 from .audience import MANAGE_AUDIENCE_CAP, authorize_audience_change
 from .blobs import BlobStore
 from .entry import Entry, verify_entry
+
+
+def _parse_rfc3339_utc(ts: str) -> datetime:
+    """v0.6.0: strict-ish RFC3339 parse for ballot closes_at. Accepts
+    the trailing 'Z' Cove clients emit (new Date().toISOString()) plus
+    explicit `+00:00`. Returns an aware UTC datetime.
+
+    Kept local to pipeline.py rather than in crypto/util to avoid
+    surfacing a general 'ISO parse' seam that would tempt callers to
+    rely on this loose acceptance shape. Ballot timestamps are the
+    only place we need it."""
+    if ts.endswith("Z"):
+        ts = ts[:-1] + "+00:00"
+    dt = datetime.fromisoformat(ts)
+    if dt.tzinfo is None:
+        raise ValueError("naive datetime not allowed")
+    return dt.astimezone(timezone.utc)
+
+
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
 from .identity import Directory
 from .index import Overview, Ledger
 from .store import EventStore
@@ -179,7 +202,9 @@ class Pipeline:
         # feed as a blank row (Brooks hit one in `flood-recovery`).
         # Attachment-only entries are legitimate (a PDF share with no
         # commentary), so the rule is "body OR blobs, not neither."
-        if ev.kind in ("post", "reply", "notice", "supersede"):
+        # v0.6.0: `ballot` joins the list — the question lives in body,
+        # so an empty-body ballot is unrenderable.
+        if ev.kind in ("post", "reply", "notice", "supersede", "ballot"):
             if not ev.body.strip() and not ev.blobs:
                 raise AcceptanceError("empty_body")
 
@@ -200,6 +225,61 @@ class Pipeline:
                 raise AcceptanceError("supersede_wrong_thread")
             if target.author != ev.author:
                 raise AcceptanceError("supersede_wrong_author")
+
+        # v0.6.0: ballot validation. Options must be non-empty + unique
+        # (voters reference options by index; duplicate labels confuse
+        # the tally UI). closes_at must parse as RFC3339 UTC and be in
+        # the future. The question lives in ev.body — the empty-body
+        # gate already covers "no question."
+        if ev.kind == "ballot":
+            if ev.ballot is None:
+                raise AcceptanceError("ballot_missing_payload")
+            opts = ev.ballot.options
+            if not opts or any(not o.strip() for o in opts):
+                raise AcceptanceError("ballot_options_empty")
+            if len(set(opts)) != len(opts):
+                raise AcceptanceError("ballot_options_duplicate")
+            if not ev.ballot.closes_at:
+                raise AcceptanceError("ballot_missing_closes_at")
+            try:
+                closes = _parse_rfc3339_utc(ev.ballot.closes_at)
+            except ValueError:
+                raise AcceptanceError("ballot_bad_closes_at") from None
+            now = _now_utc()
+            if closes <= now:
+                raise AcceptanceError("ballot_closes_in_past")
+
+        # v0.6.0: vote validation. Must reference a real ballot in the
+        # same thread, name an in-range option, and land before the
+        # ballot closes. Voter must be in the ballot's thread audience
+        # at accept time — the general audience gate (via /sync) is
+        # sufficient because non-audience members can't see the ballot
+        # to vote on it in the first place; the pipeline check makes
+        # sure a stale-cached UI can't sneak a vote in.
+        if ev.kind == "vote":
+            if ev.vote is None:
+                raise AcceptanceError("vote_missing_payload")
+            ballot_entry = self.store.get(ev.vote.ballot_id)
+            if ballot_entry is None or ballot_entry.kind != "ballot":
+                raise AcceptanceError("vote_ballot_unknown")
+            if ballot_entry.thread != ev.thread:
+                raise AcceptanceError("vote_wrong_thread")
+            if ballot_entry.ballot is None:
+                raise AcceptanceError("vote_ballot_malformed")
+            idx = ev.vote.option_index
+            if not isinstance(idx, int) or idx < 0 or idx >= len(ballot_entry.ballot.options):
+                raise AcceptanceError("vote_option_out_of_range")
+            try:
+                closes = _parse_rfc3339_utc(ballot_entry.ballot.closes_at)
+            except ValueError:
+                raise AcceptanceError("vote_ballot_malformed") from None
+            if _now_utc() > closes:
+                raise AcceptanceError("vote_ballot_closed")
+            # Audience gate — silent-empty if the caller isn't allowed
+            # to see the thread would defeat the whole point.
+            current = self.store.thread_audience(ev.thread)
+            if current is not None and ev.author not in current.pubkeys:
+                raise AcceptanceError("vote_not_in_audience")
 
         # 8. Assign per-thread seq, persist, extend translog, materialize the new STH.
         # Store-before-log because the entry store is source of truth (§9); the log

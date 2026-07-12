@@ -4,6 +4,58 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.6.0] — 2026-07-12
+
+Voting minor: signed single-choice ballots with a live tally and a
+deadline close. Signed = every vote is attributable (matches Cove's
+accountability model); voter eligibility = the ballot's thread
+audience (no separate voter list); voters can change their mind
+until the deadline (fresh vote entry per change; tally takes the
+latest per voter). Secret ballot (blinded signatures) is a future
+slice — when it lands it'll be a distinct entry kind, not a flag.
+
+### Added
+- **Two new entry kinds — `ballot` and `vote`** (spec §3.5).
+  - Ballot: `body` = question, `ballot.options[]` = choices (2..N,
+    distinct, non-empty), `ballot.closes_at` = deadline (RFC3339 UTC,
+    strictly future).
+  - Vote: `vote.ballot_id` = target ballot's content address,
+    `vote.option_index` = choice.
+  - Both fields carry the byte-identical-when-absent canonicalization
+    rule so pre-v0.6.0 signatures still verify.
+- **Pipeline write-side gates.** Ballot: empty options/duplicates/
+  past-deadline rejected with structured reasons
+  (`ballot_options_empty`, `ballot_options_duplicate`,
+  `ballot_closes_in_past`, `ballot_bad_closes_at`,
+  `ballot_missing_closes_at`, `ballot_missing_payload`). Vote:
+  unknown ballot / wrong thread / out-of-range option / past-close /
+  non-audience voter (`vote_ballot_unknown`, `vote_wrong_thread`,
+  `vote_option_out_of_range`, `vote_ballot_closed`,
+  `vote_not_in_audience`). Empty-body guard extended to cover
+  `ballot`.
+- **BallotCard rendering.** Ballot entries render as first-class
+  cards in the feed with the question, each option with a live
+  count + percentage fill bar, remaining-time countdown, and the
+  caller's current selection. Clicking an option casts a vote (or
+  changes it — "click another to change" hint appears). After
+  `closes_at` the card flips to "Closed" and options become
+  read-only. Vote entries are hidden from the chronological feed;
+  they fold into the ballot card.
+- **"New ballot" launcher** in the compose box (🗳 icon, next to
+  the branch 🌿 icon). Modal takes a question, 2–10 distinct
+  options, and a closes-in dropdown (1h / 6h / 24h / 3d / 7d / 14d).
+  Client posts a signed ballot entry; nobody but the caller could
+  have minted it.
+- **Client `AppState.createBallot` + `AppState.castVote`.** Errors
+  from the hub surface as `Error(reason)` for the UI to catch.
+
+### Spec
+- `docs/server-hub-spec.md` §3 kinds enumeration adds `ballot`,
+  `vote`.
+- New §3.5 covers the full write-side rules, tally rule, closure
+  semantics, rendering mandate, and explicit non-goals (approval
+  voting, ranked-choice, secret ballot, ballot-scoped voter lists).
+
 ## [0.5.3] — 2026-07-12
 
 ### Added

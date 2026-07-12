@@ -37,7 +37,8 @@ from . import crypto
 # tombstone entry's signature stays stable across the (unknown-at-sign
 # time) final tree state.
 KINDS = {"notice", "post", "reply", "supersede", "membership", "receipt",
-         "revoke", "branch", "archive", "reopen", "audience", "tombstone"}
+         "revoke", "branch", "archive", "reopen", "audience", "tombstone",
+         "ballot", "vote"}
 
 # Fields excluded from the content that id/sig commit to.
 _NON_CONTENT = {"id", "sig"}
@@ -67,6 +68,42 @@ class Audience:
     wins (replaces — not unions).
     """
     pubkeys: list[str] = field(default_factory=list)
+
+
+@dataclass
+class Ballot:
+    """v0.6.0: a single-choice, deadline-scoped vote (kind='ballot').
+
+    `options` is the closed list of answer choices displayed to voters;
+    the vote entry references an option by INDEX so a typo-fix on the
+    ballot creator's side would break every existing vote (options are
+    immutable once minted — post a new ballot if you got them wrong).
+    `closes_at` is an RFC3339 UTC 'not-after' — vote entries with
+    created_at > closes_at are rejected by the pipeline.
+
+    The ballot's question lives in Entry.body (reused, so it's part of
+    the same signed content). No separate question field.
+    """
+    options: list[str] = field(default_factory=list)
+    closes_at: str = ""
+
+
+@dataclass
+class Vote:
+    """v0.6.0: a signed vote entry (kind='vote').
+
+    `ballot_id` is the content-address of the kind='ballot' entry this
+    is a vote for; it MUST live in the same thread. `option_index` is
+    an index into the ballot's `options` list — the pipeline enforces
+    the range at accept time.
+
+    Vote changes: a voter posts a fresh vote entry for the same
+    ballot_id; the tally rule takes the highest-seq vote per author.
+    No supersede required — the audit log carries every vote entry so
+    "changed my mind at 3:15pm" is legible.
+    """
+    ballot_id: str = ""
+    option_index: int = 0
 
 
 @dataclass
@@ -113,6 +150,11 @@ class Entry:
                                         # canonical content (byte-identical
                                         # rule) so adding the field doesn't
                                         # break every prior entry's signature.
+    ballot: Optional[Ballot] = None     # set for kind='ballot' (v0.6.0);
+                                        # byte-identical-when-absent so
+                                        # pre-v0.6.0 signatures still verify.
+    vote: Optional[Vote] = None         # set for kind='vote' (v0.6.0);
+                                        # same byte-identical rule.
     id: Optional[str] = None       # set by compute_id
     sig: Optional[str] = None      # set by sign
 
@@ -134,6 +176,13 @@ class Entry:
         # the field never existed, or their signatures break.
         if d.get("tombstone_valid_after") is None:
             d.pop("tombstone_valid_after", None)
+        # v0.6.0: byte-identical-when-absent for ballot + vote. Pre-v0.6.0
+        # entries never carried these fields; their signatures were minted
+        # over a content dict without the keys, so the same rule applies.
+        if d.get("ballot") is None:
+            d.pop("ballot", None)
+        if d.get("vote") is None:
+            d.pop("vote", None)
         return d
 
 

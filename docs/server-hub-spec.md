@@ -77,7 +77,7 @@ entry = {
   author:       <ed25519 pubkey>,
   parents:      [ <entry id>, ... ],     // causal DAG edges; root: []
   kind:         "notice" | "post" | "reply" | "supersede" | "membership" | "receipt" | "revoke"
-              | "branch" | "archive" | "reopen" | "audience" | "tombstone",
+              | "branch" | "archive" | "reopen" | "audience" | "tombstone" | "ballot" | "vote",
   created_at:   <rfc3339>,               // advisory only; causal order from DAG, not clock
   body:         <utf-8 / markdown>,      // may be empty
   blobs:        [ { hash, media_type, size, name }, ... ],   // content-addressed refs
@@ -127,6 +127,54 @@ The write-side gate lives in the acceptance pipeline (§7.1). Rejection is a str
 **Rendering.** Clients MUST render audience changes as first-class entries in the thread stream (not a hidden governance-metadata kind), showing added/removed/left phrasing with the actor and timestamp. Ejection cannot be silent — that is the whole point of the write-side gate. Style is a client concern; the mandate is visibility.
 
 **Capabilities.** `manage_audience` is a v0.5.0 capability, defined in `capabilities_by_role` on the DirectoryManifest (§2.3). The hardcoded default map (used when a manifest has no `capabilities_by_role` field) grants it to `board` and `officer`. Orgs override per role via the manifest.
+
+### 3.5 Voting: ballot + vote entries — v0.6.0
+
+Cove supports **signed, single-choice, deadline-scoped ballots** as first-class entries. Two new entry kinds:
+
+**`kind="ballot"`** — poses a question. Wire shape:
+
+```
+{
+  kind:       "ballot",
+  body:       "<the question text>",   // required (empty-body gate applies)
+  ballot: {
+    options:   [<string>, <string>, ...],   // 2..N choices, non-empty, distinct
+    closes_at: "<rfc3339 utc>"              // deadline; must be in the future
+  }
+}
+```
+
+- The ballot's question lives in `Entry.body` (reused; not a separate field). The empty-body gate rejects empty questions.
+- `options` must have at least 2 entries, non-empty after trim, and unique. Voters reference options by INDEX (not string), so option labels are immutable once minted — post a fresh ballot if you got them wrong.
+- `closes_at` must parse as RFC3339 and be strictly in the future at accept time.
+- **Voter eligibility** is the ballot's thread audience — a public thread's ballot admits every attested member; a private thread's ballot admits only its audience.
+
+**`kind="vote"`** — a signed vote. Wire shape:
+
+```
+{
+  kind:       "vote",
+  body:       "",
+  vote: {
+    ballot_id:    "<content-address of the kind='ballot' entry>",
+    option_index: <int, in [0, len(options))>
+  }
+}
+```
+
+**Write-side rules (§7.1 step 6, kind-specific):**
+
+1. **`ballot`**: question body non-empty; options non-empty + non-duplicate; `closes_at` valid RFC3339 UTC + strictly future. Structured reasons: `empty_body`, `ballot_options_empty`, `ballot_options_duplicate`, `ballot_missing_closes_at`, `ballot_bad_closes_at`, `ballot_closes_in_past`.
+2. **`vote`**: `ballot_id` names an existing kind='ballot' entry in the SAME thread; `option_index` in range; current time ≤ ballot's `closes_at`; voter in the ballot's thread audience (defense-in-depth against stale-cached clients that shouldn't have seen the ballot to begin with). Structured reasons: `vote_ballot_unknown`, `vote_wrong_thread`, `vote_option_out_of_range`, `vote_ballot_closed`, `vote_not_in_audience`.
+
+**Vote-change / tally rule.** Voters change their mind by posting a **fresh vote entry** for the same `ballot_id`. The tally rule takes the **highest-seq vote per voter**. No supersede required — every vote entry lands in the log so audit ("changed my mind at 3:15pm") stays legible. The tally is computed client-side from the entries the caller already has via /sync; no dedicated endpoint.
+
+**Ballot closure.** A ballot closes when wall-clock passes `closes_at`. The pipeline rejects new votes past that seq. The client renders the tally in-place and flips the affordance to read-only. No explicit close entry.
+
+**Rendering.** Clients MUST render kind='ballot' entries as a first-class card in the feed (question + options + live tally + remaining time). kind='vote' entries are hidden from the chronological feed and folded into the ballot card. Signed vote authors are visible to every audience member — this is the accountability model Cove commits to. Secret-ballot (blinded signatures) is a future slice; when it lands it gets a distinct entry kind, not a flag on this one.
+
+**Non-goals for v0.6.0** (explicit): approval voting, ranked-choice, secret ballot, ballot-scoped voter lists (voter eligibility ⊃ thread audience is a v0.6.x consideration).
 
 ---
 

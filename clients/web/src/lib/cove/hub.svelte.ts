@@ -571,6 +571,62 @@ export class HubConnection {
     void this.loadThreads();
   }
 
+  /** v0.6.0: create a ballot in the current thread. `question` becomes
+   *  the ballot's Entry.body; `options` and `closesAt` (RFC3339 UTC)
+   *  are validated hub-side. Any current-audience member can create a
+   *  ballot; anyone in the audience can vote via castVote. */
+  async createBallot(opts: {
+    question: string;
+    options: string[];
+    closesAt: string;
+  }): Promise<void> {
+    if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    if (!opts.question.trim()) throw new Error('empty_body');
+    const filteredOpts = opts.options.map((o) => o.trim()).filter(Boolean);
+    if (filteredOpts.length < 2) throw new Error('ballot_options_empty');
+    const ev = {
+      thread: this.thread,
+      author: this.authStatus.pubkey,
+      kind: 'ballot' as const,
+      created_at: new Date().toISOString(),
+      parents: [],
+      body: opts.question.trim(),
+      blobs: [],
+      supersedes: null,
+      receipt: null,
+      branch_thread: null,
+      ballot: { options: filteredOpts, closes_at: opts.closesAt },
+      id: null,
+      sig: null,
+    };
+    await this.client.post(ev);
+  }
+
+  /** v0.6.0: cast (or change) a vote. Posting again for the same
+   *  ballotId supersedes the prior vote — the tally rule takes the
+   *  highest-seq vote per voter. No client-side supersede field
+   *  needed; the log carries every version and the client computes
+   *  the tally. */
+  async castVote(ballotId: string, optionIndex: number): Promise<void> {
+    if (this.client === null || this.authStatus.kind !== 'authenticated') return;
+    const ev = {
+      thread: this.thread,
+      author: this.authStatus.pubkey,
+      kind: 'vote' as const,
+      created_at: new Date().toISOString(),
+      parents: [],
+      body: '',
+      blobs: [],
+      supersedes: null,
+      receipt: null,
+      branch_thread: null,
+      vote: { ballot_id: ballotId, option_index: optionIndex },
+      id: null,
+      sig: null,
+    };
+    await this.client.post(ev);
+  }
+
   /** v0.5.3: post a kind='supersede' entry that replaces the body of an
    *  earlier entry the caller authored. Same-thread + same-author is
    *  enforced client-side (UI only surfaces the affordance on the

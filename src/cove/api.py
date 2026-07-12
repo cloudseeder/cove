@@ -26,7 +26,7 @@ from . import crypto
 from .auth import AuthError, AuthService
 from .blobs import BlobStore
 from .config import DEFAULT, HubConfig
-from .entry import Audience, BlobRef, Entry, Receipt, verify_entry
+from .entry import Audience, Ballot, BlobRef, Entry, Receipt, Vote, verify_entry
 from .identity import (
     Attestation, Directory, DirectoryManifest,
     InvalidManifestSignatureError, RevocationDroppedError,
@@ -1680,7 +1680,7 @@ class _Forbidden(Exception):
 
 _CONTENT_FIELDS = {"thread", "author", "kind", "created_at", "parents",
                    "body", "blobs", "supersedes", "receipt", "branch_thread",
-                   "audience", "tombstone_valid_after"}
+                   "audience", "tombstone_valid_after", "ballot", "vote"}
 
 
 def _entry_from_dict(d: dict) -> Entry:
@@ -1698,6 +1698,10 @@ def _entry_from_dict(d: dict) -> Entry:
         fields["receipt"] = Receipt(**fields["receipt"])
     if fields.get("audience") is not None:
         fields["audience"] = Audience(**fields["audience"])
+    if fields.get("ballot") is not None:
+        fields["ballot"] = Ballot(**fields["ballot"])
+    if fields.get("vote") is not None:
+        fields["vote"] = Vote(**fields["vote"])
     ev = Entry(**fields)
     ev.id = d.get("id")
     ev.sig = d.get("sig")

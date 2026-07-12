@@ -45,6 +45,51 @@
   let branching = $state(false);
   let branchError = $state<string | null>(null);
 
+  // v0.6.0: ballot dialog
+  let ballotDialogOpen = $state(false);
+  let ballotQuestion = $state('');
+  let ballotOptions = $state<string[]>(['', '']);
+  let ballotClosesInHours = $state(24);
+  let ballotting = $state(false);
+  let ballotError = $state<string | null>(null);
+
+  function openBallotDialog() {
+    ballotError = null;
+    ballotQuestion = '';
+    ballotOptions = ['', ''];
+    ballotClosesInHours = 24;
+    ballotDialogOpen = true;
+  }
+  function closeBallotDialog() { ballotDialogOpen = false; }
+  function addBallotOption() { ballotOptions = [...ballotOptions, '']; }
+  function removeBallotOption(i: number) {
+    ballotOptions = ballotOptions.filter((_, idx) => idx !== i);
+  }
+  async function submitBallot(ev: SubmitEvent) {
+    ev.preventDefault();
+    const question = ballotQuestion.trim();
+    const options = ballotOptions.map((o) => o.trim()).filter(Boolean);
+    if (!question || options.length < 2 || ballotting) return;
+    if (new Set(options).size !== options.length) {
+      ballotError = 'Options must be distinct.';
+      return;
+    }
+    ballotting = true;
+    ballotError = null;
+    try {
+      const closes = new Date(Date.now() + ballotClosesInHours * 3600 * 1000);
+      await app.createBallot({
+        question, options,
+        closesAt: closes.toISOString(),
+      });
+      ballotDialogOpen = false;
+    } catch (err) {
+      ballotError = (err as Error).message;
+    } finally {
+      ballotting = false;
+    }
+  }
+
   function openBranchDialog() {
     branchError = null;
     branchName = '';
@@ -200,6 +245,13 @@
         aria-label="Branch off">
         🌿
       </button>
+      <button type="button" class="attach ballot-btn"
+        onclick={openBallotDialog}
+        disabled={sending}
+        title="Start a vote"
+        aria-label="Start a vote">
+        🗳
+      </button>
     {/if}
     <button type="submit"
       class:armed={archived && armedForArchived}
@@ -255,6 +307,67 @@
       </div>
       {#if branchError}
         <p class="error">{branchError}</p>
+      {/if}
+    </form>
+  </div>
+{/if}
+
+{#if ballotDialogOpen}
+  <div class="modal-backdrop" onclick={closeBallotDialog} role="presentation"></div>
+  <div class="modal" role="dialog" aria-label="Start a vote">
+    <form onsubmit={submitBallot}>
+      <h3>Start a vote</h3>
+      <p class="hint">
+        Signed votes visible to everyone in this thread; the tally
+        updates live. Voters can change their mind until the deadline.
+      </p>
+      <label>
+        <span>Question</span>
+        <input type="text" bind:value={ballotQuestion}
+          placeholder="e.g. Approve the 2026 landscaping RFP?"
+          maxlength="200" required />
+      </label>
+      <fieldset class="ballot-options">
+        <legend>Options</legend>
+        {#each ballotOptions as _, i}
+          <div class="ballot-opt-row">
+            <input type="text" bind:value={ballotOptions[i]}
+              placeholder="Option {i + 1}"
+              maxlength="80" />
+            {#if ballotOptions.length > 2}
+              <button type="button" class="remove"
+                onclick={() => removeBallotOption(i)}
+                aria-label="Remove option {i + 1}">×</button>
+            {/if}
+          </div>
+        {/each}
+        {#if ballotOptions.length < 10}
+          <button type="button" class="ghost add-option"
+            onclick={addBallotOption}>+ Add option</button>
+        {/if}
+      </fieldset>
+      <label>
+        <span>Closes in</span>
+        <select bind:value={ballotClosesInHours}>
+          <option value={1}>1 hour</option>
+          <option value={6}>6 hours</option>
+          <option value={24}>24 hours</option>
+          <option value={72}>3 days</option>
+          <option value={168}>7 days</option>
+          <option value={336}>14 days</option>
+        </select>
+      </label>
+      <div class="modal-actions">
+        <button type="button" class="ghost" onclick={closeBallotDialog}
+          disabled={ballotting}>Cancel</button>
+        <button type="submit"
+          disabled={ballotting || !ballotQuestion.trim()
+                    || ballotOptions.filter((o) => o.trim()).length < 2}>
+          {ballotting ? '…' : 'Post ballot'}
+        </button>
+      </div>
+      {#if ballotError}
+        <p class="error">{ballotError}</p>
       {/if}
     </form>
   </div>
@@ -489,4 +602,52 @@
   .modal-actions .ghost:hover:not(:disabled) {
     color: var(--fg);
   }
+  /* v0.6.0: ballot dialog. Compact options list with per-row remove +
+     an add button; closes-in dropdown; distinct icon for the launcher. */
+  .ballot-btn { border-color: rgba(212, 175, 55, 0.4); }
+  .ballot-options {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.55rem 0.7rem;
+    margin: 0.4rem 0;
+  }
+  .ballot-options legend {
+    font-size: 0.78rem;
+    color: var(--muted);
+    padding: 0 0.3rem;
+  }
+  .ballot-opt-row {
+    display: flex;
+    gap: 0.35rem;
+    align-items: center;
+    margin: 0.25rem 0;
+  }
+  .ballot-opt-row input {
+    flex: 1;
+    padding: 0.4rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg, inherit);
+    color: inherit;
+  }
+  .ballot-opt-row .remove {
+    padding: 0 0.55rem;
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .ballot-opt-row .remove:hover { color: var(--danger, #c33); }
+  .add-option {
+    background: transparent;
+    border: 1px dashed var(--border);
+    color: var(--muted);
+    padding: 0.35rem 0.6rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.82rem;
+    margin-top: 0.35rem;
+  }
+  .add-option:hover { color: inherit; border-color: var(--accent, #d4af37); }
 </style>

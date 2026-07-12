@@ -868,3 +868,156 @@ def test_supersede_empty_body_rejected(pipeline):
                     supersedes=original.id)
     with pytest.raises(AcceptanceError, match="empty_body"):
         pl.accept(ev)
+
+
+# ---- v0.6.0: ballot + vote pipeline gates -------------------------------
+
+def _far_future_iso(hours: int = 24) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) + timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
+
+
+def _past_iso(hours: int = 1) -> str:
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat().replace("+00:00", "Z")
+
+
+def _ballot(thread, author_pub, author_priv, question, options, closes_at):
+    from cove.entry import Ballot
+    return sign_entry(Entry(
+        thread=thread, author=author_pub, kind="ballot",
+        created_at="2026-01-01T00:00:00Z", body=question,
+        ballot=Ballot(options=list(options), closes_at=closes_at),
+    ), author_priv)
+
+
+def _vote(thread, author_pub, author_priv, ballot_id, option_index):
+    from cove.entry import Vote
+    return sign_entry(Entry(
+        thread=thread, author=author_pub, kind="vote",
+        created_at="2026-01-01T00:00:00Z", body="",
+        vote=Vote(ballot_id=ballot_id, option_index=option_index),
+    ), author_priv)
+
+
+def test_ballot_accepted_with_valid_shape(pipeline):
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Approve budget?",
+                ["Yes", "No", "Abstain"], _far_future_iso())
+    seq = pl.accept(b)
+    assert seq == 0
+
+
+def test_ballot_rejects_empty_question(pipeline):
+    """The question is Entry.body; the empty-body gate covers it."""
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "",
+                ["Yes", "No"], _far_future_iso())
+    with pytest.raises(AcceptanceError, match="empty_body"):
+        pl.accept(b)
+
+
+def test_ballot_rejects_empty_options(pipeline):
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q", [], _far_future_iso())
+    with pytest.raises(AcceptanceError, match="ballot_options_empty"):
+        pl.accept(b)
+
+
+def test_ballot_rejects_duplicate_options(pipeline):
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q",
+                ["Yes", "yes ", "Yes"], _far_future_iso())
+    with pytest.raises(AcceptanceError, match="ballot_options_duplicate"):
+        pl.accept(b)
+
+
+def test_ballot_rejects_closes_in_past(pipeline):
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q", ["Yes", "No"], _past_iso())
+    with pytest.raises(AcceptanceError, match="ballot_closes_in_past"):
+        pl.accept(b)
+
+
+def test_vote_accepted_by_audience_member(pipeline):
+    """Public thread (no audience gate) — vote in range → accepted."""
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q", ["Yes", "No"], _far_future_iso())
+    pl.accept(b)
+    v = _vote("t1", apub, apriv, b.id, 0)
+    seq = pl.accept(v)
+    assert seq == 1
+
+
+def test_vote_rejects_unknown_ballot(pipeline):
+    pl, apriv, apub = pipeline
+    v = _vote("t1", apub, apriv, "sha256:" + "aa" * 32, 0)
+    with pytest.raises(AcceptanceError, match="vote_ballot_unknown"):
+        pl.accept(v)
+
+
+def test_vote_rejects_wrong_thread(pipeline):
+    """The vote must live in the same thread as its ballot."""
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q", ["Yes", "No"], _far_future_iso())
+    pl.accept(b)
+    # Vote in a different thread pointing at the same ballot.
+    v = _vote("t2", apub, apriv, b.id, 0)
+    with pytest.raises(AcceptanceError, match="vote_wrong_thread"):
+        pl.accept(v)
+
+
+def test_vote_rejects_out_of_range_option(pipeline):
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q", ["Yes", "No"], _far_future_iso())
+    pl.accept(b)
+    v = _vote("t1", apub, apriv, b.id, 5)
+    with pytest.raises(AcceptanceError, match="vote_option_out_of_range"):
+        pl.accept(v)
+
+
+def test_vote_rejects_after_close(pipeline, monkeypatch):
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q", ["Yes", "No"], _far_future_iso(1))
+    pl.accept(b)
+    # Fast-forward: pretend now is 2 days later so the ballot has closed.
+    from datetime import datetime, timedelta, timezone
+    future = datetime.now(timezone.utc) + timedelta(days=2)
+    monkeypatch.setattr("cove.pipeline._now_utc", lambda: future)
+    v = _vote("t1", apub, apriv, b.id, 0)
+    with pytest.raises(AcceptanceError, match="vote_ballot_closed"):
+        pl.accept(v)
+
+
+def test_vote_rejects_non_audience_voter(no_structural, hub_keypair, keypair):
+    """Audience-scoped thread + voter not in audience → refused. The
+    /sync visibility rule keeps the ballot hidden from them anyway;
+    this is defense-in-depth for stale-cached clients."""
+    apriv, apub = keypair
+    outsider_priv, outsider_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub]},
+        extra_attested={outsider_pub: _Att(role="member")},
+    )
+    b = _ballot("t1", apub, apriv, "Q", ["Yes", "No"], _far_future_iso())
+    pl.accept(b)
+    v = _vote("t1", outsider_pub, outsider_priv, b.id, 0)
+    with pytest.raises(AcceptanceError, match="vote_not_in_audience"):
+        pl.accept(v)
+
+
+def test_multiple_votes_by_same_voter_all_land(pipeline):
+    """Vote changes are latest-wins by tally rule (not pipeline). The
+    pipeline accepts every vote; the client + tally endpoint pick the
+    highest-seq per voter."""
+    pl, apriv, apub = pipeline
+    b = _ballot("t1", apub, apriv, "Q", ["Yes", "No"], _far_future_iso())
+    pl.accept(b)
+    v1 = _vote("t1", apub, apriv, b.id, 0)
+    pl.accept(v1)
+    v2 = _vote("t1", apub, apriv, b.id, 1)
+    pl.accept(v2)
+    # Both landed at different seqs.
+    assert (v1.id, 1) in pl.store.appended
+    assert (v2.id, 2) in pl.store.appended

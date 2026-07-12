@@ -71,7 +71,9 @@
   // can't be silent. Non-negotiable #5.
   // v0.5.3: 'supersede' hidden — edits fold into the original's chip
   // via editVersions below; standalone rendering would double-count.
-  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen', 'supersede']);
+  // v0.6.0: 'vote' hidden — votes fold into the ballot's card via
+  // votesByBallot below; a standalone vote entry has no readable body.
+  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen', 'supersede', 'vote']);
   const topLevel = $derived(
     app.entries.filter((ve) =>
       ve.entry.parents.length === 0 && !_HIDDEN_KINDS.has(ve.entry.kind),
@@ -89,6 +91,21 @@
       const list = map.get(ve.entry.supersedes) ?? [];
       list.push(ve);
       map.set(ve.entry.supersedes, list);
+    }
+    for (const list of map.values()) list.sort((a, b) => a.seq - b.seq);
+    return map;
+  });
+
+  /** v0.6.0: for each ballot entry, the list of vote entries pointing
+   *  at it (in seq order — latest-per-voter wins for tally). Passed
+   *  into BallotCard which computes the counts + per-option UI. */
+  const votesByBallot = $derived.by(() => {
+    const map = new Map<string, typeof app.entries>();
+    for (const ve of app.entries) {
+      if (ve.entry.kind !== 'vote' || !ve.entry.vote) continue;
+      const list = map.get(ve.entry.vote.ballot_id) ?? [];
+      list.push(ve);
+      map.set(ve.entry.vote.ballot_id, list);
     }
     for (const list of map.values()) list.sort((a, b) => a.seq - b.seq);
     return map;
@@ -712,6 +729,11 @@
               editVersions={editVersions.get(ve.entry.id ?? '') ?? []}
               onEdit={ve.entry.author === myPk && ve.entry.kind === 'post'
                 ? (newBody: string) => app.editPost(ve.entry.id!, newBody)
+                : undefined}
+              votesForBallot={votesByBallot.get(ve.entry.id ?? '') ?? []}
+              {myPk}
+              onVote={ve.entry.kind === 'ballot'
+                ? (i: number) => app.castVote(ve.entry.id!, i)
                 : undefined}
             />
           {/each}
