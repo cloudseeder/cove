@@ -188,6 +188,28 @@
       audienceDialogFor = null;
     }
   });
+
+  // v0.5.2: debounced auto-save of the new-thread dialog draft. Reading
+  // the dialog fields inside the effect registers them as reactive deps;
+  // 500ms setTimeout coalesces bursts of typing into a single localStorage
+  // write. Cleanup fires on effect re-run so a rapid burst doesn't stack
+  // up N pending saves.
+  let draftSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  $effect(() => {
+    const d = app.newThreadDialog;
+    if (!d) {
+      if (draftSaveTimer) { clearTimeout(draftSaveTimer); draftSaveTimer = null; }
+      return;
+    }
+    // Touch every persisted field so the effect subscribes to it.
+    void d.name; void d.message; void d.scope;
+    void d.ephemeral; void d.ttlDays; void d.selected.size;
+    if (draftSaveTimer) clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(() => {
+      app.saveNewThreadDraft();
+      draftSaveTimer = null;
+    }, 500);
+  });
   function toggleAudiencePubkey(pk: string) {
     if (!audienceDialog) return;
     const next = new Set(audienceDialog.selected);
@@ -843,6 +865,15 @@
     <div class="modal-actions">
       <button type="button" class="ghost" onclick={() => app.closeNewThreadDialog()}
         disabled={d.submitting}>Cancel</button>
+      <!-- v0.5.2: explicit discard. Cancel keeps the draft on disk so
+           the user can come back; this button blanks the fields AND
+           removes the localStorage entry. Only useful when there's
+           actual content to discard. -->
+      {#if d.name || d.message || d.selected.size > 0}
+        <button type="button" class="ghost" onclick={() => app.discardNewThreadDraft()}
+          disabled={d.submitting}
+          title="Blank the fields and remove the saved draft">Clear draft</button>
+      {/if}
       <button type="button" onclick={() => app.submitNewThread()}
         disabled={d.submitting || d.name.trim() === ''
                   || d.message.trim() === ''}>

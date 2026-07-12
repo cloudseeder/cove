@@ -25,7 +25,7 @@ import {
 } from './verify';
 import type {
   Attestation, BlobRef, DirectoryManifest, Entry, InboxRow, InclusionProof,
-  Invite, LedgerStatus, Revocation, STH, ThreadSummary,
+  Invite, LedgerStatus, Revocation, STH, SearchResult, ThreadSummary,
 } from './types';
 
 /**
@@ -566,6 +566,18 @@ export class Client {
     this.requireAuth();
     const data = await this.requestJson('GET', '/inbox');
     return data.threads as InboxRow[];
+  }
+
+  /** v0.5.2: GET /search — substring search over post/reply/notice
+   *  bodies + thread names. Results are audience-scoped (removed
+   *  members see nothing past their removal seq) and exclude ephemeral
+   *  threads. */
+  async searchThreads(q: string, limit: number = 50): Promise<SearchResult[]> {
+    this.requireAuth();
+    const data = await this.requestJson(
+      'GET', `/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    );
+    return data.results as SearchResult[];
   }
 
   /** v0.4.35: GET /ledger?entry=… — per-entry delivery status against

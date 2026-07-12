@@ -33,7 +33,7 @@ import {
 } from './tauri';
 import type {
   Attestation, DirectoryManifest, InboxRow, Invite, KeypairGroup,
-  ThreadSummary,
+  SearchResult, ThreadSummary,
 } from './types';
 import { DEFAULT_CAPABILITIES_BY_ROLE } from './types';
 import { hashManifest } from './verify';
@@ -572,6 +572,15 @@ export class HubConnection {
     } catch (_err) {
       // Non-fatal — stale thread list is preferable to throwing.
     }
+  }
+
+  /** v0.5.2: substring search over post/reply/notice bodies + thread
+   *  names on the ACTIVE hub. Server-side; audience-scoped; ephemeral
+   *  threads excluded. Returns the raw SearchResult[] so the caller
+   *  can debounce + render however it wants. */
+  async searchThreads(q: string, limit: number = 50): Promise<SearchResult[]> {
+    if (this.client === null) return [];
+    return await this.client.searchThreads(q, limit);
   }
 
   /** v0.4.19: pull the landing-view bundle from /inbox. */
@@ -1143,21 +1152,127 @@ export class HubConnection {
   // New-thread dialog
   // ---------------------------------------------------------------------
 
+  /** v0.5.2: localStorage key for a new-thread draft, per-hub so
+   *  brooks-hub's draft doesn't leak into lwccoa-hub. Null when the
+   *  hub URL isn't known yet (fresh construction). */
+  private _draftKey(): string | null {
+    if (!this.hubUrl) return null;
+    return `cove.draft.newThread.${this.hubUrl}`;
+  }
+
+  private _loadNewThreadDraft(): {
+    name: string; scope: 'public' | 'private';
+    selected: string[]; message: string;
+    ephemeral: boolean; ttlDays: number;
+  } | null {
+    const key = this._draftKey();
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed !== 'object' || parsed === null) return null;
+      return {
+        name: String(parsed.name ?? ''),
+        scope: parsed.scope === 'private' ? 'private' : 'public',
+        selected: Array.isArray(parsed.selected)
+          ? parsed.selected.filter((p: unknown) => typeof p === 'string') as string[]
+          : [],
+        message: String(parsed.message ?? ''),
+        ephemeral: Boolean(parsed.ephemeral),
+        ttlDays: Number.isFinite(parsed.ttlDays) ? Number(parsed.ttlDays) : 30,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /** v0.5.2: write the current dialog state to localStorage. Called
+   *  (debounced) from the dialog UI on every change so a browser crash
+   *  or accidental Cancel doesn't cost the user their draft. */
+  saveNewThreadDraft(): void {
+    const key = this._draftKey();
+    if (!key || !this.newThreadDialog) return;
+    const d = this.newThreadDialog;
+    // Don't persist submitting/error — those are transient runtime state.
+    const draft = {
+      name: d.name,
+      scope: d.scope,
+      selected: Array.from(d.selected),
+      message: d.message,
+      ephemeral: d.ephemeral,
+      ttlDays: d.ttlDays,
+    };
+    try {
+      localStorage.setItem(key, JSON.stringify(draft));
+    } catch {
+      // Quota / private-mode / disabled — ignore silently, the dialog
+      // still works in memory for this session.
+    }
+  }
+
+  private _clearNewThreadDraft(): void {
+    const key = this._draftKey();
+    if (!key) return;
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // ignore
+    }
+  }
+
+  /** v0.5.2: true if there's a persisted draft for this hub — the UI
+   *  uses this to decide whether to show a "Loaded draft" indicator
+   *  and the "Clear draft" affordance. */
+  hasNewThreadDraft(): boolean {
+    const key = this._draftKey();
+    if (!key) return false;
+    try {
+      return localStorage.getItem(key) !== null;
+    } catch {
+      return false;
+    }
+  }
+
   openNewThreadDialog(): void {
+    // v0.5.2: restore a saved draft if present so an accidental Cancel
+    // or a browser reload doesn't cost the user their in-progress work.
+    const draft = this._loadNewThreadDraft();
     this.newThreadDialog = {
-      name: '',
-      scope: 'public',
-      selected: new Set<string>(),
-      message: '',
+      name: draft?.name ?? '',
+      scope: draft?.scope ?? 'public',
+      selected: new Set<string>(draft?.selected ?? []),
+      message: draft?.message ?? '',
       submitting: false,
       error: null,
-      ephemeral: false,
-      ttlDays: 30,
+      ephemeral: draft?.ephemeral ?? false,
+      ttlDays: draft?.ttlDays ?? 30,
     };
   }
 
   closeNewThreadDialog(): void {
+    // v0.5.2: Cancel keeps the draft on disk so reopening restores.
+    // Explicit discard goes through discardNewThreadDraft().
+    this.saveNewThreadDraft();
     this.newThreadDialog = null;
+  }
+
+  /** v0.5.2: blank the dialog fields AND wipe the persisted draft.
+   *  Called by the "Clear draft" button in the dialog. */
+  discardNewThreadDraft(): void {
+    this._clearNewThreadDraft();
+    if (this.newThreadDialog) {
+      this.newThreadDialog = {
+        name: '',
+        scope: 'public',
+        selected: new Set<string>(),
+        message: '',
+        submitting: false,
+        error: null,
+        ephemeral: false,
+        ttlDays: 30,
+      };
+    }
   }
 
   toggleNewThreadMember(pubkey: string): void {
@@ -1221,6 +1336,9 @@ export class HubConnection {
         await this.switchThread(sanitized);
         if (d.message.trim()) await this.post(d.message);
       }
+      // v0.5.2: successful submit — draft is consumed, wipe it so
+      // reopening the dialog doesn't restore stale fields.
+      this._clearNewThreadDraft();
       this.newThreadDialog = null;
     } catch (err) {
       this.newThreadDialog = this.newThreadDialog

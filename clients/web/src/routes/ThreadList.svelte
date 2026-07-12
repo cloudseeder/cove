@@ -10,11 +10,83 @@
 <script lang="ts">
   import { sanitizeThreadName } from '$lib/cove/threadname';
   import type { AppState } from '$lib/cove/state.svelte';
+  import type { SearchResult } from '$lib/cove/types';
   import HubSwitcher from './HubSwitcher.svelte';
 
   let { app }: { app: AppState } = $props();
 
   let newThreadName = $state('');
+
+  // v0.5.2: sidebar search. Debounced 250ms; server-side full-search
+  // over post/reply/notice bodies + thread names, audience-scoped.
+  // While the input has text, thread results replace the tree; empty
+  // query returns to the normal tree.
+  let searchQuery = $state('');
+  let searchResults = $state<SearchResult[] | null>(null);
+  let searchStatus = $state<'idle' | 'searching' | 'error'>('idle');
+  let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let searchSeq = 0;   // guard against out-of-order responses
+
+  function runSearch(q: string) {
+    const term = q.trim();
+    if (term.length < 2) {
+      searchResults = null;
+      searchStatus = 'idle';
+      return;
+    }
+    const mySeq = ++searchSeq;
+    searchStatus = 'searching';
+    app.searchThreads(term).then((rows) => {
+      if (mySeq !== searchSeq) return;   // superseded
+      searchResults = rows;
+      searchStatus = 'idle';
+    }).catch(() => {
+      if (mySeq !== searchSeq) return;
+      searchStatus = 'error';
+    });
+  }
+
+  function onSearchInput(e: Event) {
+    const val = (e.currentTarget as HTMLInputElement).value;
+    searchQuery = val;
+    if (searchDebounceTimer) clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = setTimeout(() => runSearch(val), 250);
+  }
+
+  function clearSearch() {
+    searchQuery = '';
+    searchResults = null;
+    searchStatus = 'idle';
+    searchSeq++;   // invalidate any in-flight response
+  }
+
+  async function goToResult(r: SearchResult) {
+    await app.switchThread(r.thread);
+    clearSearch();
+  }
+
+  // Reset search when the active hub changes — different hubs have
+  // different threads; showing brooks-hub results after switching to
+  // lwccoa-hub would just be confusing.
+  $effect(() => {
+    // Reading app.activeHubUrl registers it as a reactive dep.
+    void app.activeHubUrl;
+    clearSearch();
+  });
+
+  function snippetPreview(s: string): string {
+    return s.length > 100 ? s.slice(0, 100) + '…' : s;
+  }
+
+  function shortDate(iso: string): string {
+    try {
+      return new Date(iso).toLocaleDateString(undefined, {
+        month: 'short', day: 'numeric',
+      });
+    } catch {
+      return iso.slice(0, 10);
+    }
+  }
 
   /** v0.4.65: user's own pubkey — needed for federation flows where
    *  the user tells a different hub's admin what to attest. Auto-
@@ -208,10 +280,27 @@
     {/if}
   </button>
 
+  <!-- v0.5.2: sidebar search. Empty query → normal thread tree.
+       While there's a term, results replace the tree until cleared. -->
+  <div class="search-box">
+    <input type="search"
+      placeholder="Search threads + messages…"
+      value={searchQuery}
+      oninput={onSearchInput}
+      aria-label="Search threads and messages" />
+    {#if searchQuery.length > 0}
+      <button type="button" class="search-clear"
+        aria-label="Clear search"
+        onclick={clearSearch}>×</button>
+    {/if}
+  </div>
+
   <!-- Threads section header with the + and refresh controls that used
        to live in the top header. Sits above the scrollable thread list. -->
   <div class="threads-section-header">
-    <span class="section-label">Threads</span>
+    <span class="section-label">
+      {#if searchResults !== null}Search results{:else}Threads{/if}
+    </span>
     <div class="section-actions">
       <button type="button" class="new-thread"
         title="Start a new thread"
@@ -267,7 +356,33 @@
 
   <!-- v0.4.82: Inbox + Admin moved out of this list — Inbox is now the
        pinned button above the section header, Admin is the 🔑 key in
-       the top-right header. This list is thread-only. -->
+       the top-right header. This list is thread-only.
+       v0.5.2: while a search is active, this scroll region shows result
+       rows instead of the tree; clearing the input returns to the tree. -->
+  {#if searchResults !== null}
+    <ul class="threads-scroll search-results">
+      {#if searchStatus === 'searching'}
+        <li class="search-status">Searching…</li>
+      {:else if searchStatus === 'error'}
+        <li class="search-status error">Search failed. Try again.</li>
+      {:else if searchResults.length === 0}
+        <li class="search-status">No matches.</li>
+      {:else}
+        {#each searchResults as r (r.entry_id)}
+          <li>
+            <button type="button" class="search-result"
+              onclick={() => goToResult(r)}>
+              <span class="result-head">
+                <span class="name">{r.thread}</span>
+                <span class="result-date">{shortDate(r.created_at)}</span>
+              </span>
+              <span class="result-snippet">{snippetPreview(r.snippet)}</span>
+            </button>
+          </li>
+        {/each}
+      {/if}
+    </ul>
+  {:else}
   <ul class="threads-scroll">
     {#each tree as node (node.thread)}
       {@render threadNode(node)}
@@ -307,6 +422,7 @@
       {/if}
     {/if}
   </ul>
+  {/if}
 
   <form onsubmit={handleNewThread}>
     <input
@@ -457,6 +573,85 @@
     padding: 0.1rem 0.5rem;
     line-height: 1.4;
   }
+  /* v0.5.2: sidebar search input. Compact — sits between Inbox and
+     the Threads section header. */
+  .search-box {
+    position: relative;
+    padding: 0.4rem 1rem 0.2rem;
+  }
+  .search-box input {
+    width: 100%;
+    padding: 0.4rem 1.9rem 0.4rem 0.6rem;
+    font-size: 0.85rem;
+    border: 1px solid var(--border);
+    background: var(--bg, inherit);
+    color: inherit;
+    border-radius: 6px;
+    box-sizing: border-box;
+  }
+  .search-box input:focus {
+    outline: none;
+    border-color: var(--accent, #d4af37);
+  }
+  .search-clear {
+    position: absolute;
+    right: 1.2rem;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 1.1rem;
+    line-height: 1;
+    padding: 0 0.2rem;
+  }
+  .search-clear:hover { color: inherit; }
+  .search-results .search-status {
+    padding: 0.6rem 1.25rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+    font-style: italic;
+  }
+  .search-results .search-status.error { color: var(--danger, #c33); }
+  .search-result {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    border-radius: 6px;
+    padding: 0.45rem 1.25rem;
+    color: inherit;
+    cursor: pointer;
+    gap: 0.15rem;
+    font-size: 0.85rem;
+  }
+  .search-result:hover { background: var(--hover, rgba(212, 175, 55, 0.06)); }
+  .search-result .result-head {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    align-items: baseline;
+  }
+  .search-result .name { font-weight: 600; }
+  .search-result .result-date {
+    font-size: 0.72rem;
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+  .search-result .result-snippet {
+    color: var(--muted);
+    font-size: 0.78rem;
+    line-height: 1.35;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+
   /* v0.4.82: threads section header. Small caps section label plus
      the + / ↻ controls that used to live in the top header. */
   .threads-section-header {

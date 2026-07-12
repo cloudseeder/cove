@@ -121,6 +121,20 @@ export interface InboxRow {
   audience: Audience | null;
 }
 
+/** v0.5.2: single hit from GET /search. The hub returns an audience-
+ *  scoped snippet windowed around the match — no need to re-search
+ *  client-side. Clicking a result jumps to `thread` in the sidebar;
+ *  entry_id is kept for a future "highlight the matching entry" move. */
+export interface SearchResult {
+  thread: string;
+  entry_id: string;
+  seq: number;
+  kind: string;
+  author: string;
+  created_at: string;
+  snippet: string;
+}
+
 /** v0.4.33: an outstanding invite code. Carries enough metadata for
  *  the admin panel to render a row (when minted, when it expires, why
  *  the keymaster created it, current status). The code itself is the

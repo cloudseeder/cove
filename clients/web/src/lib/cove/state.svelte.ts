@@ -403,6 +403,9 @@ export class AppState {
   hasCapability(cap: string): boolean { return this.hub?.hasCapability(cap) ?? false; }
   openNewThreadDialog(): void { this.hub?.openNewThreadDialog(); }
   closeNewThreadDialog(): void { this.hub?.closeNewThreadDialog(); }
+  saveNewThreadDraft(): void { this.hub?.saveNewThreadDraft(); }
+  discardNewThreadDraft(): void { this.hub?.discardNewThreadDraft(); }
+  hasNewThreadDraft(): boolean { return this.hub?.hasNewThreadDraft() ?? false; }
   toggleNewThreadMember(pubkey: string): void {
     this.hub?.toggleNewThreadMember(pubkey);
   }
@@ -440,6 +443,9 @@ export class AppState {
   async loadInbox(): Promise<void> { await this.hub?.loadInbox(); }
   async goToInbox(): Promise<void> { await this.hub?.goToInbox(); }
   async switchThread(name: string): Promise<void> { await this.hub?.switchThread(name); }
+  async searchThreads(q: string, limit: number = 50) {
+    return (await this.hub?.searchThreads(q, limit)) ?? [];
+  }
 
   // ---------------------------------------------------------------------
   // Global methods (stay on AppState — device custody, updater, UI prefs,

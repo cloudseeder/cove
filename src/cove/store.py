@@ -399,6 +399,37 @@ class EventStore:
         ).fetchall()
         return [_row_to_entry(r) for r in rows]
 
+    def search_entries(
+        self, term: str, limit: int = 200,
+    ) -> list[tuple[Entry, int]]:
+        """v0.5.2: substring search over post/reply/notice bodies + thread
+        names. Returns raw (Entry, seq) matches, newest-first by created_at,
+        capped at `limit`. Audience visibility is NOT filtered here — the
+        API layer applies the same `_caller_sync_clamp` logic used by
+        /sync so removed members don't see anything past their removal.
+
+        Content is stored as JCS bytes; we cast to TEXT and LIKE-match
+        (case-insensitive via LOWER). This can produce false positives on
+        long hex pubkeys that contain the term, but at pilot scale (<10K
+        entries) that's noise a snippet obviously not-from-body will
+        make readable. If precision ever matters, swap for FTS5 —
+        interface stays the same.
+        """
+        term = term.strip()
+        if not term:
+            return []
+        pattern = f"%{term.lower()}%"
+        rows = self._conn.execute(
+            "SELECT id, content, sig, seq FROM entries"
+            " WHERE kind IN ('post', 'reply', 'notice')"
+            "   AND (LOWER(CAST(content AS TEXT)) LIKE ?"
+            "        OR LOWER(thread) LIKE ?)"
+            " ORDER BY created_at DESC"
+            " LIMIT ?",
+            (pattern, pattern, limit),
+        ).fetchall()
+        return [(_row_to_entry((r[0], r[1], r[2])), int(r[3])) for r in rows]
+
     def since_with_seq(self, thread: str, seq: int) -> list[tuple[Entry, int]]:
         """Same as since() but returns (Entry, per-thread seq) pairs.
 

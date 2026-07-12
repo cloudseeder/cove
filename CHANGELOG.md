@@ -4,6 +4,28 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.5.2] — 2026-07-12
+
+### Added
+- **`GET /search`** — substring search over `post`/`reply`/`notice`
+  bodies + thread names on the active hub. Audience-scoped (removed
+  members see nothing past their removal seq — same clamp as `/sync`);
+  ephemeral threads excluded so a sealed thread's content isn't
+  searchable. Server-computed snippet windowed around the match.
+  Debounced 250ms input in the sidebar with a compact results panel;
+  clicking a result switches to that thread. Backing SQL is
+  `LIKE` over the JCS content blob — false positives on pubkey
+  substrings are possible but rare and readable (snippet clarifies).
+  If precision becomes a problem, swap for FTS5; interface stays put.
+- **Draft thread auto-save** — the "New thread" dialog's name +
+  message + audience selection + retention pick auto-save to
+  localStorage (debounced 500ms) under a per-hub key
+  `cove.draft.newThread.<hub_url>`. Accidentally cancelling the
+  dialog no longer loses in-progress work — reopening restores. A
+  successful submit clears the draft; an explicit "Clear draft" button
+  wipes it on demand. Per-hub keys prevent brooks-hub drafts from
+  leaking into lwccoa-hub sessions.
+
 ## [0.5.1] — 2026-07-12
 
 ### Fixed

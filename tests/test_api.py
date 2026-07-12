@@ -2617,3 +2617,148 @@ def test_auto_seal_loop_seals_expired_threads(hub):
     rec = hub["store"].get_ephemeral(thread)
     elapsed = _nu() - _pi(rec["created_at"])
     assert elapsed > timedelta(seconds=rec["ttl_seconds"])
+
+
+# ---- v0.5.2: GET /search ----------------------------------------------
+
+def test_search_matches_body_substring(hub):
+    """A post containing the term shows up in results with a snippet."""
+    for i, body in enumerate([
+        "landscaping RFP was approved by the board",
+        "unrelated chatter about the pool",
+        "another landscaping bid arrived today",
+    ]):
+        ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                          thread=f"t{i}", body=body)
+        hub["client"].post("/entries", json=_entry_payload(ev))
+
+    r = hub["client"].get("/search", params={"q": "landscaping"}).json()
+    assert r["query"] == "landscaping"
+    threads = [row["thread"] for row in r["results"]]
+    assert "t0" in threads
+    assert "t2" in threads
+    assert "t1" not in threads
+    snippets = [row["snippet"].lower() for row in r["results"]]
+    assert all("landscaping" in s for s in snippets)
+
+
+def test_search_matches_thread_name(hub):
+    """Term matches the thread name even if no entry body contains it —
+    common case: user remembers 'the RFP thread' by name."""
+    ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                      thread="rfp-2026", body="hi")
+    hub["client"].post("/entries", json=_entry_payload(ev))
+
+    r = hub["client"].get("/search", params={"q": "rfp"}).json()
+    threads = [row["thread"] for row in r["results"]]
+    assert "rfp-2026" in threads
+
+
+def test_search_short_term_returns_empty(hub):
+    """Single-char sweeps would drown the UI. Below min length → []."""
+    ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                      thread="t1", body="hello")
+    hub["client"].post("/entries", json=_entry_payload(ev))
+    r = hub["client"].get("/search", params={"q": "h"}).json()
+    assert r["results"] == []
+
+
+def test_search_excludes_receipts_and_audience_entries(hub):
+    """Only user-authored bodies matter — receipts have empty body,
+    audience entries carry pubkey lists and would produce weird hits."""
+    ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                      thread="private", body="visible in body")
+    hub["client"].post("/entries", json=_entry_payload(ev))
+    # Post an audience entry — its pubkey list is JSON in content but
+    # kind='audience' is excluded from search_entries.
+    _post_audience_entry(hub, priv=hub["member_priv"],
+                        pub=hub["member_pub"],
+                        thread="private",
+                        pubkeys=[hub["member_pub"]])
+    r = hub["client"].get("/search", params={"q": "visible"}).json()
+    assert len(r["results"]) == 1
+    assert r["results"][0]["kind"] == "post"
+
+
+def test_search_hides_matches_from_non_audience_caller(hub):
+    """A member outside a thread's audience must not see hits from it —
+    same visibility rule /sync applies."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    # Alice scopes and posts; Bob is NOT in the audience.
+    _post_audience_entry(hub, priv=hub["member_priv"],
+                        pub=hub["member_pub"],
+                        thread="private-room",
+                        pubkeys=[hub["member_pub"]])
+    ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                      thread="private-room",
+                      body="secret sauce recipe")
+    hub["client"].post("/entries", json=_entry_payload(ev))
+    r = bob.get("/search", params={"q": "sauce"}).json()
+    assert r["results"] == []
+    # Alice CAN see it.
+    r_alice = hub["client"].get("/search", params={"q": "sauce"}).json()
+    assert any(row["thread"] == "private-room" for row in r_alice["results"])
+
+
+def test_search_respects_grace_period_clamp_for_removed_member(hub):
+    """A removed member sees hits up through their removal seq, not
+    beyond. Mirrors the /sync grace-period contract."""
+    board_priv, board_pub = _attest_extra_member(
+        hub, role="board", display_name="Chair", affiliation="U-2",
+    )
+    bob_priv, bob_pub = _attest_extra_member(
+        hub, role="member", display_name="Bob", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    board = _authed_client(hub, board_priv, board_pub)
+    bob = _authed_client(hub, bob_priv, bob_pub)
+
+    _post_audience_entry(board, priv=board_priv, pub=board_pub,
+                        thread="private-room",
+                        pubkeys=[board_pub, bob_pub])
+    board.post("/entries", json=_entry_payload(_signed_post(
+        board_priv, board_pub, thread="private-room",
+        body="before removal chatter",
+    )))
+    _post_audience_entry(board, priv=board_priv, pub=board_pub,
+                        thread="private-room", pubkeys=[board_pub])
+    board.post("/entries", json=_entry_payload(_signed_post(
+        board_priv, board_pub, thread="private-room",
+        body="after removal chatter",
+    )))
+
+    hits = bob.get("/search", params={"q": "chatter"}).json()["results"]
+    bodies = [h["snippet"] for h in hits]
+    assert any("before" in b for b in bodies)
+    assert not any("after" in b for b in bodies)
+
+
+def test_search_limit_caps_results(hub):
+    """`limit` bounds the returned list."""
+    for i in range(5):
+        ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                          thread=f"t{i}",
+                          body=f"common-word entry {i}")
+        hub["client"].post("/entries", json=_entry_payload(ev))
+    r = hub["client"].get(
+        "/search", params={"q": "common-word", "limit": 3},
+    ).json()
+    assert len(r["results"]) == 3
+
+
+def test_search_snippet_windows_around_hit(hub):
+    """The snippet should include some context around the match, not
+    just start-of-body."""
+    long_body = ("word " * 30) + "TARGET-TERM " + ("word " * 30)
+    ev = _signed_post(hub["member_priv"], hub["member_pub"],
+                      thread="t1", body=long_body.strip())
+    hub["client"].post("/entries", json=_entry_payload(ev))
+    r = hub["client"].get("/search", params={"q": "TARGET-TERM"}).json()
+    snip = r["results"][0]["snippet"]
+    assert "TARGET-TERM" in snip
+    # Not the whole body, and elided with … marker.
+    assert snip.startswith("…") and snip.endswith("…")

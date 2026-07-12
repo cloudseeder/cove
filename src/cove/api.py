@@ -423,6 +423,69 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         ]
         return {"thread": thread, "since": since, "entries": entries}
 
+    # ---- GET /search (v0.5.2) ------------------------------------------
+    # Substring search over post/reply/notice bodies + thread names.
+    # Audience-visibility filtered — same clamp rules as /sync so a
+    # removed member never sees post-removal snippets. Ephemeral threads
+    # are excluded (they die with the tombstone; searching them would
+    # betray the "sealed" promise).
+    _SNIPPET_HALF = 40   # ~80 chars around the match
+    _SEARCH_MIN = 2       # minimum term length; blocks huge single-char sweeps
+    _SEARCH_HARD_LIMIT = 100
+
+    def _snippet_for(body: str, term_lower: str) -> str:
+        """Return a body slice around the first case-insensitive hit.
+        Falls back to the first `_SNIPPET_HALF*2` chars if the term isn't
+        in the body itself (may still be in thread name)."""
+        if not body:
+            return ""
+        idx = body.lower().find(term_lower)
+        if idx < 0:
+            return body[: _SNIPPET_HALF * 2] + ("…" if len(body) > _SNIPPET_HALF * 2 else "")
+        start = max(0, idx - _SNIPPET_HALF)
+        end = min(len(body), idx + len(term_lower) + _SNIPPET_HALF)
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(body) else ""
+        return prefix + body[start:end] + suffix
+
+    @api.get("/search")
+    def get_search(q: str = Query(..., min_length=1),
+                   limit: int = Query(50, ge=1, le=_SEARCH_HARD_LIMIT),
+                   caller: str = Depends(require_session)) -> dict:
+        term = q.strip()
+        if len(term) < _SEARCH_MIN:
+            return {"query": term, "results": []}
+        term_lower = term.lower()
+        # Over-fetch a bit — audience filtering + ephemeral exclusion may
+        # drop some rows and we still want to fill up to `limit`.
+        raw = store.search_entries(term, limit=limit * 4)
+        # Per-thread clamp cache so we don't re-walk audience history for
+        # every match on the same thread.
+        clamp_cache: dict[str, tuple[bool, Optional[int]]] = {}
+        results: list[dict] = []
+        for ev, seq in raw:
+            if store.is_ephemeral(ev.thread):
+                continue
+            if ev.thread not in clamp_cache:
+                clamp_cache[ev.thread] = _caller_sync_clamp(ev.thread, caller)
+            visible, clamp_seq = clamp_cache[ev.thread]
+            if not visible:
+                continue
+            if clamp_seq is not None and seq > clamp_seq:
+                continue
+            results.append({
+                "thread": ev.thread,
+                "entry_id": ev.id,
+                "seq": seq,
+                "kind": ev.kind,
+                "author": ev.author,
+                "created_at": ev.created_at,
+                "snippet": _snippet_for(ev.body, term_lower),
+            })
+            if len(results) >= limit:
+                break
+        return {"query": term, "results": results}
+
     # ---- GET /threads ---------------------------------------------------
     # Client-side navigation needs a list of what threads exist. Returns
     # [(thread_name, entry_count, latest_seq)] sorted by latest_seq desc.
