@@ -76,11 +76,13 @@ entry = {
   thread:         <entry id of thread root>,             // root: thread == id
   author:       <ed25519 pubkey>,
   parents:      [ <entry id>, ... ],     // causal DAG edges; root: []
-  kind:         "notice" | "post" | "reply" | "supersede" | "membership" | "receipt" | "revoke",
+  kind:         "notice" | "post" | "reply" | "supersede" | "membership" | "receipt" | "revoke"
+              | "branch" | "archive" | "reopen" | "audience" | "tombstone",
   created_at:   <rfc3339>,               // advisory only; causal order from DAG, not clock
   body:         <utf-8 / markdown>,      // may be empty
   blobs:        [ { hash, media_type, size, name }, ... ],   // content-addressed refs
   supersedes:   <entry id | null>,       // for edits/revisions
+  audience:     { pubkeys: [<pubkey>, ...] } | null,   // §3.4 — only for kind="audience"
   sig:          <ed25519 sig over canonical(content)>
 }
 ```
@@ -100,6 +102,28 @@ where `content` = the entry with `id` and `sig` removed.
 
 ### 3.3 Edits and revisions
 - An edit/revision is a new entry with `supersedes` pointing at the prior entry (and typically a new blob hash for a revised document). Nothing is mutated in place. The log is append-only; history is preserved; the superseding chain is itself auditable. (ARC drawing v1→v2→v3 = three entries, three blobs.)
+
+### 3.4 Audience-declaration entries (`kind="audience"`) — v0.4.27 + v0.5.0
+
+An **audience-declaration entry** scopes a thread's visibility to a closed pubkey list. A thread with no audience entry is public to every attested member; a thread with any audience entry is scoped, and only in-audience members can `/sync`, appear in `/threads`, or receive `/stream` pushes for it.
+
+**Wire shape.** `kind="audience"`, `body=""`, `audience.pubkeys` is the **full replacement list** — not a diff. The new audience is exactly the pubkeys named, replacing whatever came before. The hub derives per-entry (added, removed) by comparing against the prior accepted audience at the entry's seq; clients compute the same diff for rendering.
+
+**Write-side authorization rules.** For a submitted audience entry with proposed list `new`, let `old` be the current audience computed by walking prior accepted audience entries in seq order:
+
+1. **Bootstrap.** If the thread has no prior audience entry (i.e. `old` is undefined), `new` establishes the scope. Any attested, non-revoked author is accepted. Preserves the "any member can scope a public thread" property.
+2. **Author-in-audience.** Otherwise the author MUST be in `old`. Otherwise reject with `reason="not_in_audience"`. Governance authority (rule 3) is exercised **from within** the thread — a board or officer member NOT in the current audience cannot post an audience change against it; they must be added first (which any current member may do under rule 4).
+3. **Removal-of-other requires `manage_audience`.** Let `removed = old − new`. If `removed − {author}` is non-empty, the author MUST hold the `manage_audience` capability (default: roles `board` + `officer`). Otherwise reject with `reason="removal_requires_manage_audience"`.
+4. **Additive changes** (`new ⊇ old`) — accepted for any in-audience author.
+5. **Self-leave** (`removed = {author}`, plus any additions) — accepted for any in-audience author regardless of capability.
+
+The write-side gate lives in the acceptance pipeline (§7.1). Rejection is a structured `400 {error: "rejected", reason: "<slug>"}` — never a silent accept-and-ignore. The read-side (`store.thread_audience`) still applies rules 1–3 as defense-in-depth so a hub bug can't smuggle an unauthorized change past the read layer.
+
+**Sync grace period for removed members.** A member who was in the audience and is removed at seq N retains `/sync` visibility of the thread up to and INCLUDING seq N — the audience entry that removed them. `/threads` and `/inbox` continue to surface the thread to them with an out-of-band `removed_at_seq: N` field so their client can render "You were removed at ... by ..." rather than the thread silently disappearing. Anything posted after seq N is invisible to them; the composer must hide.
+
+**Rendering.** Clients MUST render audience changes as first-class entries in the thread stream (not a hidden governance-metadata kind), showing added/removed/left phrasing with the actor and timestamp. Ejection cannot be silent — that is the whole point of the write-side gate. Style is a client concern; the mandate is visibility.
+
+**Capabilities.** `manage_audience` is a v0.5.0 capability, defined in `capabilities_by_role` on the DirectoryManifest (§2.3). The hardcoded default map (used when a manifest has no `capabilities_by_role` field) grants it to `board` and `officer`. Orgs override per role via the manifest.
 
 ---
 
@@ -199,7 +223,7 @@ Transport: **HTTPS** for request/response, **WebSocket** for push. Push (not pol
 3. Recompute `id` from `content`; reject on mismatch.
 4. Verify `sig` over `JCS(content)` against `author`; reject on failure.
 5. **Per-identity throttle / quota (§7.2).** Now that `author` is known and proven, apply this identity's rate limit (token bucket) and storage quota. If exceeded, reject with a structured throttle response (`429`-style, §7.2.3) — the entry is *not* persisted. Repeated/sustained violations raise an admin alert (§7.2.4).
-6. Check ACL: author is a participant permitted to post to `thread` (per `membership` entries); reject otherwise.
+6. Check ACL: author is a participant permitted to post to `thread` (per `membership` entries); reject otherwise. For `kind="audience"` specifically, apply the write-side gate in §3.4 (rules 1–5) — structured `400 {reason: "not_in_audience" | "removal_requires_manage_audience"}` on violation. (`membership`-kind ACL for non-audience posts remains a future slice.)
 7. Verify `parents` exist in the store (or are accepted concurrently); reject dangling parents.
 8. Assign per-thread `seq`; persist to append-only entry store; **extend the tamper-evident log** (§6.4) and update the STH.
 9. Update overview index and (if `kind=receipt`) the ledger.

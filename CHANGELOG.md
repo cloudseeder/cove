@@ -4,6 +4,75 @@ All notable changes to Cove. Format: [Keep a Changelog](https://keepachangelog.c
 The client (`clients/web`) and hub (`src/cove`) ship on the same version — a tag
 covers both.
 
+## [0.5.0] — 2026-07-12
+
+Audience governance minor: Option B. The write-side gate on audience
+mutations moves the "must be in current audience" rule out of a silent
+read-time filter and into a structured pipeline rejection, and adds a
+new `manage_audience` capability (default: board + officer) required to
+remove someone other than yourself. Self-leave and additive changes stay
+open to any in-audience member.
+
+Minor-version bump because the governance semantics change: pre-v0.5.0
+clients that ship removal-of-other UI to a v0.5.0 hub will start getting
+structured 403-shape rejections where they used to get accept-and-ignore
+200s. Wire shape is unchanged — audience entries are still a full
+pubkey-list replacement.
+
+### Added
+- **`manage_audience` capability** — new protocol capability gating
+  removal of other members from a thread's audience. Default map:
+  `board` gets it alongside `admin`/`archive`; `officer` gets it as
+  its first default capability (previously officer had no default
+  caps). Manifest override at `capabilities_by_role` still wins.
+- **`kind='audience'` entries render as first-class in-stream entries.**
+  Previously hidden from the chronological feed (governance metadata
+  surfaced only via the header chip); now rendered as compact chips
+  like "**Amy** removed *Bob*" / "**Bob** left the thread" — ejection
+  can't be silent (non-negotiable #5). Diff computed client-side by
+  walking the audience-entry stream in seq order.
+- **Leave thread button** in the audience-editor dialog. First
+  supported self-leave path — the "to leave, ask another member to
+  remove you" workaround the dialog described is gone.
+- **Sync grace period for removed members.** `/sync` returns entries
+  up to and INCLUDING the audience entry that removed the caller, so
+  the removed member sees who ejected them (their own last view).
+  `/threads` + `/inbox` continue to surface the thread to them with
+  `removed_at_seq: N` so the client can render "You were removed
+  on ... by ..." above the (hidden) composer.
+- **`AudienceGovernanceError`** in the client — typed error surfaced
+  when a governance-reason rejection lands, letting the UI show a
+  targeted "requires board or officer role" toast instead of the
+  generic "post failed" surface.
+
+### Changed
+- **Audience acceptance is now a pipeline write-side gate**, not a
+  read-side silent filter. Rejections return `400 {error:"rejected",
+  reason:"not_in_audience" | "removal_requires_manage_audience"}`
+  with the exact reason (spec §3.4). The read-side filter
+  (`store.thread_audience`) stays as defense-in-depth using the same
+  shared rule (`cove.audience.authorize_audience_change`).
+- **Per-row checkbox in the audience editor**: unchecking someone
+  other than yourself is disabled unless the caller has
+  `manage_audience`. Adding is always enabled; self is checked+disabled
+  as before.
+- **`submitAudience()` no longer force-includes self.** Self stays in
+  via the checkbox default; the dedicated Leave button is the only
+  path that submits without self.
+- **Server-hub-spec §3** — added missing entry kinds (`audience`,
+  `branch`, `archive`, `reopen`, `tombstone`) to the enumeration
+  they'd landed code-first across the v0.4.x arc. New §3.4 covers the
+  audience-declaration rules end-to-end.
+- **Server-hub-spec §7.1 step 6** — forward-references §3.4 for the
+  audience ACL. `membership`-kind ACL remains a future slice.
+
+### Fixed
+- **Silent-failure on unauthorized audience mutation.** Pre-v0.5.0
+  the hub accepted an audience entry from a non-audience author with
+  HTTP 200 and silently dropped it at read time — violating
+  non-negotiable #5. Now the pipeline rejects with a structured
+  reason.
+
 ## [0.4.89] — 2026-07-12
 
 ### Fixed

@@ -66,7 +66,10 @@
   // v0.4.27: 'audience' joins the governance-metadata kinds hidden
   // from the chronological feed (they're surfaced via the audience
   // chip in the header instead).
-  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen', 'audience']);
+  // v0.5.0: 'audience' UN-hidden — audience changes now render as
+  // first-class in-stream entries (added/removed/left) so ejection
+  // can't be silent. Non-negotiable #5.
+  const _HIDDEN_KINDS = new Set(['receipt', 'archive', 'reopen']);
   const topLevel = $derived(
     app.entries.filter((ve) =>
       ve.entry.parents.length === 0 && !_HIDDEN_KINDS.has(ve.entry.kind),
@@ -83,6 +86,10 @@
    *  shows only if the caller has the 'archive' capability. */
   const archived = $derived(app.isThreadArchived(app.thread));
   const canArchive = $derived(app.hasCapability('archive'));
+  // v0.5.0: board + officer roles hold this by the default cap map.
+  // Gates removal of OTHER members from an audience-scoped thread;
+  // additive changes and self-leave stay open to any in-audience member.
+  const canManageAudience = $derived(app.hasCapability('manage_audience'));
   let archiveDialog = $state<{ kind: 'archive' | 'reopen' } | null>(null);
   let archiveRationale = $state('');
 
@@ -221,17 +228,107 @@
     return n;
   }
   const availableGroups = $derived(app.manifest?.groups ?? []);
+
+  // v0.5.0: banner / toast when the last audience-edit attempt was
+  // rejected by the hub with a structured reason. Cleared on next open.
+  let audienceError = $state<string | null>(null);
+
   async function submitAudience() {
     if (!audienceDialog) return;
-    // Force the caller in — UI doesn't let them remove themselves
-    // unintentionally. (Slack lets you leave a private channel; we
-    // can add an explicit "leave" later.)
-    const pubkeys = new Set(audienceDialog.selected);
-    pubkeys.add(myPk);
-    await app.setThreadAudience(app.thread, Array.from(pubkeys));
-    audienceDialog = null;
-    audienceDialogFor = null;
+    // v0.5.0: self is included visually (checkbox checked+disabled) so
+    // "Save" always retains self unless the caller went out via the
+    // dedicated Leave button — which is the ONLY path that submits an
+    // audience without self. See leaveThread() below.
+    const pubkeys = Array.from(audienceDialog.selected);
+    audienceError = null;
+    try {
+      await app.setThreadAudience(app.thread, pubkeys);
+      audienceDialog = null;
+      audienceDialogFor = null;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (msg.includes('removal_requires_manage_audience')) {
+        audienceError = 'Removing another member requires board or officer role.';
+      } else if (msg.includes('not_in_audience')) {
+        audienceError = "You're not in this thread's audience anymore — refresh to see the current state.";
+      } else {
+        audienceError = msg;
+      }
+    }
   }
+
+  async function leaveThread() {
+    if (!audience) return;
+    const pubkeys = audience.pubkeys.filter((pk) => pk !== myPk);
+    audienceError = null;
+    try {
+      await app.setThreadAudience(app.thread, pubkeys);
+      audienceDialog = null;
+      audienceDialogFor = null;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      audienceError = msg.includes('not_in_audience')
+        ? "You're not in this thread's audience anymore."
+        : msg;
+    }
+  }
+
+  // v0.5.0: compute the (added, removed, actor) diff for each rendered
+  // audience entry by walking the thread's audience history in seq
+  // order and diffing consecutive states. Cached derived so the render
+  // branch doesn't recompute per row.
+  const audienceDiffs = $derived.by(() => {
+    const map = new Map<string, {
+      added: string[]; removed: string[]; actor: string;
+    }>();
+    let prev: Set<string> | null = null;
+    const audEntries = app.entries
+      .filter((ve) => ve.entry.kind === 'audience' && ve.entry.audience)
+      .sort((a, b) => a.seq - b.seq);
+    for (const ve of audEntries) {
+      const next = new Set(ve.entry.audience!.pubkeys);
+      if (prev === null) {
+        map.set(ve.entry.id ?? '', {
+          added: Array.from(next),
+          removed: [],
+          actor: ve.entry.author,
+        });
+      } else {
+        const added: string[] = [];
+        const removed: string[] = [];
+        for (const pk of next) if (!prev.has(pk)) added.push(pk);
+        for (const pk of prev) if (!next.has(pk)) removed.push(pk);
+        map.set(ve.entry.id ?? '', {
+          added, removed, actor: ve.entry.author,
+        });
+      }
+      prev = next;
+    }
+    return map;
+  });
+
+  // v0.5.0: has the current caller been removed from this thread? True
+  // when the thread has an audience but the caller isn't in it —
+  // v0.5.0 grace-period /sync + /threads still surface the thread to a
+  // removed member up through their removal seq so they can see who
+  // ejected them (not silent). Also true for a public thread that was
+  // never joined? No — no audience, no removal, wasRemoved stays null.
+  const wasRemoved = $derived.by(() => {
+    if (!myPk) return null;
+    if (!audience || audience.pubkeys.includes(myPk)) return null;
+    let removedByEntry: { actor: string; ts: string } | null = null;
+    for (const ve of app.entries) {
+      if (ve.entry.kind !== 'audience') continue;
+      const diff = audienceDiffs.get(ve.entry.id ?? '');
+      if (diff && diff.removed.includes(myPk)) {
+        removedByEntry = {
+          actor: ve.entry.author,
+          ts: ve.entry.created_at,
+        };
+      }
+    }
+    return removedByEntry;
+  });
   function nameForPubkey(pk: string): string {
     const att = app.members.find((m) => m.member_pubkey === pk);
     return att?.display_name ?? (pk.slice(0, 8) + '…');
@@ -425,9 +522,14 @@
         <div class="audience-dialog">
           <h3>Edit audience for <code>{app.thread}</code></h3>
           <p class="muted">
-            Anyone currently in the audience can change it. You'll
-            stay in the audience automatically — to leave a thread,
-            you'd ask another member to remove you.
+            {#if canManageAudience}
+              Anyone in this thread can add members. Removing someone
+              else requires board or officer role (you have it). You
+              can leave the thread with the Leave button.
+            {:else}
+              Anyone in this thread can add members and leave. Removing
+              someone else requires board or officer role.
+            {/if}
           </p>
           <!-- v0.4.64: group shortcuts. Clicking a chip adds every
                pubkey in that group to the selection (skipping revoked
@@ -456,11 +558,16 @@
           <ul class="audience-edit-list">
             {#each app.members as m (m.member_pubkey)}
               {@const isSelf = m.member_pubkey === myPk}
+              {@const currentlyIn = audienceDialog.selected.has(m.member_pubkey)}
+              {@const isRemovalOfOther = !isSelf && currentlyIn && !canManageAudience}
               <li>
                 <label>
                   <input type="checkbox"
-                    checked={audienceDialog.selected.has(m.member_pubkey) || isSelf}
-                    disabled={isSelf}
+                    checked={currentlyIn || isSelf}
+                    disabled={isSelf || isRemovalOfOther}
+                    title={isRemovalOfOther
+                      ? 'Removing a member requires board or officer role'
+                      : ''}
                     onchange={() => toggleAudiencePubkey(m.member_pubkey)} />
                   <span class="name">{m.display_name}</span>
                   {#if isSelf}<span class="role-tag">you</span>{/if}
@@ -471,9 +578,21 @@
               </li>
             {/each}
           </ul>
+          {#if audienceError}
+            <p class="muted" role="alert" style="color: var(--danger, #c33);">
+              {audienceError}
+            </p>
+          {/if}
           <div class="archive-actions">
             <button type="button" class="ghost"
               onclick={closeAudienceDialog}>Cancel</button>
+            {#if audience && audience.pubkeys.includes(myPk)}
+              <button type="button" class="ghost"
+                onclick={leaveThread}
+                title="Post an audience change that removes only you">
+                Leave thread
+              </button>
+            {/if}
             <button type="button" onclick={submitAudience}>
               Save audience
             </button>
@@ -549,15 +668,27 @@
               onReply={() => app.openReplyPanel(ve)}
               onFollowBranch={(sub) => app.switchThread(sub)}
               members={app.members}
+              audienceDiff={audienceDiffs.get(ve.entry.id ?? '') ?? null}
             />
           {/each}
         {/if}
       </div>
 
-      <!-- v0.4.49: hide compose in a tombstoned thread — the hub
-           refuses writes to it, so surfacing the input would just
-           produce a bewildering error card on submit. -->
-      {#if !ephemeralRow || ephemeralRow.type !== 'tombstoned'}
+      <!-- v0.5.0: caller was removed from this audience. Show a
+           banner in place of the composer — new posts would 403 (they
+           can't /sync past the removal seq either). Preserves the
+           "no silent failures" invariant on the client side. -->
+      {#if wasRemoved}
+        <div class="archive-banner">
+          <strong>You were removed from this thread</strong>
+          on {new Date(wasRemoved.ts).toLocaleString()}
+          by {nameForPubkey(wasRemoved.actor)}. You can see the
+          history up to that point, but not further updates.
+        </div>
+      {:else if !ephemeralRow || ephemeralRow.type !== 'tombstoned'}
+        <!-- v0.4.49: hide compose in a tombstoned thread — the hub
+             refuses writes to it, so surfacing the input would just
+             produce a bewildering error card on submit. -->
         <ComposeBox {app} />
       {/if}
     </section>

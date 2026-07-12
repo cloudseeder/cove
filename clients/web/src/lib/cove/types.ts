@@ -249,15 +249,19 @@ export interface DirectoryManifest {
   sig: string;
 }
 
-/** v0.4.25: hardcoded fallback when the manifest doesn't set
+/** v0.4.25 + v0.5.0: hardcoded fallback when the manifest doesn't set
  *  capabilities_by_role. Mirrors cove.identity.DEFAULT_CAPABILITIES_BY_ROLE.
- *  Preserves the pre-v0.4.25 behavior (only board has admin + archive). */
+ *  v0.5.0 adds `manage_audience` (the gate for removing OTHER members from
+ *  a thread's audience — self-leave and additive changes stay open); board
+ *  gets it plus admin + archive, officer gets it on its own (officer's
+ *  first default cap). */
 export const DEFAULT_CAPABILITIES_BY_ROLE: Record<string, string[]> = {
-  board: ['admin', 'archive'],
+  board: ['admin', 'archive', 'manage_audience'],
+  officer: ['manage_audience'],
 };
 
 /** v0.4.25: closed set of protocol-defined capability strings.
  *  Manifests may reference unrecognized names — they're tolerated
  *  (forward-compat) but never grant anything. */
-export const CAPABILITIES = ['admin', 'archive'] as const;
+export const CAPABILITIES = ['admin', 'archive', 'manage_audience'] as const;
 export type Capability = typeof CAPABILITIES[number];

@@ -35,11 +35,16 @@
     isNew?: boolean;
     /** v0.4.35: see EntryCard. */
     members?: Attestation[];
+    /** v0.5.0: for kind='audience' entries — the (added, removed) diff
+     *  computed by the parent walking the audience-entry stream in seq
+     *  order. Null for non-audience kinds or when the parent has no
+     *  diff computed yet. */
+    audienceDiff?: { added: string[]; removed: string[] } | null;
   }
 
   let { ve, showHeader, client = null, replyCount = 0,
         latestReply = null, onReply, onFollowBranch,
-        isNew = false, members = [] }: Props = $props();
+        isNew = false, members = [], audienceDiff = null }: Props = $props();
 
   const isBranch = $derived(ve.entry.kind === 'branch' && !!ve.entry.branch_thread);
   const isBoard = $derived(ve.attestation.role === 'board');
@@ -48,6 +53,36 @@
    *  they don't get lost in casual chat. Always show the header
    *  (enforced upstream via shouldGroupWithPrevious). */
   const isNotice = $derived(ve.entry.kind === 'notice');
+  /** v0.5.0: audience-change entries render as governance chips
+   *  (add/remove/left) instead of as chat. Not a headline event, so
+   *  no gold treatment — just a compact inline notice. */
+  const isAudienceChange = $derived(ve.entry.kind === 'audience');
+
+  function nameForPk(pk: string): string {
+    const m = members.find((x) => x.member_pubkey === pk);
+    return m?.display_name ?? pk.slice(0, 8) + '…';
+  }
+
+  /** v0.5.0: build the human-readable audience-diff line. Self-leave
+   *  gets a distinct phrasing ("left the thread") because the intent
+   *  reads differently from a same-list "removed themselves". */
+  const audienceDiffText = $derived.by(() => {
+    if (!isAudienceChange || !audienceDiff) return '';
+    const { added, removed } = audienceDiff;
+    const isSelfLeave = removed.length === 1
+      && removed[0] === ve.entry.author
+      && added.length === 0;
+    if (isSelfLeave) return 'left the thread';
+    const parts: string[] = [];
+    if (added.length > 0) {
+      parts.push('added ' + added.map(nameForPk).join(', '));
+    }
+    if (removed.length > 0) {
+      parts.push('removed ' + removed.map(nameForPk).join(', '));
+    }
+    if (parts.length === 0) return 'updated the audience';
+    return parts.join(', ');
+  });
   const color = $derived(authorColor(ve.entry.author));
   const inits = $derived(initials(ve.attestation.display_name));
   const time = $derived(smartTimestamp(ve.entry.created_at));
@@ -80,7 +115,12 @@
       </div>
     {/if}
 
-    {#if isBranch && onFollowBranch}
+    {#if isAudienceChange}
+      <span class="audience-change">
+        <span aria-hidden="true">👥</span>
+        <span>{audienceDiffText}</span>
+      </span>
+    {:else if isBranch && onFollowBranch}
       <button type="button" class="branch-link"
         onclick={() => onFollowBranch(ve.entry.branch_thread!)}>
         <span aria-hidden="true">🌿</span>
@@ -105,7 +145,7 @@
       <ReplyPreview {latestReply} totalReplyCount={replyCount} onOpen={onReply} dense />
     {/if}
 
-    {#if onReply || (client && members.length > 0 && ve.entry.id)}
+    {#if !isAudienceChange && (onReply || (client && members.length > 0 && ve.entry.id))}
       <div class="footer-row">
         {#if onReply && !latestReply}
           <button type="button" class="reply-link" onclick={onReply}>Reply</button>
@@ -231,6 +271,18 @@
   }
   .branch-link:hover {
     background: var(--panel);
+  }
+  /* v0.5.0: audience-change chip. Compact + muted so it doesn't
+     compete with real posts, but still visible enough to answer
+     "why did Bob's messages stop?". */
+  .audience-change {
+    display: inline-flex;
+    gap: 0.4rem;
+    align-items: baseline;
+    font-size: 0.83rem;
+    color: var(--muted, #888);
+    font-style: italic;
+    padding: 0.15rem 0;
   }
   .attachments {
     margin: 0.3rem 0;

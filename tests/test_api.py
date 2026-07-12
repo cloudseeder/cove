@@ -670,11 +670,12 @@ def test_audience_scoped_thread_hides_from_non_audience_callers(hub):
     assert sync == []
 
 
-def test_audience_update_from_non_member_is_ignored(hub):
-    """Carol (not in audience) posts a kind='audience' entry trying to
-    add herself. The hub accepts the signed entry at the protocol layer
-    (no judgmental filtering) but the audience-computation walks past
-    it because she wasn't in the audience at the time."""
+def test_audience_update_from_non_member_is_rejected(hub):
+    """v0.5.0: Carol (not in audience) posts a kind='audience' entry
+    trying to add herself. Pre-v0.5.0 the hub accepted the signed entry
+    at the protocol layer and silently ignored it at read time — a
+    silent-failure pattern (non-negotiable #5). Now the pipeline rejects
+    with a structured reason and the write never lands."""
     bob_priv, bob_pub = _attest_extra_member(hub, role="member",
                                              display_name="Bob",
                                              affiliation="U-2")
@@ -696,14 +697,10 @@ def test_audience_update_from_non_member_is_ignored(hub):
         thread="private-room",
         pubkeys=[hub["member_pub"], bob_pub, carol_pub],
     )
-    assert sneaky.status_code == 200, sneaky.text  # protocol accepts
+    assert sneaky.status_code == 400
+    assert sneaky.json()["reason"] == "not_in_audience"
 
-    # But /threads still hides the thread from Carol — her audience
-    # entry wasn't applied because she wasn't in the audience.
-    rows = carol.get("/threads").json()["threads"]
-    assert not any(r["thread"] == "private-room" for r in rows)
-
-    # And /threads-as-Alice still shows the original audience pair.
+    # /threads-as-Alice still shows the original audience pair (unchanged).
     rows = hub["client"].get("/threads").json()["threads"]
     match = next(r for r in rows if r["thread"] == "private-room")
     assert set(match["audience"]["pubkeys"]) == {hub["member_pub"], bob_pub}
@@ -751,6 +748,171 @@ def test_audience_update_from_existing_member_takes_effect(hub):
         "/sync", params={"thread": "private-room", "since": -1},
     ).json()["entries"]
     assert any(e["entry"]["body"] == "hi bob" for e in sync)
+
+
+# ---- v0.5.0: audience governance (Option B) + grace-period sync --------
+
+def test_audience_other_remove_by_member_rejected_via_api(hub):
+    """A plain member can't remove another member from an audience they
+    share. Structured 400 with reason='removal_requires_manage_audience'."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    # Alice scopes to {Alice, Bob}.
+    _post_audience_entry(
+        hub, priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="private-room", pubkeys=[hub["member_pub"], bob_pub],
+    )
+    # Bob (member, no manage_audience cap) tries to remove Alice.
+    r = _post_audience_entry(
+        bob, priv=bob_priv, pub=bob_pub,
+        thread="private-room", pubkeys=[bob_pub],
+    )
+    assert r.status_code == 400
+    assert r.json()["reason"] == "removal_requires_manage_audience"
+    # Audience unchanged.
+    rows = hub["client"].get("/threads").json()["threads"]
+    match = next(r for r in rows if r["thread"] == "private-room")
+    assert set(match["audience"]["pubkeys"]) == {hub["member_pub"], bob_pub}
+
+
+def test_officer_can_remove_member_from_group_thread(hub):
+    """An officer-role member in the audience can remove others (they
+    hold manage_audience by the v0.5.0 default map)."""
+    officer_priv, officer_pub = _attest_extra_member(
+        hub, role="officer", display_name="Officer Alice", affiliation="U-2",
+    )
+    bob_priv, bob_pub = _attest_extra_member(
+        hub, role="member", display_name="Bob", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    officer = _authed_client(hub, officer_priv, officer_pub)
+    # Bob (a member currently in the audience) scopes the thread with the
+    # officer + himself, then the officer removes Bob.
+    _post_audience_entry(
+        hub, priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="private-room",
+        pubkeys=[hub["member_pub"], officer_pub, bob_pub],
+    )
+    r = _post_audience_entry(
+        officer, priv=officer_priv, pub=officer_pub,
+        thread="private-room", pubkeys=[hub["member_pub"], officer_pub],
+    )
+    assert r.status_code == 200, r.text
+    rows = hub["client"].get("/threads").json()["threads"]
+    match = next(r for r in rows if r["thread"] == "private-room")
+    assert set(match["audience"]["pubkeys"]) == {hub["member_pub"], officer_pub}
+
+
+def test_sync_grace_period_shows_removal_entry_to_removed_member(hub):
+    """v0.5.0: after a board member removes Bob, Bob's /sync returns
+    entries up through and INCLUDING the audience entry that removed
+    him. Anything posted after that seq is invisible to Bob."""
+    board_priv, board_pub = _attest_extra_member(
+        hub, role="board", display_name="Chair", affiliation="U-2",
+    )
+    bob_priv, bob_pub = _attest_extra_member(
+        hub, role="member", display_name="Bob", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    board = _authed_client(hub, board_priv, board_pub)
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    # Board scopes + posts + removes.
+    _post_audience_entry(
+        board, priv=board_priv, pub=board_pub,
+        thread="private-room", pubkeys=[board_pub, bob_pub],
+    )
+    board.post("/entries", json=_entry_payload(_signed_post(
+        board_priv, board_pub,
+        thread="private-room", body="before-removal",
+    )))
+    r = _post_audience_entry(
+        board, priv=board_priv, pub=board_pub,
+        thread="private-room", pubkeys=[board_pub],
+    )
+    assert r.status_code == 200, r.text
+    # Post AFTER the removal — Bob must not see this one.
+    board.post("/entries", json=_entry_payload(_signed_post(
+        board_priv, board_pub,
+        thread="private-room", body="after-removal",
+    )))
+
+    sync = bob.get(
+        "/sync", params={"thread": "private-room", "since": -1},
+    ).json()["entries"]
+    kinds = [e["entry"]["kind"] for e in sync]
+    bodies = [e["entry"].get("body", "") for e in sync]
+    # Bob sees the audience-scoping, the pre-removal post, and the
+    # removal audience entry — but NOT the post-removal post.
+    assert "audience" in kinds
+    assert "before-removal" in bodies
+    assert "after-removal" not in bodies
+    # The final entry Bob sees is the audience removal itself.
+    assert sync[-1]["entry"]["kind"] == "audience"
+
+
+def test_sync_after_removal_returns_empty_for_seqs_past_removal(hub):
+    """Requesting `since=<removal_seq>` returns no entries — the grace
+    period is inclusive at the removal seq, exclusive beyond it."""
+    board_priv, board_pub = _attest_extra_member(
+        hub, role="board", display_name="Chair", affiliation="U-2",
+    )
+    bob_priv, bob_pub = _attest_extra_member(
+        hub, role="member", display_name="Bob", affiliation="U-3",
+        issued_at="2026-06-29T00:00:01+00:00",
+        updated_at="2026-06-29T00:00:02+00:00",
+    )
+    board = _authed_client(hub, board_priv, board_pub)
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    _post_audience_entry(
+        board, priv=board_priv, pub=board_pub,
+        thread="private-room", pubkeys=[board_pub, bob_pub],
+    )
+    r = _post_audience_entry(
+        board, priv=board_priv, pub=board_pub,
+        thread="private-room", pubkeys=[board_pub],
+    )
+    assert r.status_code == 200, r.text
+    removal_seq = r.json()["seq"]
+    # Board posts after removal — Bob must not see it via a `since=removal_seq`
+    # follow-up sync.
+    board.post("/entries", json=_entry_payload(_signed_post(
+        board_priv, board_pub,
+        thread="private-room", body="after-removal",
+    )))
+
+    sync = bob.get(
+        "/sync", params={"thread": "private-room", "since": removal_seq},
+    ).json()["entries"]
+    assert sync == []
+
+
+def test_sync_full_history_for_current_audience_member_regression(hub):
+    """Regression: a caller currently in the audience gets full history
+    with no clamp — the grace-period plumbing doesn't accidentally cap
+    active members."""
+    bob_priv, bob_pub = _attest_extra_member(hub, role="member",
+                                             display_name="Bob",
+                                             affiliation="U-2")
+    bob = _authed_client(hub, bob_priv, bob_pub)
+    _post_audience_entry(
+        hub, priv=hub["member_priv"], pub=hub["member_pub"],
+        thread="private-room", pubkeys=[hub["member_pub"], bob_pub],
+    )
+    for i in range(5):
+        hub["client"].post("/entries", json=_entry_payload(_signed_post(
+            hub["member_priv"], hub["member_pub"],
+            thread="private-room", body=f"msg-{i}",
+        )))
+    sync = bob.get(
+        "/sync", params={"thread": "private-room", "since": -1},
+    ).json()["entries"]
+    bodies = [e["entry"].get("body", "") for e in sync]
+    for i in range(5):
+        assert f"msg-{i}" in bodies
 
 
 def test_audience_scoped_stream_pushes_skip_non_audience_subscribers(hub):

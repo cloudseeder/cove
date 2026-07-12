@@ -25,6 +25,7 @@ import {
   Client, TauriKeychainSigner, type RevokedEntry, type VerifiedEntry,
 } from './client';
 import { canonicalize } from './crypto';
+import { AudienceGovernanceError } from './errors';
 import { issueAttestation, issueDirectory, type RootSigner } from './identity';
 import type { AppState } from './state.svelte';
 import {
@@ -46,6 +47,21 @@ function errMsg(e: unknown): string {
   if (typeof e === 'string') return e;
   if (e instanceof Error) return e.message;
   return String(e);
+}
+
+// v0.5.0: recognize the two audience-governance rejection reasons the
+// v0.5.0 hub returns (spec §3.x). Client.post throws a ClientError whose
+// message embeds the body JSON — we peek at the message for the reason
+// string and, if it matches, surface a typed error for targeted UI copy.
+function parseAudienceGovernanceError(e: unknown): AudienceGovernanceError | null {
+  const msg = errMsg(e);
+  if (msg.includes('"reason":"not_in_audience"')) {
+    return new AudienceGovernanceError('not_in_audience');
+  }
+  if (msg.includes('"reason":"removal_requires_manage_audience"')) {
+    return new AudienceGovernanceError('removal_requires_manage_audience');
+  }
+  return null;
 }
 
 export type AuthStatus =
@@ -474,7 +490,11 @@ export class HubConnection {
     void this.loadThreads();
   }
 
-  /** v0.4.27: post a kind='audience' entry. */
+  /** v0.4.27 + v0.5.0: post a kind='audience' entry. On a v0.5.0 hub, the
+   *  write may be rejected with a structured governance reason
+   *  (not_in_audience / removal_requires_manage_audience); this method
+   *  re-throws those as AudienceGovernanceError so the UI can render a
+   *  targeted message instead of the generic "post failed" surface. */
   async setThreadAudience(thread: string, pubkeys: string[]): Promise<void> {
     if (this.client === null || this.authStatus.kind !== 'authenticated') return;
     const ev = {
@@ -492,7 +512,13 @@ export class HubConnection {
       id: null,
       sig: null,
     };
-    await this.client.post(ev);
+    try {
+      await this.client.post(ev);
+    } catch (e) {
+      const gov = parseAudienceGovernanceError(e);
+      if (gov !== null) throw gov;
+      throw e;
+    }
     await this.loadInbox();
     void this.loadThreads();
   }

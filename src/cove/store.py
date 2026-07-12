@@ -13,6 +13,7 @@ from dataclasses import asdict
 from typing import Iterable, Optional
 
 from . import crypto
+from .audience import authorize_audience_change
 from .entry import Audience, BlobRef, Entry, Receipt
 
 
@@ -175,18 +176,28 @@ class EventStore:
             return None
         return _row_to_entry((row[0], row[1], row[2])), int(row[3])
 
-    def thread_audience(self, thread: str) -> Optional[Audience]:
-        """v0.4.27: compute the current audience scope for a thread.
+    def thread_audience(
+        self, thread: str,
+        has_manage_audience=None,
+    ) -> Optional[Audience]:
+        """v0.4.27 + v0.5.0: compute the current audience scope for a thread.
 
-        Walks kind='audience' entries oldest-first. The FIRST one
-        establishes the audience by any author (an audience-less thread
-        is public, so anyone can scope it). Subsequent audience entries
-        update the audience only if the entry's author was a member of
-        the audience at the time of the entry — "anyone currently in
-        the audience can change it" (Brooks's design decision).
+        Walks kind='audience' entries oldest-first, applying the shared
+        `authorize_audience_change` rule at each step:
+          - Bootstrap: first entry establishes the audience (any author).
+          - Subsequent: accepted iff (a) author was in the running
+            audience AND (b) if the change removes anyone other than the
+            author, the author had `manage_audience` at the time.
 
-        Returns None when no valid audience entry exists (thread is
-        public). Otherwise returns the latest accepted audience.
+        This is defense-in-depth: the pipeline gate rejects unauthorized
+        writes before they land, but a hub bug could conceivably let one
+        slip past. The read layer must not surface an unauthorized change
+        as if it had been accepted.
+
+        `has_manage_audience` is a callable (author_pubkey) -> bool. When
+        omitted (legacy callers that don't care about the diff-gate
+        defense — e.g. bulk tests), the check reduces to the pre-v0.5.0
+        author-in-audience rule.
         """
         rows = self._conn.execute(
             "SELECT id, content, sig FROM entries"
@@ -202,19 +213,100 @@ class EventStore:
             # malformed test fixture could; just skip it.
             if ev.audience is None:
                 continue
+            new_pubkeys = ev.audience.pubkeys
             if current is None:
                 current = ev.audience
                 continue
-            if ev.author in (current.pubkeys or []):
+            reason = authorize_audience_change(
+                old=current.pubkeys,
+                new=new_pubkeys,
+                author=ev.author,
+                caller_has_manage_audience=(
+                    has_manage_audience or (lambda _pk: False)
+                ),
+            )
+            if reason is None:
                 current = ev.audience
-            # else: ignore — author wasn't in the audience at the time.
+            # else: ignore — the pipeline should have rejected this write;
+            # if it landed anyway, the read layer refuses to honor it.
         return current
 
-    def threads_with_audience(self) -> dict[str, Audience]:
-        """v0.4.27: bulk equivalent of thread_audience for the /threads
-        and /inbox list endpoints. Returns {thread: Audience} for every
-        thread that has any audience entries; threads not in the dict
-        are public (None / no scope).
+    def caller_last_audience_seq(
+        self, thread: str, caller: str,
+        has_manage_audience=None,
+    ) -> Optional[int]:
+        """v0.5.0: for the /sync grace-period fix — return the seq of the
+        last entry the caller is entitled to see in this thread.
+
+        - Caller currently in audience → the thread's current head seq
+          (or None to signal "no clamp, full history").
+        - Caller was in some historical audience and has since been
+          removed → the seq of the audience entry that first removed
+          them (inclusive — they get to see their own removal, which is
+          the final visible entry).
+        - Caller never in audience → None (returns empty from the caller).
+
+        Callers use the ternary shape (never_in, currently_in, removed)
+        by combining this with `caller in thread_audience().pubkeys`.
+        """
+        rows = self._conn.execute(
+            "SELECT id, content, sig, seq FROM entries"
+            " WHERE thread=? AND kind='audience'"
+            " ORDER BY seq",
+            (thread,),
+        ).fetchall()
+        current: Optional[Audience] = None
+        ever_in = False
+        for eid, content_blob, sig, _seq in rows:
+            ev = _row_to_entry((eid, content_blob, sig))
+            if ev.audience is None:
+                continue
+            new_pubkeys = ev.audience.pubkeys
+            if current is None:
+                current = ev.audience
+                if caller in new_pubkeys:
+                    ever_in = True
+                continue
+            reason = authorize_audience_change(
+                old=current.pubkeys,
+                new=new_pubkeys,
+                author=ev.author,
+                caller_has_manage_audience=(
+                    has_manage_audience or (lambda _pk: False)
+                ),
+            )
+            if reason is not None:
+                continue
+            was_in = caller in current.pubkeys
+            now_in = caller in new_pubkeys
+            current = ev.audience
+            if now_in:
+                ever_in = True
+                continue
+            if was_in and not now_in:
+                # Caller was just removed. Their /sync clamp is this seq
+                # (inclusive — they get to see the removal entry itself).
+                return int(_seq)
+        if current is None or caller in current.pubkeys:
+            # Bootstrap-less thread OR caller is still in current audience.
+            return None
+        if not ever_in:
+            # Caller was never in the audience. Preserves the pre-v0.5.0
+            # "audience-scoped thread returns empty to non-audience callers"
+            # behavior via the callsite that checks `caller in audience`.
+            return None
+        # Ever-in but removed AND we didn't hit the removal above. Should
+        # be unreachable given the return in the loop, but stays defensive.
+        return None
+
+    def threads_with_audience(
+        self,
+        has_manage_audience=None,
+    ) -> dict[str, Audience]:
+        """v0.4.27 + v0.5.0: bulk equivalent of thread_audience for the
+        /threads and /inbox list endpoints. Same defense-in-depth as
+        thread_audience — a hub-bug-smuggled audience entry doesn't
+        surface here either.
         """
         rows = self._conn.execute(
             "SELECT thread, id, content, sig, seq FROM entries"
@@ -229,7 +321,16 @@ class EventStore:
             current = out.get(thread)
             if current is None:
                 out[thread] = ev.audience
-            elif ev.author in (current.pubkeys or []):
+                continue
+            reason = authorize_audience_change(
+                old=current.pubkeys,
+                new=ev.audience.pubkeys,
+                author=ev.author,
+                caller_has_manage_audience=(
+                    has_manage_audience or (lambda _pk: False)
+                ),
+            )
+            if reason is None:
                 out[thread] = ev.audience
         return out
 

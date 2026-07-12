@@ -250,11 +250,13 @@ def test_manifest_tampered_default_thread_fails_verify(root_keypair, keypair):
 
 # ---- capabilities_by_role (v0.4.25) ----------------------------------
 
-def test_capabilities_for_role_default_grants_board_admin_and_archive():
+def test_capabilities_for_role_default_grants_board_and_officer():
+    """v0.5.0: board keeps admin + archive; both board and officer gain
+    manage_audience (the new audience-governance gate). member and unknown
+    roles still get nothing."""
     from cove.identity import capabilities_for_role
-    # No manifest → use the hardcoded default mapping (board → admin + archive).
-    assert capabilities_for_role("board", None) == {"admin", "archive"}
-    assert capabilities_for_role("officer", None) == set()
+    assert capabilities_for_role("board", None) == {"admin", "archive", "manage_audience"}
+    assert capabilities_for_role("officer", None) == {"manage_audience"}
     assert capabilities_for_role("member", None) == set()
     assert capabilities_for_role(None, None) == set()
 
@@ -332,21 +334,23 @@ def test_manifest_with_and_without_capabilities_have_different_sigs(root_keypair
 
 def test_directory_caller_capabilities_resolves_via_manifest(root_keypair, keypair):
     """End-to-end through Directory.caller_capabilities: an officer-role
-    member with an officer-grants-admin manifest gets admin. Same
-    member under the default mapping gets nothing."""
+    member with an officer-grants-admin manifest gets admin. Same member
+    under the default mapping gets manage_audience (officer's v0.5.0
+    default cap) but nothing else."""
     root_priv, root_pub = root_keypair
     _, member_pub = keypair
     att = _issue(root_priv, root_pub, member_pub, role="officer")
 
-    # Default mapping — officer has no caps.
+    # Default mapping — officer gets manage_audience only.
     m_default = issue_directory(
         root_priv, org=root_pub, attestations=[att], revocations=[],
         updated_at="2026-06-01T00:00:00+00:00",
     )
     d = Directory.from_manifest(m_default)
-    assert d.caller_capabilities(member_pub) == set()
+    assert d.caller_capabilities(member_pub) == {"manage_audience"}
 
-    # Explicit mapping — officer gets admin.
+    # Explicit mapping — officer gets admin (and NOTHING ELSE — the
+    # default map is not merged in; the override is authoritative).
     m_custom = issue_directory(
         root_priv, org=root_pub, attestations=[att], revocations=[],
         updated_at="2026-06-01T00:00:01+00:00",

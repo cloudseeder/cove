@@ -116,9 +116,15 @@ class DirectoryManifest:
 # matches on it). The default mapping below is what kicks in when a
 # manifest has no capabilities_by_role field — it preserves the
 # pre-v0.4.25 behavior where only board could see admin surfaces.
-CAPABILITIES = frozenset({"admin", "archive"})
+# v0.5.0: `manage_audience` is the gate for removing OTHER members from a
+# thread's audience (self-leave and additive changes remain open to any
+# current-audience member — see cove/audience.py). Officer gains a default
+# capability for the first time; pre-v0.5.0 manifests with an override map
+# that omits it will not grant it (per capabilities_for_role's precedence).
+CAPABILITIES = frozenset({"admin", "archive", "manage_audience"})
 DEFAULT_CAPABILITIES_BY_ROLE: dict[str, list[str]] = {
-    "board": ["admin", "archive"],
+    "board": ["admin", "archive", "manage_audience"],
+    "officer": ["manage_audience"],
 }
 
 

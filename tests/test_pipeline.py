@@ -31,9 +31,14 @@ class _Att:
 
 class StubDirectory:
     def __init__(self, attested: dict[str, _Att] | None = None,
-                 revoked: set[str] | None = None) -> None:
+                 revoked: set[str] | None = None,
+                 caps_by_pubkey: dict[str, set[str]] | None = None) -> None:
         self._attested = attested or {}
         self._revoked = revoked or set()
+        # v0.5.0: audience gate reads this via caller_capabilities. Default
+        # empty (regular members have no caps) so pre-existing tests are
+        # unchanged.
+        self._caps_by_pubkey = caps_by_pubkey or {}
 
     def resolve(self, pubkey: str):
         return self._attested.get(pubkey)
@@ -41,10 +46,14 @@ class StubDirectory:
     def is_revoked(self, pubkey: str, as_of: Optional[str] = None) -> bool:
         return pubkey in self._revoked
 
+    def caller_capabilities(self, pubkey: str) -> set[str]:
+        return set(self._caps_by_pubkey.get(pubkey, set()))
+
 
 class StubStore:
     def __init__(self, ephemeral: set[str] | None = None,
-                 tombstoned: set[str] | None = None) -> None:
+                 tombstoned: set[str] | None = None,
+                 audiences: dict[str, list[str]] | None = None) -> None:
         self._by_id: dict[str, Entry] = {}
         self._next_seq: dict[str, int] = {}
         self.appended: list[tuple[str, int]] = []   # for assertions
@@ -55,6 +64,10 @@ class StubStore:
         # the pipeline uses this to refuse further writes to a sealed
         # thread. Empty set = no tombstones (default).
         self._tombstoned = tombstoned or set()
+        # v0.5.0: pre-seeded thread audiences for the audience-gate tests.
+        # Missing key = bootstrap (no prior audience) — the case the pipeline
+        # gate accepts unconditionally.
+        self._audiences: dict[str, list[str]] = dict(audiences or {})
 
     def next_seq(self, thread: str) -> int:
         s = self._next_seq.get(thread, 0)
@@ -79,6 +92,15 @@ class StubStore:
 
     def is_tombstoned(self, thread: str) -> bool:
         return thread in self._tombstoned
+
+    def thread_audience(self, thread: str):
+        """v0.5.0: mimic the shape of cove.store.thread_audience — returns an
+        object with `.pubkeys` list, or None for a public/bootstrap thread."""
+        pubkeys = self._audiences.get(thread)
+        if pubkeys is None:
+            return None
+        from cove.entry import Audience
+        return Audience(pubkeys=list(pubkeys))
 
 
 class StubThrottler:
@@ -485,3 +507,220 @@ def test_ephemeral_thread_without_translog_wired_is_loud(no_structural, hub_keyp
     ev = sign_entry(_post("beach", apub, "hi"), apriv)
     with pytest.raises(AcceptanceError, match="no ephemeral translog wired"):
         pl.accept(ev)
+
+
+# ---- v0.5.0: audience-change write-side gate (spec §3.x) -----------------
+
+def _audience(thread: str, author_pub: str, pubkeys: list[str]) -> Entry:
+    from cove.entry import Audience
+    return Entry(thread=thread, author=author_pub, kind="audience",
+                 created_at="2026-01-01T00:00:00Z", body="",
+                 audience=Audience(pubkeys=list(pubkeys)))
+
+
+def _audience_pipeline(hub_keypair, apriv, apub, *,
+                       audiences: dict[str, list[str]] | None = None,
+                       caps_by_pubkey: dict[str, set[str]] | None = None,
+                       extra_attested: dict[str, _Att] | None = None):
+    """Helper: pipeline with pre-seeded per-thread audiences + capabilities.
+
+    Callers pass the raw (apriv, apub) so `apub` can appear inside `audiences`
+    without a forward-ref chicken-and-egg.
+    """
+    priv, pub = hub_keypair
+    attested = {apub: _Att(role="member")}
+    if extra_attested:
+        attested.update(extra_attested)
+    directory = StubDirectory(
+        attested=attested,
+        caps_by_pubkey=caps_by_pubkey or {},
+    )
+    pl = Pipeline(
+        store=StubStore(audiences=audiences),
+        directory=directory,
+        translog=TamperEvidentLog(priv, pub),
+        overview=StubOverview(),
+        ledger=StubLedger(),
+        throttler=StubThrottler(),
+    )
+    return pl
+
+
+def test_audience_bootstrap_by_any_member_accepted(no_structural, hub_keypair, keypair):
+    """Rule 1: a thread with no prior audience — any attested member can
+    establish the scope. Preserves pre-v0.5.0 bootstrap behavior."""
+    apriv, apub = keypair
+    pl = _audience_pipeline(hub_keypair, apriv, apub)
+    ev = sign_entry(_audience("t1", apub, [apub]), apriv)
+    pl.accept(ev)   # must not raise
+    assert pl.store.appended == [(ev.id, 0)]
+
+
+def test_audience_reject_when_author_not_in_current_audience(
+        no_structural, hub_keypair, keypair):
+    """Rule 2: existing audience present, author not in it → reject with
+    structured reason (silent-failure elimination)."""
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [other_pub]},
+        extra_attested={other_pub: _Att(role="member")},
+    )
+    ev = sign_entry(_audience("t1", apub, [apub, other_pub]), apriv)
+    with pytest.raises(AcceptanceError, match="not_in_audience"):
+        pl.accept(ev)
+    assert pl.store.appended == []
+
+
+def test_audience_self_leave_accepted_by_any_member(
+        no_structural, hub_keypair, keypair):
+    """Rule 5: removed = {author} — accepted even without manage_audience."""
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub, other_pub]},
+        extra_attested={other_pub: _Att(role="member")},
+    )
+    # apub leaves — new list is just [other_pub]
+    ev = sign_entry(_audience("t1", apub, [other_pub]), apriv)
+    pl.accept(ev)   # must not raise
+    assert pl.store.appended == [(ev.id, 0)]
+
+
+def test_audience_add_only_accepted_by_any_member(
+        no_structural, hub_keypair, keypair):
+    """Rule 4: additive — accepted for any in-audience author."""
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub]},
+        extra_attested={other_pub: _Att(role="member")},
+    )
+    ev = sign_entry(_audience("t1", apub, [apub, other_pub]), apriv)
+    pl.accept(ev)   # must not raise
+    assert pl.store.appended == [(ev.id, 0)]
+
+
+def test_audience_other_remove_by_member_rejected(
+        no_structural, hub_keypair, keypair):
+    """Rule 3: removing someone else without manage_audience → rejected."""
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub, other_pub]},
+        extra_attested={other_pub: _Att(role="member")},
+    )
+    ev = sign_entry(_audience("t1", apub, [apub]), apriv)   # drops other_pub
+    with pytest.raises(AcceptanceError, match="removal_requires_manage_audience"):
+        pl.accept(ev)
+    assert pl.store.appended == []
+
+
+def test_audience_other_remove_by_board_accepted(
+        no_structural, hub_keypair, keypair):
+    """Rule 3: board author (has manage_audience by default map) — accepted."""
+    from cove.audience import MANAGE_AUDIENCE_CAP
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub, other_pub]},
+        extra_attested={other_pub: _Att(role="member")},
+        caps_by_pubkey={apub: {MANAGE_AUDIENCE_CAP, "admin", "archive"}},
+    )
+    ev = sign_entry(_audience("t1", apub, [apub]), apriv)
+    pl.accept(ev)
+    assert pl.store.appended == [(ev.id, 0)]
+
+
+def test_audience_other_remove_by_officer_accepted(
+        no_structural, hub_keypair, keypair):
+    """Rule 3: officer author (manage_audience by default map) — accepted."""
+    from cove.audience import MANAGE_AUDIENCE_CAP
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub, other_pub]},
+        extra_attested={other_pub: _Att(role="member")},
+        caps_by_pubkey={apub: {MANAGE_AUDIENCE_CAP}},   # officer's default cap
+    )
+    ev = sign_entry(_audience("t1", apub, [apub]), apriv)
+    pl.accept(ev)
+    assert pl.store.appended == [(ev.id, 0)]
+
+
+def test_audience_mixed_add_plus_other_remove_by_member_rejected(
+        no_structural, hub_keypair, keypair):
+    """A mixed change that adds a new pubkey AND removes an existing one —
+    the removal-of-other still fails the diff-gate for a plain member."""
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    third_priv, third_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub, other_pub]},
+        extra_attested={other_pub: _Att(role="member"),
+                        third_pub: _Att(role="member")},
+    )
+    # apub adds third_pub AND drops other_pub
+    ev = sign_entry(_audience("t1", apub, [apub, third_pub]), apriv)
+    with pytest.raises(AcceptanceError, match="removal_requires_manage_audience"):
+        pl.accept(ev)
+
+
+def test_audience_mixed_self_leave_plus_add_accepted_by_member(
+        no_structural, hub_keypair, keypair):
+    """Self-leave combined with an add — no other member is being removed,
+    so the diff-gate passes for a plain member."""
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    third_priv, third_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub, other_pub]},
+        extra_attested={other_pub: _Att(role="member"),
+                        third_pub: _Att(role="member")},
+    )
+    # apub adds third_pub AND leaves themselves — removed = {apub}
+    ev = sign_entry(_audience("t1", apub, [other_pub, third_pub]), apriv)
+    pl.accept(ev)   # must not raise
+    assert pl.store.appended == [(ev.id, 0)]
+
+
+def test_audience_manage_audience_actor_not_in_audience_rejected(
+        no_structural, hub_keypair, keypair):
+    """Rule 2 short-circuits Rule 3: a board/officer member NOT in the
+    current audience cannot post an audience change — governance authority
+    is exercised from within the thread. Any current member can add them
+    first, then they can act."""
+    from cove.audience import MANAGE_AUDIENCE_CAP
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [other_pub]},   # apub NOT in audience
+        extra_attested={other_pub: _Att(role="member")},
+        caps_by_pubkey={apub: {MANAGE_AUDIENCE_CAP}},
+    )
+    ev = sign_entry(_audience("t1", apub, [apub, other_pub]), apriv)
+    with pytest.raises(AcceptanceError, match="not_in_audience"):
+        pl.accept(ev)
+
+
+def test_audience_noop_accepted(no_structural, hub_keypair, keypair):
+    """Idempotent no-op: new == old. Accepted (subset of the additive case)."""
+    apriv, apub = keypair
+    other_priv, other_pub = crypto.generate_keypair()
+    pl = _audience_pipeline(
+        hub_keypair, apriv, apub,
+        audiences={"t1": [apub, other_pub]},
+        extra_attested={other_pub: _Att(role="member")},
+    )
+    ev = sign_entry(_audience("t1", apub, [apub, other_pub]), apriv)
+    pl.accept(ev)   # must not raise
+    assert pl.store.appended == [(ev.id, 0)]

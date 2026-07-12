@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
+from .audience import MANAGE_AUDIENCE_CAP, authorize_audience_change
 from .blobs import BlobStore
 from .entry import Entry, verify_entry
 from .identity import Directory
@@ -120,6 +121,29 @@ class Pipeline:
             if ev.branch_thread == ev.thread:
                 raise AcceptanceError(
                     f"branch_thread {ev.branch_thread!r} cannot equal thread")
+
+        # v0.5.0: audience-change write-side gate. Prior to v0.5.0 the pipeline
+        # accepted every signed audience entry and the "author must be in
+        # current audience" rule was enforced silently at read time
+        # (store.thread_audience filtered ineligible entries). That violated
+        # non-negotiable #5 (no silent failures) — the client got HTTP 200
+        # for a mutation the hub was going to ignore. Now the diff-gate lives
+        # here and returns a structured reason on rejection. Spec §3.x.
+        if ev.kind == "audience":
+            if ev.audience is None:
+                raise AcceptanceError("audience entry missing audience payload")
+            current = self.store.thread_audience(ev.thread)
+            old = current.pubkeys if current is not None else None
+            reason = authorize_audience_change(
+                old=old,
+                new=ev.audience.pubkeys,
+                author=ev.author,
+                caller_has_manage_audience=lambda pk: (
+                    MANAGE_AUDIENCE_CAP in self.directory.caller_capabilities(pk)
+                ),
+            )
+            if reason is not None:
+                raise AcceptanceError(reason)
 
         # v0.4.49: refuse writes to a tombstoned thread. Without this,
         # posts to a sealed thread name would silently land in the main

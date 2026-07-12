@@ -347,7 +347,12 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         # v0.4.27: audience-scoped threads filter entry pushes to only
         # subscribers in the audience. Non-audience members never see
         # the push on /stream; they also can't /sync the thread later.
-        audience = store.thread_audience(ev.thread)
+        # v0.5.0: reads route through defense-in-depth (see
+        # store.thread_audience docstring — an unauthorized audience
+        # entry that slipped past the pipeline must not shift this set).
+        audience = store.thread_audience(
+            ev.thread, has_manage_audience=_has_manage_audience,
+        )
         audience_pubkeys = (
             list(audience.pubkeys) if audience is not None else None
         )
@@ -358,16 +363,41 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         }, audience_pubkeys=audience_pubkeys)
         return {"id": ev.id, "seq": seq}
 
-    def _caller_in_thread_audience(thread: str, caller: str) -> bool:
-        """v0.4.27: is `caller` allowed to see entries from `thread`?
-        Public threads (no audience entry ever) — always true. Audience-
-        scoped threads — true iff caller's pubkey is in the audience
-        pubkeys list. Hub-side enforcement, computed live so a freshly-
-        posted audience entry takes effect on the next request."""
-        audience = store.thread_audience(thread)
+    def _has_manage_audience(pubkey: str) -> bool:
+        """v0.5.0: closure passed to the audience read-side defense-in-depth
+        filter in store.thread_audience / caller_last_audience_seq /
+        threads_with_audience. Mirrors _has_archive_capability."""
+        if directory is None:
+            return False
+        return "manage_audience" in directory.caller_capabilities(pubkey)
+
+    def _caller_sync_clamp(
+        thread: str, caller: str,
+    ) -> tuple[bool, Optional[int]]:
+        """v0.5.0: does `caller` see anything from `thread`, and if so, up to
+        what seq (inclusive)?
+
+        Returns (visible, clamp_seq):
+          - (True, None)  — full visibility (public thread, or caller in
+                            current audience). No seq clamp.
+          - (True, N)     — caller was removed at seq N; entries up through
+                            N inclusive are visible so they can see their
+                            own removal entry (spec §3.x grace period).
+          - (False, None) — caller never had visibility.
+        """
+        audience = store.thread_audience(
+            thread, has_manage_audience=_has_manage_audience,
+        )
         if audience is None:
-            return True
-        return caller in (audience.pubkeys or [])
+            return True, None
+        if caller in (audience.pubkeys or []):
+            return True, None
+        clamp = store.caller_last_audience_seq(
+            thread, caller, has_manage_audience=_has_manage_audience,
+        )
+        if clamp is None:
+            return False, None
+        return True, clamp
 
     # ---- GET /sync (§7) -------------------------------------------------
     @api.get("/sync")
@@ -379,11 +409,17 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         # v0.4.27: audience-scoped threads return an empty entries list
         # to non-audience callers. The hub doesn't 404 the thread name
         # (that would leak existence); it just looks empty.
-        if not _caller_in_thread_audience(thread, caller):
+        # v0.5.0: a removed member's visibility clamps inclusive at their
+        # removal seq — they can see the audience entry that removed them
+        # (their own last view), nothing after. Silent-removal (no /sync
+        # access to your own removal entry) violated non-negotiable #5.
+        visible, clamp_seq = _caller_sync_clamp(thread, caller)
+        if not visible:
             return {"thread": thread, "since": since, "entries": []}
         entries = [
             {"entry": _entry_to_dict(ev), "seq": s}
             for ev, s in store.since_with_seq(thread, since)
+            if clamp_seq is None or s <= clamp_seq
         ]
         return {"thread": thread, "since": since, "entries": entries}
 
@@ -404,7 +440,9 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     @api.get("/threads")
     def get_threads(caller: str = Depends(require_session)) -> dict:
         archived_threads = store.archive_state_per_thread(_has_archive_capability)
-        audience_by_thread = store.threads_with_audience()
+        audience_by_thread = store.threads_with_audience(
+            has_manage_audience=_has_manage_audience,
+        )
         # v0.4.38: ephemeral-thread lookup. Every row from
         # overview.thread_summaries() carries a `type` field:
         #   "permanent"  — default
@@ -417,9 +455,18 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         for t, n, s, parent in overview.thread_summaries():
             # v0.4.27: hide audience-scoped threads from non-audience
             # callers. Public threads stay visible to everyone.
+            # v0.5.0: a caller who WAS in the audience but was removed
+            # still sees the thread here (with `removed_at_seq` set) so
+            # the client can render "You were removed on ... by ..."
+            # rather than the thread silently disappearing.
             aud = audience_by_thread.get(t)
+            removed_at_seq: Optional[int] = None
             if aud is not None and caller not in (aud.pubkeys or []):
-                continue
+                removed_at_seq = store.caller_last_audience_seq(
+                    t, caller, has_manage_audience=_has_manage_audience,
+                )
+                if removed_at_seq is None:
+                    continue
             row: dict = {
                 "thread": t, "entry_count": n, "latest_seq": s,
                 "parent_thread": parent,
@@ -429,6 +476,8 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
                 ),
                 "type": "permanent",
             }
+            if removed_at_seq is not None:
+                row["removed_at_seq"] = removed_at_seq
             rec = eph_by_thread.get(t)
             if rec is not None:
                 if rec["tombstoned_at"] is not None:
@@ -860,15 +909,25 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
     @api.get("/inbox")
     def get_inbox(caller: str = Depends(require_session)) -> dict:
         archived_threads = store.archive_state_per_thread(_has_archive_capability)
-        audience_by_thread = store.threads_with_audience()
+        audience_by_thread = store.threads_with_audience(
+            has_manage_audience=_has_manage_audience,
+        )
         rows = []
         for t, n, s, parent in overview.thread_summaries():
             # v0.4.27: skip audience-scoped threads when caller not in
             # the audience. They don't get a row, not even an "archived
             # but hidden" placeholder — the thread is invisible.
+            # v0.5.0: a member who was removed sees the row up until
+            # their removal seq (matches the /threads grace period);
+            # the preview will be the removal entry itself. Callers who
+            # were never in still get no row.
             aud = audience_by_thread.get(t)
             if aud is not None and caller not in (aud.pubkeys or []):
-                continue
+                clamp = store.caller_last_audience_seq(
+                    t, caller, has_manage_audience=_has_manage_audience,
+                )
+                if clamp is None:
+                    continue
             latest = store.latest_non_receipt(t)
             high_water = store.caller_receipt_high_water(t, caller)
             preview_entry = None
@@ -1015,7 +1074,9 @@ def create_app(*, pipeline: Pipeline, store: EventStore,
         # the latter forever shows every non-audience member as
         # "not yet" because they were never in the audience to begin
         # with. Public threads still enumerate the full directory.
-        aud = store.thread_audience(target.thread)
+        aud = store.thread_audience(
+            target.thread, has_manage_audience=_has_manage_audience,
+        )
         if aud is not None:
             members = list(aud.pubkeys)
         else:
